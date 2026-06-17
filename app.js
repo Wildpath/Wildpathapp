@@ -561,27 +561,30 @@ const LAND_STYLES={
 
 const LAND_PROXY='https://corsproxy.io/?';
 const LAND_FETCH_URLS={
-  blm: LAND_PROXY + encodeURIComponent('https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA/MapServer/0/query?where=1%3D1&outFields=ADMIN_AGENCY_CODE,NLCS_NAME&geometry=-124,36,-119,42&geometryType=esriGeometryEnvelope&spatialRel=esriSpatialRelIntersects&returnGeometry=true&f=geojson'),
-  nationalForest: LAND_PROXY + encodeURIComponent('https://apps.fs.usda.gov/arcgis/rest/services/EDW/EDW_ForestSystemBoundaries_01/MapServer/0/query?where=STATE_ABBR%3D%27CA%27&outFields=FORESTNAME&returnGeometry=true&f=geojson'),
-  stateParks: LAND_PROXY + encodeURIComponent('https://opendata.arcgis.com/datasets/f91c84b5e80d4f93a65e6e13c4220bda_0.geojson')
+  blm: LAND_PROXY + encodeURIComponent('https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_LimitedScale/MapServer/7/query?where=ADMIN_ST%3D%27CA%27+AND+ADMIN_AGENCY_CODE%3D%27BLM%27&outFields=ADMIN_UNIT_NAME&returnGeometry=true&resultRecordCount=500&f=geojson'),
+  nationalForest: LAND_PROXY + encodeURIComponent('https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_LimitedScale/MapServer/9/query?where=ADMIN_ST%3D%27CA%27&outFields=ADMIN_UNIT_NAME&returnGeometry=true&resultRecordCount=500&f=geojson'),
+  stateParks: LAND_PROXY + encodeURIComponent('https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_LimitedScale/MapServer/14/query?where=ADMIN_ST%3D%27CA%27+AND+ADMIN_AGENCY_CODE%3D%27ST%27&outFields=ADMIN_UNIT_NAME&returnGeometry=true&resultRecordCount=500&f=geojson')
 };
 
 // Fetch all three land datasets concurrently on app load
 // Data stored in _blmGeoJSON / _nfGeoJSON / _spGeoJSON
 async function _prefetchLandData(){
+  console.log('[WildPath] Land fetch URLs:');
+  console.log('  BLM:', LAND_FETCH_URLS.blm);
+  console.log('  National Forest:', LAND_FETCH_URLS.nationalForest);
+  console.log('  State Parks:', LAND_FETCH_URLS.stateParks);
   const fetchWithTimeout=async(url,name)=>{
     try{
       const ctrl=new AbortController();
-      const tid=setTimeout(()=>ctrl.abort(),10000);
+      const tid=setTimeout(()=>ctrl.abort(),15000);
       const res=await fetch(url,{signal:ctrl.signal});
       clearTimeout(tid);
-      if(!res.ok)throw new Error(`HTTP ${res.status}`);
+      if(!res.ok)throw new Error(`HTTP ${res.status} from ${url}`);
       const j=await res.json();
       console.log(`[WildPath] ${name}: ${j.features?.length||0} features loaded`);
       return j;
     }catch(e){
-      console.warn(`[WildPath] ${name} fetch failed: ${e.message}`);
-      showToast(`${name} layer failed to load`);
+      console.error(`[WildPath] ${name} fetch failed: ${e.message}`);
       return null;
     }
   };
@@ -1347,9 +1350,14 @@ function startNavigation(lat,lng,name){
 // SCREEN SWITCHER + LOCATE
 // ═══════════════════════════════════════════════════
 let _prevTab='';
+let _tabAnimTimers=[];
 const _tabOrder=['home','map','community','profile'];
 function showTab(tabName) {
   if(tabName===currentScreen&&_prevTab!=='')return;
+
+  // Cancel all pending animation timers from previous switches
+  _tabAnimTimers.forEach(t=>clearTimeout(t));
+  _tabAnimTimers=[];
 
   var screens = ['screen-home','map-screen','community-screen','profile-screen','explore-screen'];
   var navs = ['nav-home','nav-map','nav-community','nav-profile','nav-explore'];
@@ -1365,7 +1373,7 @@ function showTab(tabName) {
   if(animate&&outEl&&outEl.style.display!=='none'){
     outEl.style.transition='transform 220ms ease';
     outEl.style.transform=goRight?'translateX(-100%)':'translateX(100%)';
-    setTimeout(()=>{outEl.style.display='none';outEl.style.transform='';outEl.style.transition='';},220);
+    _tabAnimTimers.push(setTimeout(()=>{outEl.style.display='none';outEl.style.transform='';outEl.style.transition='';},220));
   }
 
   // Hide all others immediately (no animation)
@@ -1389,7 +1397,7 @@ function showTab(tabName) {
         requestAnimationFrame(()=>{
           screen.style.transition='transform 220ms ease';
           screen.style.transform='translateX(0)';
-          setTimeout(()=>{screen.style.transition='';},230);
+          _tabAnimTimers.push(setTimeout(()=>{screen.style.transition='';},230));
         });
       });
     } else {
@@ -1442,6 +1450,7 @@ function locateMe(){
 let _tripDays=2;
 function buildPlanForm(){
   const container=document.getElementById('interestCheckboxes');
+  if(!container)return;
   interests.forEach(interest=>{
     const item=document.createElement('div');
     item.className='checkbox-item'+(interest.includes('Hiking')||interest.includes('Swimming')?' checked':'');
