@@ -552,11 +552,10 @@ const LAND_STYLES={
   private:       {color:'#E8453C',fillColor:'#E8453C',fillOpacity:0.08,width:2,  label:'Private Property'}
 };
 
-const LAND_PROXY='https://corsproxy.io/?';
 const LAND_FETCH_URLS={
-  blm: LAND_PROXY + encodeURIComponent('https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_LimitedScale/MapServer/7/query?where=ADMIN_ST%3D%27CA%27+AND+ADMIN_AGENCY_CODE%3D%27BLM%27&outFields=ADMIN_UNIT_NAME&returnGeometry=true&resultRecordCount=500&f=geojson'),
-  nationalForest: LAND_PROXY + encodeURIComponent('https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_LimitedScale/MapServer/9/query?where=ADMIN_ST%3D%27CA%27&outFields=ADMIN_UNIT_NAME&returnGeometry=true&resultRecordCount=500&f=geojson'),
-  stateParks: LAND_PROXY + encodeURIComponent('https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_LimitedScale/MapServer/14/query?where=ADMIN_ST%3D%27CA%27+AND+ADMIN_AGENCY_CODE%3D%27ST%27&outFields=ADMIN_UNIT_NAME&returnGeometry=true&resultRecordCount=500&f=geojson')
+  blm: "https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_LimitedScale/MapServer/7/query?where=ADMIN_ST='CA'+AND+ADMIN_AGENCY_CODE='BLM'&outFields=ADMIN_UNIT_NAME&returnGeometry=true&resultRecordCount=500&f=geojson",
+  nationalForest: "https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_LimitedScale/MapServer/9/query?where=ADMIN_ST='CA'&outFields=ADMIN_UNIT_NAME&returnGeometry=true&resultRecordCount=500&f=geojson",
+  stateParks: "https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_LimitedScale/MapServer/14/query?where=ADMIN_ST='CA'+AND+ADMIN_AGENCY_CODE='ST'&outFields=ADMIN_UNIT_NAME&returnGeometry=true&resultRecordCount=500&f=geojson"
 };
 
 // Fetch all three land datasets concurrently on app load
@@ -957,7 +956,27 @@ function buildLayersPanel(){
 // ═══════════════════════════════════════════════════
 // OSM PEAKS — always-visible summit labels
 // ═══════════════════════════════════════════════════
+const _peaksCache=new Map(); // rounded bbox → raw Overpass response
 let _osmPeaksBounds=null;
+
+// Overpass fetch with 429 retry: up to 2 retries, 2s backoff each
+async function _overpassFetchRetry(query,timeoutMs){
+  for(let attempt=0;attempt<3;attempt++){
+    if(attempt>0)await new Promise(r=>setTimeout(r,2000));
+    try{
+      const res=await fetch('https://overpass-api.de/api/interpreter',{
+        method:'POST',body:'data='+encodeURIComponent(query),
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        signal:AbortSignal.timeout(timeoutMs)
+      });
+      if(res.status===429){continue;}
+      if(!res.ok)throw new Error('HTTP '+res.status);
+      return await res.json();
+    }catch(e){
+      if(attempt===2)throw e;
+    }
+  }
+}
 
 function _clearOsmPeaks(){
   try{if(map&&map.getLayer('osm-peaks'))map.removeLayer('osm-peaks');}catch{}
@@ -973,19 +992,17 @@ async function loadOsmPeaks(){
   if(_osmPeaksBounds===bbox)return;
   _osmPeaksBounds=bbox;
   try{
-    const q=`[out:json][timeout:15];node["natural"="peak"](${bbox});out;`;
-    const res=await fetch('https://overpass-api.de/api/interpreter',{
-      method:'POST',
-      body:'data='+encodeURIComponent(q),
-      headers:{'Content-Type':'application/x-www-form-urlencoded'},
-      signal:AbortSignal.timeout(15000)
-    });
-    if(!res.ok)throw new Error('HTTP '+res.status);
-    const data=await res.json();
+    let data;
+    if(_peaksCache.has(bbox)){
+      data=_peaksCache.get(bbox);
+    }else{
+      const q=`[out:json][timeout:15];node["natural"="peak"](${bbox});out;`;
+      data=await _overpassFetchRetry(q,15000);
+      _peaksCache.set(bbox,data);
+    }
     const features=(data.elements||[])
       .filter(el=>{
         const elevM=parseFloat(el.tags?.ele||0);
-        // At low zoom only show prominent peaks
         if(zoom<9&&elevM<900)return false;
         if(zoom<10&&elevM<300)return false;
         return true;
