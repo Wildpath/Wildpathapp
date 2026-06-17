@@ -78,28 +78,6 @@
   <!-- ── MAP SCREEN ────────────────────────────────── -->
   <div class="screen" id="map-screen">
     <div id="map">
-      <div id="mapbox-token-prompt" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:1000;background:rgba(15,20,16,0.95);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:24px;width:280px;text-align:center;font-family:-apple-system,'Inter',sans-serif">
-        <svg width="40" height="40" viewBox="0 0 48 48" fill="none" style="margin-bottom:14px"><path d="M4 38 L16 18 L24 28 L30 20 L44 38 Z" stroke="#B8E87A" stroke-width="2.2" stroke-linejoin="round" fill="none"/><path d="M10 38 Q18 34 24 36 Q30 38 38 34" stroke="#B8E87A" stroke-width="1.8" stroke-linecap="round" fill="none" opacity=".55"/></svg>
-        <div style="font-size:16px;font-weight:700;color:#fff;margin-bottom:8px">Map Token Required</div>
-        <div style="font-size:12px;color:rgba(255,255,255,0.45);margin-bottom:16px;line-height:1.5">Get your free token at<br><strong style="color:#B8E87A">mapbox.com</strong> → Account → Access Tokens</div>
-        <input id="token-input" type="text" placeholder="Paste your pk.eyJ1... token" autocomplete="off" spellcheck="false" style="width:100%;height:44px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.15);border-radius:10px;color:#fff;padding:0 12px;font-size:13px;box-sizing:border-box;outline:none;font-family:inherit" onkeydown="if(event.key==='Enter')_saveTokenAndLoad()">
-        <div id="token-input-error" style="font-size:11px;color:#e88080;margin-top:6px;display:none">Invalid token — must start with pk.</div>
-        <button onclick="_saveTokenAndLoad()" style="width:100%;height:44px;background:#B8E87A;color:#0f1a0a;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;margin-top:8px;font-family:inherit">Save and Load Map</button>
-      </div>
-    </div>
-    <!-- Map error / token setup overlay -->
-    <div id="mapError">
-      <div class="map-error-icon"><svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="var(--txt3)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg></div>
-      <div class="map-error-title">Mapbox Token Required</div>
-      <div class="map-error-msg">WildPath uses Mapbox for satellite imagery, 3D terrain, and outdoor maps. Paste your free Mapbox public token below to activate the map.</div>
-      <div class="token-input-row">
-        <input class="token-input" id="mapboxTokenInput" type="text" placeholder="pk.eyJ1..." autocomplete="off" spellcheck="false">
-        <button class="token-save-btn" onclick="saveMapboxToken()">Save</button>
-      </div>
-      <div class="token-hint">
-        Get a free token at <strong style="color:var(--accent)">mapbox.com</strong> → Account → Access Tokens.<br>
-        Your token starts with <code style="background:var(--bg3);padding:1px 5px;border-radius:4px;font-size:10px">pk.eyJ1...</code>
-      </div>
     </div>
 
     <!-- Search bar -->
@@ -1914,7 +1892,7 @@
 </div><!-- #app -->
 
 
-<script src="data.js"></script>
-<script src="app.js"></script>
+<script src="data.js?v=2"></script>
+<script src="app.js?v=2"></script>
 </body>
 </html>

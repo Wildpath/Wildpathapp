@@ -16,7 +16,7 @@
 // token prompt that appears if the map fails to load.
 // Get a free token at mapbox.com → Account → Access Tokens
 // ═══════════════════════════════════════════════════
-const MAPBOX_TOKEN_DEFAULT = ''; // ← paste your token here between the quotes
+const MAPBOX_TOKEN_DEFAULT = 'pk.eyJ1Ijoid2lsZHBhdGgxMiIsImEiOiJjbXBya2I1aWQxMHB2MnFweG92cjJtbW81In0.wGxIYBZeRDif7L3VTLlXFw';
 const MAPBOX_TOKEN = localStorage.getItem('mapbox-token') || localStorage.getItem('wp_mapbox_token') || MAPBOX_TOKEN_DEFAULT;
 mapboxgl.accessToken = MAPBOX_TOKEN || 'MISSING';
 
@@ -244,15 +244,7 @@ function _launchApp(){
 // MAP INIT
 // ═══════════════════════════════════════════════════
 function initMap(){
-  // Fix 2: If no valid token, show the inline prompt immediately — no black screen
-  const tok = localStorage.getItem('mapbox-token') || localStorage.getItem('wp_mapbox_token') || '';
-  if(!tok){
-    const errEl=document.getElementById('mapError');
-    if(errEl){errEl.classList.add('show');}
-    const tp=document.getElementById('mapbox-token-prompt');
-    if(tp)tp.style.display='flex';
-    return; // do not try to create the map without a token
-  }
+  const tok = localStorage.getItem('mapbox-token') || localStorage.getItem('wp_mapbox_token') || MAPBOX_TOKEN_DEFAULT;
   mapboxgl.accessToken = tok;
 
   const savedStyle=localStorage.getItem('wp_map_style')||'standard';
