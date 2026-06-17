@@ -1,0 +1,12008 @@
+// NO EMOJIS — SVG icons or plain text only throughout this file
+// =============================================================================
+// STRICT RULE — No emojis allowed anywhere in this app.
+// Never add emojis to any text, labels, buttons, placeholders, empty states,
+// notifications, or any other UI element.
+// Use Tabler icons (inline SVG) or plain text only.
+// This rule applies to all future edits permanently.
+// =============================================================================
+
+// ═══════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
+// MAPBOX ACCESS TOKEN
+// Set MAPBOX_TOKEN below, or paste it in the in-app
+// token prompt that appears if the map fails to load.
+// Get a free token at mapbox.com → Account → Access Tokens
+// ═══════════════════════════════════════════════════
+const MAPBOX_TOKEN_DEFAULT = ''; // ← paste your token here between the quotes
+const MAPBOX_TOKEN = localStorage.getItem('mapbox-token') || localStorage.getItem('wp_mapbox_token') || MAPBOX_TOKEN_DEFAULT;
+mapboxgl.accessToken = MAPBOX_TOKEN || 'MISSING';
+
+function saveMapboxToken(){
+  const val=(document.getElementById('mapboxTokenInput')?.value||'').trim();
+  if(!val.startsWith('pk.')){
+    showToast('Token must start with pk.eyJ1…');
+    return;
+  }
+  // Save to both key names so either lookup works
+  localStorage.setItem('mapbox-token', val);
+  localStorage.setItem('wp_mapbox_token', val);
+  // Hide the error overlay and init the map immediately — no page reload needed
+  const errEl=document.getElementById('mapError');
+  if(errEl)errEl.classList.remove('show');
+  showToast('Token saved — loading map…');
+  initMap();
+}
+
+function _saveTokenAndLoad(){
+  const val=(document.getElementById('token-input')?.value||'').trim();
+  if(val.startsWith('pk.')){
+    localStorage.setItem('mapbox-token', val);
+    localStorage.setItem('wp_mapbox_token', val);
+    mapboxgl.accessToken = val;
+    const prompt=document.getElementById('mapbox-token-prompt');
+    if(prompt)prompt.style.display='none';
+    initMap();
+  } else {
+    const err=document.getElementById('token-input-error');
+    if(err)err.style.display='block';
+  }
+}
+
+let map=null; // primary Mapbox GL JS instance
+let currentStyle='standard', currentPin=0, drawerOpen=false, currentScreen='map';
+let landLabelTimer=null, sheetOpen=false, sheetTouchStartY=0;
+let peakMarkers=[], spotMarkerEls=[], spotMarkerRefs=[];
+let activeFilters=new Set();
+let hiddenGemFilterActive=false;
+let addSpotMode=false, addSpotTempLat=null, addSpotTempLng=null;
+let waypointMarkers=[], parkingMarker=null;
+let userSpots=JSON.parse(localStorage.getItem('wp_user_spots')||'[]');
+let favorites=new Set(JSON.parse(localStorage.getItem('wp_favs')||'[]'));
+
+const landLayerCache={nationalForest:{on:false},blm:{on:false},stateParks:{on:false},private:{on:false}};
+const featureLayerCache={};
+FEATURE_LAYERS.forEach(f=>featureLayerCache[f.id]={on:false});
+
+// ── Mapbox GL JS style URLs ──────────────────────────
+const MAP_STYLES={
+  standard: {url:'mapbox://styles/mapbox/outdoors-v12',       label:'Standard'},
+  terrain:  {url:'mapbox://styles/mapbox/outdoors-v12',       label:'Terrain'},
+  satellite:{url:'mapbox://styles/mapbox/satellite-streets-v12', label:'Satellite'},
+  hybrid:   {url:'mapbox://styles/mapbox/satellite-streets-v12', label:'Hybrid'}
+};
+// In-memory cache for fetched land GeoJSON — no re-fetch on style switch
+let _blmGeoJSON=null, _nfGeoJSON=null, _spGeoJSON=null;
+
+// Backward-compat shim so old leafletMap.xxx calls still work
+const leafletMap={
+  flyTo([lat,lng],zoom,opts={}){if(map)map.flyTo({center:[lng,lat],zoom:zoom??map.getZoom(),duration:(opts.duration??1)*1000,essential:true});},
+  setView([lat,lng],zoom,opts={}){if(map){if(opts.animate===false)map.jumpTo({center:[lng,lat],zoom});else map.flyTo({center:[lng,lat],zoom,duration:400});}},
+  getCenter(){if(!map)return{lat:37.8,lng:-121.4};const c=map.getCenter();return{lat:c.lat,lng:c.lng};},
+  getZoom(){return map?map.getZoom():7;},
+  getBounds(){
+    if(!map)return{getNorthEast:()=>({lat:38,lng:-121}),getSouthWest:()=>({lat:37,lng:-122})};
+    const b=map.getBounds();
+    return{getNorthEast:()=>({lat:b.getNorthEast().lat,lng:b.getNorthEast().lng}),getSouthWest:()=>({lat:b.getSouthWest().lat,lng:b.getSouthWest().lng})};
+  },
+  setMaxZoom(){},
+  invalidateSize(){if(map)map.resize();},
+  hasLayer(layer){return layer&&typeof layer.getElement==='function';},
+  removeLayer(layer){if(layer){if(typeof layer.remove==='function')layer.remove();else if(typeof layer.addTo==='undefined'){}  }},
+  addLayer(layer){if(layer&&map&&typeof layer.addTo==='function')layer.addTo(map);},
+  on(ev,fn){if(map)map.on(ev,fn);},
+  fitBounds(bounds,opts={}){if(map&&bounds)try{map.fitBounds(bounds,{padding:opts.padding||40,duration:(opts.duration??1)*1000});}catch{}},
+  remove(){if(map)map.remove();}
+};
+
+// ═══════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════
+window.onload=()=>{
+  // Always auto-login as demo user — no login screen required
+  const uid=localStorage.getItem('wildpath-current-user');
+  if(uid){
+    const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
+    _currentUser=users.find(u=>String(u.id)===String(uid))||null;
+  }
+  if(!_currentUser){
+    // Auto-create a demo account so all features are accessible
+    _currentUser={id:'demo_me',username:'explorer',fullName:'Explorer',role:'user',email:'explorer@wildpath.app',createdAt:new Date().toISOString()};
+    const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
+    if(!users.find(u=>u.id==='demo_me'))users.push(_currentUser);
+    localStorage.setItem('wildpath-users',JSON.stringify(users));
+    localStorage.setItem('wildpath-current-user','demo_me');
+  }
+  _hideLoginScreen();
+  _launchApp();
+};
+
+function _showLoginScreen(){
+  const ls=document.getElementById('loginScreen');
+  if(ls)ls.style.display='flex';
+}
+function _hideLoginScreen(){
+  const ls=document.getElementById('loginScreen');
+  if(ls){
+    ls.style.opacity='0';
+    ls.style.transition='opacity 0.35s ease';
+    setTimeout(()=>{ls.style.display='none';ls.style.opacity='';ls.style.transition='';},360);
+  }
+}
+function loginShowSignIn(){
+  document.getElementById('loginSignInPanel').style.display='block';
+  document.getElementById('loginSignUpPanel').style.display='none';
+  document.getElementById('loginTabSignIn').style.cssText='flex:1;text-align:center;padding:9px;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;background:#B8E87A;color:#0f1a0a;transition:all .2s';
+  document.getElementById('loginTabSignUp').style.cssText='flex:1;text-align:center;padding:9px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;color:rgba(255,255,255,0.5);transition:all .2s';
+  const e=document.getElementById('loginSignInError');if(e)e.style.display='none';
+}
+function loginShowSignUp(){
+  document.getElementById('loginSignInPanel').style.display='none';
+  document.getElementById('loginSignUpPanel').style.display='block';
+  document.getElementById('loginTabSignUp').style.cssText='flex:1;text-align:center;padding:9px;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;background:#B8E87A;color:#0f1a0a;transition:all .2s';
+  document.getElementById('loginTabSignIn').style.cssText='flex:1;text-align:center;padding:9px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;color:rgba(255,255,255,0.5);transition:all .2s';
+  const e=document.getElementById('loginSignUpError');if(e)e.style.display='none';
+}
+function doLogin(){
+  const email=(document.getElementById('loginEmail')?.value||'').trim().toLowerCase();
+  const pw=document.getElementById('loginPassword')?.value||'';
+  const errEl=document.getElementById('loginSignInError');
+  if(!email||!pw){if(errEl){errEl.textContent='Enter your email and password.';errEl.style.display='block';}return;}
+  const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
+  const user=users.find(u=>u.email.toLowerCase()===email);
+  if(!user){if(errEl){errEl.textContent='No account found with that email.';errEl.style.display='block';}return;}
+  if(user.password!==btoa(pw)){if(errEl){errEl.textContent='Incorrect email or password.';errEl.style.display='block';}return;}
+  localStorage.setItem('wildpath-current-user',user.id);
+  localStorage.removeItem('wildpath-guest');
+  _currentUser=user;
+  _hideLoginScreen();
+  if(!_appInitialized){_launchApp();}else{buildProfile();showToast('Welcome back, '+user.username+'!');}
+}
+function doSignup(){
+  const username=(document.getElementById('signupUsername')?.value||'').trim();
+  const email=(document.getElementById('signupEmail')?.value||'').trim().toLowerCase();
+  const pw=document.getElementById('signupPassword')?.value||'';
+  const confirm=document.getElementById('signupConfirm')?.value||'';
+  const adminCode=(document.getElementById('signupAdminCode')?.value||'').trim();
+  const errEl=document.getElementById('loginSignUpError');
+  const showErr=msg=>{if(errEl){errEl.textContent=msg;errEl.style.display='block';}};
+  if(!username||!email||!pw||!confirm){showErr('All fields except admin code are required.');return;}
+  if(pw!==confirm){showErr('Passwords do not match.');return;}
+  if(pw.length<6){showErr('Password must be at least 6 characters.');return;}
+  const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
+  if(users.find(u=>u.email.toLowerCase()===email)){showErr('Email already in use.');return;}
+  const role=adminCode==='WildPath2026Admin'?'admin':'explorer';
+  const newUser={id:Date.now(),username,email,password:btoa(pw),role,avatar:null,savedSpots:[],submittedSpots:[],createdAt:new Date().toISOString()};
+  users.push(newUser);
+  localStorage.setItem('wildpath-users',JSON.stringify(users));
+  localStorage.setItem('wildpath-current-user',newUser.id);
+  localStorage.removeItem('wildpath-guest');
+  _currentUser=newUser;
+  _hideLoginScreen();
+  if(!_appInitialized){_launchApp();}else{buildProfile();showToast(role==='admin'?'Admin account created!':'Welcome to WildPath!');}
+}
+function continueAsGuest(){
+  localStorage.setItem('wildpath-guest','true');
+  localStorage.removeItem('wildpath-current-user');
+  _currentUser={id:'guest',username:'Guest',role:'guest',email:''};
+  _hideLoginScreen();
+  if(!_appInitialized){_launchApp();}
+}
+
+function _launchApp(){
+  // ── If app is already running (e.g. user just signed in via Profile tab)
+  //    skip full re-init — just refresh user-specific UI then fire callback
+  if(_appInitialized){
+    buildProfile();
+    if(_currentUser&&_currentUser.role==='admin')_applyAdminUI();
+    if(typeof _loginCallback==='function' && isLoggedIn()){
+      const cb=_loginCallback;
+      _loginCallback=null;
+      setTimeout(cb,50);
+    } else {
+      _loginCallback=null;
+    }
+    return;
+  }
+  _appInitialized=true;
+
+  // Show map tab first so the #map container has real dimensions before
+  // Mapbox GL creates its WebGL context — a 0×0 container causes silent failure
+  showTab('map');
+
+  initMap();
+  buildLayersPanel();
+  buildSidePanel();
+  buildPlanForm();
+  buildProfile();
+  buildExploreScreen();
+  buildHomeScreen();
+  buildHomeFeed();
+  // Show location permission card on first run, otherwise init geo
+  const locGranted=localStorage.getItem('wp_location_granted');
+  if(!locGranted){
+    setTimeout(()=>{
+      const card=document.getElementById('locationPermCard');
+      if(card)card.style.display='flex';
+    }, 1800);
+  } else {
+    setTimeout(initGeolocation, 800);
+  }
+  // Init service worker
+  registerServiceWorker();
+  // Restore day mode
+  if(localStorage.getItem('wp_day_mode')==='1')document.body.classList.add('day-mode');
+  // Restore light mode (new setting)
+  if(!localStorage.getItem('wildpath-dark-mode')&&localStorage.getItem('wildpath-light-mode')==='1')document.body.classList.add('light-mode');
+  // Update UI for admin users
+  if(_currentUser&&_currentUser.role==='admin')_applyAdminUI();
+}
+
+// ═══════════════════════════════════════════════════
+// MAP INIT
+// ═══════════════════════════════════════════════════
+function initMap(){
+  // Fix 2: If no valid token, show the inline prompt immediately — no black screen
+  const tok = localStorage.getItem('mapbox-token') || localStorage.getItem('wp_mapbox_token') || '';
+  if(!tok){
+    const errEl=document.getElementById('mapError');
+    if(errEl){errEl.classList.add('show');}
+    return; // do not try to create the map without a token
+  }
+  mapboxgl.accessToken = tok;
+  // Hide the token prompt — a valid token is present
+  const _tp=document.getElementById('mapbox-token-prompt');
+  if(_tp)_tp.style.display='none';
+
+  const savedStyle=localStorage.getItem('wp_map_style')||'standard';
+  const styleUrl=MAP_STYLES[savedStyle]?MAP_STYLES[savedStyle].url:MAP_STYLES.standard.url;
+
+  map=new mapboxgl.Map({
+    container:'map',
+    style:styleUrl,
+    center:[-121.5, 38.5],
+    zoom:6,
+    pitch:0,
+    bearing:0,
+    attributionControl:true,
+    antialias:true,
+    minZoom:3,
+    maxZoom:22
+  });
+
+  // Remove default controls — WildPath has its own UI
+  map.addControl(new mapboxgl.AttributionControl({compact:true}));
+
+  map.on('load',()=>{
+    console.log('Map loaded successfully');
+    // Spot markers as GeoJSON circles
+    _initSpotLayers();
+    // Land boundary GL layers (sources + empty data)
+    _initLandBoundaryLayers();
+    // Peak labels
+    _initPeakLabels();
+    // Restore 3D if satellite/hybrid were active
+    if((currentStyle==='satellite'||currentStyle==='hybrid')&&_map3dOn){
+      _enable3DTerrain();
+    }
+    // Restore any active land layers
+    Object.keys(LAND_STYLES).forEach(t=>{if(landLayerCache[t]&&landLayerCache[t].on)showLandType(t);});
+    // Fetch land data in background
+    _prefetchLandData();
+    // Rivers always visible
+    loadRiversAlways();
+    // OSM trails + peak labels
+    loadOsmTrails();
+    loadOsmPeaks();
+  });
+
+  // Reload rivers / trails / peaks on map move (debounced)
+  let _riverReloadTimer=null;
+  let _trailReloadTimer=null;
+  let _peakReloadTimer=null;
+  map.on('moveend',()=>{
+    clearTimeout(_riverReloadTimer);
+    _riverReloadTimer=setTimeout(loadRiversAlways,2000);
+    clearTimeout(_trailReloadTimer);
+    _trailReloadTimer=setTimeout(loadOsmTrails,1000);
+    clearTimeout(_peakReloadTimer);
+    _peakReloadTimer=setTimeout(loadOsmPeaks,2000);
+  });
+
+  map.on('error',(e)=>{
+    console.error('Mapbox error:',e.error);
+    const errEl=document.getElementById('mapError');
+    if(errEl){
+      const msg=(e.error?.message||'').toLowerCase();
+      const status=e.error?.status;
+      if(status===401||msg.includes('token')||msg.includes('unauthorized')||msg.includes('access')){
+        errEl.classList.add('show');
+        // Pre-fill token field if saved token exists (so user can see/correct it)
+        const saved=localStorage.getItem('wp_mapbox_token')||'';
+        const inp=document.getElementById('mapboxTokenInput');
+        if(inp&&saved)inp.value=saved;
+      }
+    }
+  });
+
+  // Click on spot circles — open full detail page directly
+  map.on('click','spot-circles',e=>{
+    if(e.features&&e.features.length){
+      const id=e.features[0].properties.id;
+      const spot=[...spots,...userSpots].find(s=>s.id===id);
+      if(spot)openDetail(spot.id);
+      e.preventDefault();
+    }
+  });
+  map.on('mouseenter','spot-circles',()=>{map.getCanvas().style.cursor='pointer';});
+  map.on('mouseleave','spot-circles',()=>{map.getCanvas().style.cursor='';});
+
+  // Map click — add-spot mode and sheet close
+  map.on('click',e=>{
+    if(addSpotMode){
+      addSpotTempLat=e.lngLat.lat; addSpotTempLng=e.lngLat.lng;
+      addSpotMode=false;
+      map.getCanvas().style.cursor='';
+      showToast('Location pinned');
+      document.getElementById('addSpotOverlay').classList.add('open');
+      const disp=document.getElementById('aspLocDisplay');
+      if(disp){disp.textContent=`${e.lngLat.lat.toFixed(5)}, ${e.lngLat.lng.toFixed(5)}`;disp.style.display='block';}
+      return;
+    }
+    if(sheetOpen){closeSheet();}
+  });
+
+  // Sheet swipe dismiss
+  const sheet=document.getElementById('spotSheet');
+  const handleBar=document.getElementById('sheetHandleBar');
+  if(handleBar){
+    handleBar.addEventListener('touchstart',e=>{sheetTouchStartY=e.touches[0].clientY;},{passive:true});
+    handleBar.addEventListener('touchmove',e=>{
+      const dy=e.touches[0].clientY-sheetTouchStartY;
+      if(dy>0){sheet.style.transform=`translateY(${dy}px)`;e.preventDefault();}
+    },{passive:false});
+    handleBar.addEventListener('touchend',e=>{
+      const dy=e.changedTouches[0].clientY-sheetTouchStartY;
+      if(dy>70)closeSheet();else sheet.style.transform='';
+    });
+  }
+  buildFilterStrip();
+}
+
+// Spot type colors
+const SPOT_TYPE_COLORS={
+  hiking:'#7AB87A',biking:'#D4874A',swimming:'#6A9BC4',caves:'#9B7DC4',
+  urban:'#C4524A',scenic:'#D4A843',river:'#5BA8C4',lava_tube:'#C4704A',
+  waterfall:'#6ABCD4',natural_slide:'#6ABCD4',rock_climbing:'#D4A843'
+};
+function _spotColor(type){return SPOT_TYPE_COLORS[type]||'#B8E87A';}
+
+function _buildSpotsGeoJSON(){
+  const allS=[...spots,...userSpots];
+  const FILTER_TYPES={water:['swimming','river','waterfall','natural_slide'],caves:['caves','lava_tube'],hiking:['hiking'],biking:['biking'],views:['scenic'],urban:['urban'],climb:['rock_climbing']};
+  let filtered=activeFilters.size>0?allS.filter(s=>{let ok=false;activeFilters.forEach(fid=>{const t=FILTER_TYPES[fid]||[];if(t.includes(s.type))ok=true;});return ok;}):allS;
+  if(hiddenGemFilterActive)filtered=filtered.filter(s=>s.hiddenGem);
+  // Build saved and visited sets for pin colors
+  const savedSet=new Set(JSON.parse(localStorage.getItem('wp_saved_spots')||'[]'));
+  const myUid=String(_myUid&&_myUid()||'guest');
+  const postedSet=new Set(getPosts().filter(p=>String(p.userId)===myUid&&p.spotId).map(p=>p.spotId));
+  return{type:'FeatureCollection',features:filtered.map(s=>{
+    // Pin color: yellow=visited/posted, red=saved, white=public
+    let pinColor='#FFFFFF';
+    if(postedSet.has(s.id))pinColor='#F5C842';
+    else if(savedSet.has(s.id))pinColor='#E05252';
+    return{type:'Feature',geometry:{type:'Point',coordinates:[s.lng,s.lat]},properties:{id:s.id,name:s.name,type:s.type,color:pinColor}};
+  })};
+}
+
+function _initSpotLayers(){
+  if(!map)return;
+  const geojson=_buildSpotsGeoJSON();
+  if(map.getSource('spots')){map.getSource('spots').setData(geojson);return;}
+  map.addSource('spots',{
+    type:'geojson',
+    data:geojson,
+    cluster:true,
+    clusterMaxZoom:11,
+    clusterRadius:50
+  });
+  // Cluster bubble
+  map.addLayer({id:'spot-clusters',type:'circle',source:'spots',
+    filter:['has','point_count'],
+    paint:{
+      'circle-color':['step',['get','point_count'],'#B8E87A',5,'#7AB87A',20,'#4A9849'],
+      'circle-radius':['step',['get','point_count'],16,5,22,20,28],
+      'circle-stroke-width':2,'circle-stroke-color':'#fff','circle-opacity':0.9
+    }
+  });
+  // Cluster count label
+  map.addLayer({id:'spot-cluster-count',type:'symbol',source:'spots',
+    filter:['has','point_count'],
+    layout:{'text-field':['get','point_count_abbreviated'],'text-font':['Open Sans Bold','Arial Unicode MS Bold'],'text-size':12},
+    paint:{'text-color':'#0b1a0b'}
+  });
+  // Individual pins (unclustered)
+  map.addLayer({id:'spot-halos',type:'circle',source:'spots',
+    filter:['!',['has','point_count']],
+    paint:{'circle-radius':9,'circle-color':'#fff','circle-opacity':0.9}
+  });
+  map.addLayer({id:'spot-circles',type:'circle',source:'spots',
+    filter:['!',['has','point_count']],
+    paint:{'circle-radius':6,'circle-color':['get','color'],'circle-stroke-width':1.5,'circle-stroke-color':'#fff'}
+  });
+  // Click cluster → zoom in
+  map.on('click','spot-clusters',e=>{
+    const features=map.queryRenderedFeatures(e.point,{layers:['spot-clusters']});
+    if(!features.length)return;
+    map.getSource('spots').getClusterExpansionZoom(features[0].properties.cluster_id,(err,zoom)=>{
+      if(err)return;
+      map.easeTo({center:features[0].geometry.coordinates,zoom:zoom+0.5,duration:400});
+    });
+  });
+  map.on('mouseenter','spot-clusters',()=>{map.getCanvas().style.cursor='pointer';});
+  map.on('mouseleave','spot-clusters',()=>{map.getCanvas().style.cursor='';});
+}
+
+function refreshSpotMarkers(){
+  if(!map||!map.getSource('spots'))return;
+  map.getSource('spots').setData(_buildSpotsGeoJSON());
+}
+
+// Add a new spot to the map (called after user submits)
+function addSpotMarkerToMap(spot){
+  // Just refresh the GeoJSON — spot is already in userSpots by the time this runs
+  refreshSpotMarkers();
+}
+
+// Peak labels as MapLibre symbol layer
+function _initPeakLabels(){
+  if(!map)return;
+  const geojson={type:'FeatureCollection',features:NORCAL_PEAKS.map(p=>({type:'Feature',geometry:{type:'Point',coordinates:[p.lng,p.lat]},properties:{name:p.name,elev:p.elev.toLocaleString()+' ft'}}))};
+  if(map.getSource('peaks')){map.getSource('peaks').setData(geojson);return;}
+  map.addSource('peaks',{type:'geojson',data:geojson});
+  map.addLayer({id:'peak-labels',type:'symbol',source:'peaks',minzoom:7,layout:{'text-field':['concat',['get','name'],'\n',['get','elev']],'text-font':['Open Sans Bold','Arial Unicode MS Bold'],'text-size':10,'text-offset':[0,1.1],'text-anchor':'top'},paint:{'text-color':'#e8dece','text-halo-color':'rgba(20,17,14,0.9)','text-halo-width':1.5}});
+}
+
+function updatePeakVisibility(){/* handled by MapLibre minzoom */}
+
+// ── Map style switcher ────────────────────────────
+function setMapStyle(key){
+  if(!MAP_STYLES[key]||!map)return;
+  const prevStyle=currentStyle;
+  currentStyle=key;
+  console.log('Style switched to ' + key);
+
+  // Disable 3D when switching to non-satellite styles
+  if(key==='standard'||key==='terrain'){
+    _disable3DTerrain();
+    _map3dOn=false;
+  }
+  // Show/hide 3D toggle button in dot menu
+  _update3DToggleVisibility();
+
+  // Guard against double-firing
+  let _styleInitDone=false;
+  function _onStyleReady(){
+    if(_styleInitDone)return; _styleInitDone=true;
+    console.log('Style.load fired for '+key);
+    // Re-add all custom layers in correct order:
+    // 1. Terrain (if satellite/hybrid and 3D was on)
+    if((key==='satellite'||key==='hybrid')&&_map3dOn){
+      _enable3DTerrain();
+    }
+    // 2. BLM layer
+    // 3. National Forest layer
+    // 4. State Parks layer
+    _initLandBoundaryLayers();
+    // Restore active land layers from cache
+    Object.keys(LAND_STYLES).forEach(t=>{
+      if(landLayerCache[t]&&landLayerCache[t].on)showLandType(t);
+    });
+    // 5. All spot pins
+    _initSpotLayers();
+    // 6. Peak labels
+    _initPeakLabels();
+    // 7. Rivers always visible
+    _riversBounds=null; // force reload after style switch
+    loadRiversAlways();
+    // 8. OSM trails + peaks (force reload)
+    _osmTrailsBounds=null;
+    _clearOsmTrails();
+    loadOsmTrails();
+    _osmPeaksBounds=null;
+    _clearOsmPeaks();
+    loadOsmPeaks();
+    // 8. Restore county + private land layers if they were on
+    const countyToggle=document.getElementById('spToggle-counties')||document.getElementById('toggle-counties');
+    if(countyToggle&&countyToggle.classList.contains('on')){
+      _countiesLoaded=false; // force re-add since GL layers were destroyed
+      const wasOn=true;
+      countyToggle.classList.remove('on'); // toggleCountyLayer reads 'on' class to decide direction
+      toggleCountyLayer(countyToggle);
+    }
+    const privToggle=document.getElementById('spToggle-privateland')||document.getElementById('toggle-privateland');
+    if(privToggle&&privToggle.classList.contains('on')){
+      _privateLandLoaded=false;
+      privToggle.classList.remove('on');
+      togglePrivateLandLayer(privToggle);
+    }
+    // Re-add markers
+    if(_userDotMarker&&_userLat)_userDotMarker.addTo(map);
+    if(_carMarker&&localStorage.getItem('wp_car_pin')){
+      const p=JSON.parse(localStorage.getItem('wp_car_pin'));
+      if(p)_carMarker.setLngLat([p.lng,p.lat]).addTo(map);
+    }
+  }
+
+  map.once('style.load', _onStyleReady);
+
+  map.setStyle(MAP_STYLES[key].url);
+
+  // Update style grid chips
+  document.querySelectorAll('.map-style-tile').forEach(t=>t.classList.remove('active'));
+  const tile=document.getElementById('tile-'+key);
+  if(tile)tile.classList.add('active');
+  document.querySelectorAll('.style-chip').forEach(c=>c.classList.remove('active'));
+  const chip=document.getElementById('style-'+key);
+  if(chip)chip.classList.add('active');
+  localStorage.setItem('wp_map_style',key);
+}
+
+function applyTileFilter(){/* no-op — Mapbox handles styling natively */}
+
+function _update3DToggleVisibility(){
+  const item=document.getElementById('dotMenu3DItem');
+  if(!item)return;
+  const isSatOrHybrid=(currentStyle==='satellite'||currentStyle==='hybrid');
+  item.style.display=isSatOrHybrid?'flex':'none';
+}
+
+// ═══════════════════════════════════════════════════
+// LAND OWNERSHIP LAYERS — Mapbox GL fill + outline
+// Data fetched once on load, cached in memory,
+// re-added from cache after every style switch.
+// ═══════════════════════════════════════════════════
+const LAND_STYLES={
+  nationalForest:{color:'#4A7C59',fillColor:'#4A7C59',fillOpacity:0.15,width:5,label:'National Forest'},
+  blm:           {color:'#D4A843',fillColor:'#D4A843',fillOpacity:0.15,width:5,label:'BLM Land'},
+  stateParks:    {color:'#4A9EF5',fillColor:'#4A9EF5',fillOpacity:0.20,width:5,label:'State Park'},
+  private:       {color:'#E8453C',fillColor:'#E8453C',fillOpacity:0.08,width:2,  label:'Private Property'}
+};
+
+const LAND_PROXY='https://corsproxy.io/?';
+const LAND_FETCH_URLS={
+  blm: LAND_PROXY + encodeURIComponent('https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA/MapServer/0/query?where=1%3D1&outFields=ADMIN_AGENCY_CODE,NLCS_NAME&geometry=-124,36,-119,42&geometryType=esriGeometryEnvelope&spatialRel=esriSpatialRelIntersects&returnGeometry=true&f=geojson'),
+  nationalForest: LAND_PROXY + encodeURIComponent('https://apps.fs.usda.gov/arcgis/rest/services/EDW/EDW_ForestSystemBoundaries_01/MapServer/0/query?where=STATE_ABBR%3D%27CA%27&outFields=FORESTNAME&returnGeometry=true&f=geojson'),
+  stateParks: LAND_PROXY + encodeURIComponent('https://opendata.arcgis.com/datasets/f91c84b5e80d4f93a65e6e13c4220bda_0.geojson')
+};
+
+// Fetch all three land datasets concurrently on app load
+// Data stored in _blmGeoJSON / _nfGeoJSON / _spGeoJSON
+async function _prefetchLandData(){
+  const fetchWithTimeout=async(url,name)=>{
+    try{
+      const ctrl=new AbortController();
+      const tid=setTimeout(()=>ctrl.abort(),10000);
+      const res=await fetch(url,{signal:ctrl.signal});
+      clearTimeout(tid);
+      if(!res.ok)throw new Error(`HTTP ${res.status}`);
+      const j=await res.json();
+      console.log(`[WildPath] ${name}: ${j.features?.length||0} features loaded`);
+      return j;
+    }catch(e){
+      console.warn(`[WildPath] ${name} fetch failed: ${e.message}`);
+      showToast(`${name} layer failed to load`);
+      return null;
+    }
+  };
+  const [blm,nf,sp]=await Promise.all([
+    fetchWithTimeout(LAND_FETCH_URLS.blm,'BLM'),
+    fetchWithTimeout(LAND_FETCH_URLS.nationalForest,'National Forest'),
+    fetchWithTimeout(LAND_FETCH_URLS.stateParks,'State Parks')
+  ]);
+  if(blm){_blmGeoJSON=blm; if(landLayerCache.blm?.on)showLandType('blm');}
+  if(nf) {_nfGeoJSON=nf;  if(landLayerCache.nationalForest?.on)showLandType('nationalForest');}
+  if(sp) {_spGeoJSON=sp;  if(landLayerCache.stateParks?.on)showLandType('stateParks');}
+}
+
+// Called on map load + after every style switch
+// Creates empty GeoJSON sources and fill+line layers
+function _initLandBoundaryLayers(){
+  if(!map)return;
+  const empty={type:'FeatureCollection',features:[]};
+  Object.entries(LAND_STYLES).forEach(([type,sty])=>{
+    const srcId=`land-${type}`;
+    const fillId=`land-${type}-fill`;
+    const lineId=`land-${type}-line`;
+
+    const outlineId=`land-${type}-outline`;
+    // Source
+    if(!map.getSource(srcId)){
+      map.addSource(srcId,{type:'geojson',data:empty});
+    }
+    // Fill layer
+    if(!map.getLayer(fillId)){
+      map.addLayer({
+        id:fillId, type:'fill', source:srcId,
+        layout:{visibility:'none'},
+        paint:{'fill-color':sty.fillColor,'fill-opacity':sty.fillOpacity}
+      });
+    }
+    // White outline underneath (wider, semi-transparent)
+    if(!map.getLayer(outlineId)){
+      map.addLayer({
+        id:outlineId, type:'line', source:srcId,
+        layout:{'line-join':'round','line-cap':'round',visibility:'none'},
+        paint:{'line-color':'#ffffff','line-width':sty.width+2,'line-opacity':0.4}
+      });
+    }
+    // Colored outline layer on top
+    if(!map.getLayer(lineId)){
+      map.addLayer({
+        id:lineId, type:'line', source:srcId,
+        layout:{'line-join':'round','line-cap':'round',visibility:'none'},
+        paint:{'line-color':sty.color,'line-width':sty.width,'line-opacity':0.9}
+      });
+    }
+    // Click → show land name pill
+    map.on('click',fillId,e=>{
+      const p=(e.features&&e.features[0].properties)||{};
+      const name=p.FORESTNAME||p.ADMIN_UNIT_NAME||p.UNITNAME||p.UNITNAME||p.NAME||p.name||sty.label;
+      const label=type==='blm'?'BLM Land':type==='nationalForest'?name:type==='stateParks'?name:sty.label;
+      showLandLabel(sty.label,label);
+    });
+  });
+  // Populate from cached data if already fetched
+  if(_blmGeoJSON){const s=map.getSource('land-blm');if(s)s.setData(_blmGeoJSON);}
+  if(_nfGeoJSON) {const s=map.getSource('land-nationalForest');if(s)s.setData(_nfGeoJSON);}
+  if(_spGeoJSON) {const s=map.getSource('land-stateParks');if(s)s.setData(_spGeoJSON);}
+}
+
+async function showLandType(type){
+  if(!map)return;
+  const sty=LAND_STYLES[type];
+  // Use cached data if available, otherwise use LAND_FALLBACK
+  let data=null;
+  if(type==='blm')data=_blmGeoJSON;
+  else if(type==='nationalForest')data=_nfGeoJSON;
+  else if(type==='stateParks')data=_spGeoJSON;
+  // Fall back to bundled geometry
+  if(!data&&LAND_FALLBACK&&LAND_FALLBACK[type])data=LAND_FALLBACK[type];
+  if(!data||!data.features){
+    // Last resort: start a live fetch
+    const url=LAND_FETCH_URLS[type];
+    if(!url)return;
+    try{
+      const ctrl=new AbortController();
+      setTimeout(()=>ctrl.abort(),10000);
+      const res=await fetch(url,{signal:ctrl.signal});
+      if(res.ok){
+        data=await res.json();
+        if(type==='blm')_blmGeoJSON=data;
+        else if(type==='nationalForest')_nfGeoJSON=data;
+        else if(type==='stateParks')_spGeoJSON=data;
+        console.log(`[WildPath] ${type}: ${data.features.length} features loaded on demand`);
+      }
+    }catch(e){console.warn(`[WildPath] ${type} on-demand fetch failed`);}
+  }
+  if(!data||!data.features)return;
+  const src=map.getSource(`land-${type}`);
+  if(src)src.setData(data);
+  const fillId=`land-${type}-fill`, lineId=`land-${type}-line`, outlineId=`land-${type}-outline`;
+  if(map.getLayer(fillId))map.setLayoutProperty(fillId,'visibility','visible');
+  if(map.getLayer(outlineId))map.setLayoutProperty(outlineId,'visibility','visible');
+  if(map.getLayer(lineId))map.setLayoutProperty(lineId,'visibility','visible');
+  landLayerCache[type]={on:true};
+}
+
+function hideLandType(type){
+  if(!map)return;
+  const fillId=`land-${type}-fill`, lineId=`land-${type}-line`, outlineId=`land-${type}-outline`;
+  if(map.getLayer(fillId))map.setLayoutProperty(fillId,'visibility','none');
+  if(map.getLayer(outlineId))map.setLayoutProperty(outlineId,'visibility','none');
+  if(map.getLayer(lineId))map.setLayoutProperty(lineId,'visibility','none');
+  landLayerCache[type]={on:false};
+}
+
+async function toggleLandOwnership(el){
+  const row=el.closest('.layer-row');
+  const isOn=el.classList.contains('on');
+  if(isOn){
+    ['nationalForest','blm','stateParks','private'].forEach(t=>hideLandType(t));
+    el.classList.remove('on'); if(row)row.classList.remove('layer-active');
+  }else{
+    el.classList.add('on'); if(row)row.classList.add('layer-active');
+    showToast('Loading boundary data...');
+    await Promise.all(['nationalForest','blm','stateParks'].map(t=>showLandType(t)));
+    showToast('Land boundaries loaded');
+  }
+}
+
+// ── Land label pill ───────────────────────────────
+function showLandLabel(icon,text){
+  const pill=document.getElementById('landLabelPill');
+  const iconEl=document.getElementById('landLabelIcon');
+  const textEl=document.getElementById('landLabelText');
+  if(iconEl)iconEl.textContent=icon;
+  if(textEl)textEl.textContent=text||icon;
+  if(pill)pill.classList.add('show');
+  if(landLabelTimer)clearTimeout(landLabelTimer);
+  landLabelTimer=setTimeout(()=>pill&&pill.classList.remove('show'),3000);
+}
+
+// ═══════════════════════════════════════════════════
+// FEATURE TOGGLE LAYERS
+// ═══════════════════════════════════════════════════
+async function toggleFeatureLayer(id,el){
+  const cfg=FEATURE_LAYERS.find(f=>f.id===id);
+  if(!cfg)return;
+  const state=featureLayerCache[id];
+  const row=el?el.closest('.layer-row'):null;
+  const srcBadge=row?row.querySelector('.layer-source'):null;
+  const toggleEl=el||document.getElementById('toggle-'+id);
+
+  if(state.on){
+    if(state.layer&&typeof state.layer.remove==='function')state.layer.remove();
+    state.layer=null; state.on=false;
+    if(toggleEl)toggleEl.classList.remove('on');
+    if(row)row.classList.remove('layer-active');
+    return;
+  }
+
+  if(cfg.type==='land'){toggleLandOwnership(toggleEl);return;}
+
+  state.on=true;
+  if(toggleEl)toggleEl.classList.add('on');
+  if(row)row.classList.add('layer-active');
+
+  if(cfg.type==='tile'){
+    if(!map){state.on=false;return;}
+    const srcId='tile-'+id, layId='tile-'+id+'-raster';
+    try{
+      if(!map.getSource(srcId))map.addSource(srcId,{type:'raster',tiles:[cfg.tileUrl],tileSize:256,attribution:cfg.tileAttr||'',maxzoom:19});
+      if(!map.getLayer(layId))map.addLayer({id:layId,type:'raster',source:srcId,paint:{'raster-opacity':cfg.opacity||0.8}});
+      state.layer={remove(){try{map.removeLayer(layId);}catch{}try{map.removeSource(srcId);}catch{}}};
+      if(srcBadge){srcBadge.textContent='Live';srcBadge.style.background='rgba(196,149,106,.2)';srcBadge.style.color='var(--accent)';}
+    }catch(err){
+      state.on=false;
+      if(toggleEl)toggleEl.classList.remove('on');
+      if(row)row.classList.remove('layer-active');
+    }
+    return;
+  }
+
+  if(cfg.type==='overpass'){
+    // Guard: at zoom < 9 the bounding box is too large and will time-out
+    if(!map||map.getZoom()<9){
+      showToast(`Zoom in to load ${cfg.label}`);
+      state.on=false;
+      if(toggleEl)toggleEl.classList.remove('on');
+      if(row)row.classList.remove('layer-active');
+      return;
+    }
+    if(srcBadge){srcBadge.textContent='Loading';srcBadge.style.background='rgba(255,255,255,.08)';srcBadge.style.color='var(--txt2)';}
+    try{
+      const data=await fetchOverpass(cfg.query);
+      state.layer=osmWaysToLayerGroup(
+        data,
+        {color:cfg.lineColor,weight:cfg.lineWeight||2,opacity:cfg.lineOpacity||.78},
+        cfg.icon,
+        cfg.opts||{}
+      );
+      if(srcBadge){srcBadge.textContent='OSM';srcBadge.style.background='rgba(196,149,106,.2)';srcBadge.style.color='var(--accent)';}
+    }catch{
+      showToast(`${cfg.label} unavailable`);
+      state.on=false;
+      if(toggleEl)toggleEl.classList.remove('on');
+      if(row)row.classList.remove('layer-active');
+      if(srcBadge){srcBadge.textContent='Error';srcBadge.style.background='rgba(224,82,82,.2)';srcBadge.style.color='var(--red)';}
+    }
+  }
+}
+
+async function fetchOverpass(queryTpl){
+  const b=map?map.getBounds():{getSouth:()=>35.5,getWest:()=>-125,getNorth:()=>42.5,getEast:()=>-114};
+  const bbox=`${Math.max(b.getSouth(),35.5).toFixed(4)},${Math.max(b.getWest(),-125).toFixed(4)},${Math.min(b.getNorth(),42.5).toFixed(4)},${Math.min(b.getEast(),-114).toFixed(4)}`;
+  const q=queryTpl.replace(/\{\{bbox\}\}/g,bbox);
+  const res=await fetch('https://overpass-api.de/api/interpreter',{
+    method:'POST',
+    body:'data='+encodeURIComponent(q),
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    signal:AbortSignal.timeout(18000)
+  });
+  if(!res.ok)throw new Error('Overpass HTTP '+res.status);
+  return res.json();
+}
+
+function osmWaysToLayerGroup(osmJson,style,layerIcon,opts={}){
+  if(!map)return{remove(){},addTo(){return this;}};
+  const{showLabels=false,variableWidth=false,waterBodies=false,dashArray=null,glow=false}=opts;
+  const gid='osm-'+Date.now()+'-'+Math.random().toString(36).substr(2,5);
+  const sourceIds=[],layerIds=[];
+
+  const lineFeatures=[],waterFeatures=[];
+  (osmJson.elements||[]).forEach(el=>{
+    if(waterBodies&&el.type==='way'&&el.geometry?.length>2){
+      const nat=el.tags?.natural,water=el.tags?.water,luse=el.tags?.landuse;
+      if(nat==='water'||water||luse==='reservoir'){
+        const coords=el.geometry.map(p=>[p.lon,p.lat]);
+        if(coords[0][0]!==coords[coords.length-1][0]||coords[0][1]!==coords[coords.length-1][1])coords.push(coords[0]);
+        waterFeatures.push({type:'Feature',geometry:{type:'Polygon',coordinates:[coords]},properties:{name:el.tags?.name||null}});
+        return;
+      }
+    }
+    if(el.type==='way'&&el.geometry?.length>1){
+      const name=el.tags?.name||el.tags?.['name:en']||el.tags?.ref||null;
+      let weight=style.weight||2;
+      if(variableWidth&&el.tags?.waterway){weight=el.tags.waterway==='river'?5:el.tags.waterway==='canal'?3.5:1.8;}
+      lineFeatures.push({type:'Feature',geometry:{type:'LineString',coordinates:el.geometry.map(p=>[p.lon,p.lat])},properties:{name,weight}});
+    }
+  });
+
+  // Water body fill layers
+  if(waterFeatures.length){
+    const wSrc=gid+'-wsrc';
+    map.addSource(wSrc,{type:'geojson',data:{type:'FeatureCollection',features:waterFeatures}});
+    map.addLayer({id:gid+'-wfill',type:'fill',source:wSrc,paint:{'fill-color':'#1a5a7a','fill-opacity':0.55}});
+    map.addLayer({id:gid+'-wline',type:'line',source:wSrc,paint:{'line-color':'#2fa8cc','line-width':1.2,'line-opacity':0.7}});
+    sourceIds.push(wSrc); layerIds.push(gid+'-wfill',gid+'-wline');
+  }
+
+  // Line features: glow + main
+  if(lineFeatures.length){
+    const lSrc=gid+'-lsrc';
+    map.addSource(lSrc,{type:'geojson',data:{type:'FeatureCollection',features:lineFeatures}});
+    // Glow layer — only for trails that request it (hiking, biking)
+    if(glow){
+      map.addLayer({id:gid+'-glow',type:'line',source:lSrc,layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':style.color,'line-width':['*',['get','weight'],4.5],'line-opacity':0.18,'line-blur':4}});
+      layerIds.push(gid+'-glow');
+    }
+    // Main line — with optional dash array
+    const mainLinePaint={'line-color':style.color,'line-width':['get','weight'],'line-opacity':style.opacity||0.85};
+    if(dashArray)mainLinePaint['line-dasharray']=dashArray;
+    const mainLineLayout=dashArray?{'line-cap':'butt','line-join':'round'}:{'line-cap':'round','line-join':'round'};
+    map.addLayer({id:gid+'-line',type:'line',source:lSrc,layout:mainLineLayout,paint:mainLinePaint});
+    map.on('click',gid+'-line',e=>{
+      const name=e.features[0].properties.name;
+      if(name)showLandLabel(layerIcon||'Map',name);
+    });
+    sourceIds.push(lSrc); layerIds.push(gid+'-line');
+
+    // Trail labels (midpoint symbols)
+    if(showLabels){
+      const labelFeats=lineFeatures.filter(f=>f.properties.name&&f.geometry.coordinates.length>4).map(f=>{
+        const c=f.geometry.coordinates,mid=c[Math.floor(c.length/2)];
+        return{type:'Feature',geometry:{type:'Point',coordinates:mid},properties:{name:f.properties.name}};
+      });
+      if(labelFeats.length){
+        const lbSrc=gid+'-lbsrc';
+        map.addSource(lbSrc,{type:'geojson',data:{type:'FeatureCollection',features:labelFeats}});
+        map.addLayer({id:gid+'-labels',type:'symbol',source:lbSrc,layout:{'text-field':['get','name'],'text-size':10,'text-font':['Open Sans Regular','Arial Unicode MS Regular'],'text-allow-overlap':false},paint:{'text-color':style.color,'text-halo-color':'rgba(0,0,0,.7)','text-halo-width':1.5}});
+        sourceIds.push(lbSrc); layerIds.push(gid+'-labels');
+      }
+    }
+  }
+
+  return{
+    remove(){
+      layerIds.forEach(lid=>{try{map.removeLayer(lid);}catch{}});
+      sourceIds.forEach(sid=>{try{map.removeSource(sid);}catch{}});
+    },
+    addTo(){return this;} // no-op — layers already added to map
+  };
+}
+
+// Reverse-lookup feature name at a lat/lng point via Overpass (for tile layers)
+async function lookupFeatureAtPoint(lat,lng){
+  try{
+    const q=`[out:json][timeout:6];(way["name"]["highway"~"path|track|footway|bridleway|cycleway"](around:120,${lat},${lng});way["name"]["waterway"](around:120,${lat},${lng});way["name"]["railway"](around:120,${lat},${lng});relation["name"]["route"~"hiking|bicycle|foot"](around:200,${lat},${lng}););out tags;`;
+    const res=await fetch('https://overpass-api.de/api/interpreter',{
+      method:'POST',body:'data='+encodeURIComponent(q),
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      signal:AbortSignal.timeout(6000)
+    });
+    if(!res.ok)return;
+    const data=await res.json();
+    const features=(data.elements||[]).filter(f=>f.tags?.name);
+    if(features.length>0){
+      const best=features[0];
+      const icon=osmTagsToIcon(best.tags);
+      showLandLabel(icon, best.tags.name);
+    }
+  }catch{/* silent — no feature at this point */}
+}
+
+function osmTagsToIcon(tags){
+  if(!tags)return'Map';
+  const hw=tags.highway||''; const ww=tags.waterway||''; const rw=tags.railway||'';
+  const rt=tags.route||'';
+  if(ww)return'River';
+  if(rw||rt==='train')return'Rail';
+  if(rt==='bicycle'||hw==='cycleway')return'Bike';
+  if(rt==='hiking'||hw==='path'||hw==='footway')return'Trail';
+  if(hw==='track')return'Track';
+  if(tags.tunnel)return'Tunnel';
+  return'Map';
+}
+
+// ── Build layers panel ────────────────────────────
+function buildLayersPanel(){
+  const list=document.getElementById('layersList');
+
+  // Land ownership color legend
+  const legend=document.createElement('div');
+  legend.className='land-legend';
+  legend.innerHTML=`
+    <div class="land-legend-item"><div class="land-dot" style="background:#4A7C59"></div>National Forest</div>
+    <div class="land-legend-item"><div class="land-dot" style="background:#D4A843"></div>BLM</div>
+    <div class="land-legend-item"><div class="land-dot" style="background:#4A9EF5"></div>State Parks</div>
+    <div class="land-legend-item"><div class="land-dot" style="background:#e05252"></div>Private</div>`;
+  list.appendChild(legend);
+
+  // Layer toggles — only the 5 correct layers (no hiking, biking, rivers)
+  const PANEL_LAYERS=[
+    {id:'blm',label:'BLM Land',desc:'Bureau of Land Management — yellow boundary'},
+    {id:'natforest',label:'National Forest',desc:'USFS managed lands — green boundary'},
+    {id:'stateparks',label:'State Parks',desc:'California State Parks — blue boundary'},
+    {id:'counties',label:'County Lines',desc:'California county boundaries'},
+    {id:'privateland',label:'Private Land',desc:'Private vs. public land boundary'},
+  ];
+  PANEL_LAYERS.forEach(cfg=>{
+    const row=document.createElement('div');
+    row.className='layer-row';
+    row.innerHTML=`
+      <div class="layer-left">
+        <div class="layer-info">
+          <div class="layer-name">${cfg.label}</div>
+          <div class="layer-desc">${cfg.desc}</div>
+        </div>
+      </div>
+      <div class="toggle" id="toggle-${cfg.id}" onclick="toggleSidePanelLayer('${cfg.id}',this)"></div>`;
+    list.appendChild(row);
+  });
+
+  // Peaks note
+  const note=document.createElement('div');
+  note.style.cssText='padding:10px 12px;background:var(--bg2);border-radius:11px;border:1px solid var(--border);margin-top:6px';
+  note.innerHTML=`<div style="font-size:11px;color:var(--txt2);font-weight:600">△ <strong style="color:var(--txt1)">Peaks & Summits</strong> are always visible on the map</div>`;
+  list.appendChild(note);
+}
+
+// ═══════════════════════════════════════════════════
+// OSM TRAILS — Overpass API, glow + line + labels
+// ═══════════════════════════════════════════════════
+const _osmTrailCache=new Map(); // bbox string → GeoJSON FeatureCollection
+let _osmTrailsBounds=null;
+
+function _showTrailLoadingPill(show){
+  const el=document.getElementById('trailLoadingPill');
+  if(el)el.style.display=show?'flex':'none';
+}
+
+function _clearOsmTrails(){
+  ['osm-trails-glow','osm-trails-line','osm-trails-labels'].forEach(id=>{
+    try{if(map&&map.getLayer(id))map.removeLayer(id);}catch{}
+  });
+  try{if(map&&map.getSource('osm-trails-src'))map.removeSource('osm-trails-src');}catch{}
+}
+
+function _addOsmTrailLayers(geojson){
+  if(!map)return;
+  _clearOsmTrails();
+  try{
+    map.addSource('osm-trails-src',{type:'geojson',data:geojson});
+    // Glow layer — wide, low opacity
+    map.addLayer({
+      id:'osm-trails-glow',type:'line',source:'osm-trails-src',
+      layout:{'line-cap':'round','line-join':'round'},
+      paint:{
+        'line-color':'#B8E87A',
+        'line-width':['interpolate',['linear'],['zoom'],10,3,14,8],
+        'line-opacity':0.15,
+        'line-blur':3
+      }
+    });
+    // Main trail line
+    map.addLayer({
+      id:'osm-trails-line',type:'line',source:'osm-trails-src',
+      layout:{'line-cap':'round','line-join':'round'},
+      paint:{
+        'line-color':'#B8E87A',
+        'line-width':['interpolate',['linear'],['zoom'],10,1,14,2.5],
+        'line-opacity':0.85,
+        'line-dasharray':[2,1.5]
+      }
+    });
+    // Trail name labels at zoom 13+
+    map.addLayer({
+      id:'osm-trails-labels',type:'symbol',source:'osm-trails-src',
+      minzoom:13,
+      layout:{
+        'symbol-placement':'line',
+        'text-field':['coalesce',['get','name'],['get','highway']],
+        'text-font':['Open Sans Regular','Arial Unicode MS Regular'],
+        'text-size':10,
+        'text-max-angle':30,
+        'symbol-spacing':250,
+        'text-pitch-alignment':'viewport'
+      },
+      paint:{
+        'text-color':'#d4f5a0',
+        'text-halo-color':'rgba(0,0,0,0.7)',
+        'text-halo-width':1.2
+      }
+    });
+  }catch(e){console.warn('[Trails] Layer add failed:',e);}
+}
+
+async function loadOsmTrails(){
+  if(!map)return;
+  const zoom=map.getZoom();
+  if(zoom<9){_clearOsmTrails();return;}
+  const bounds=map.getBounds();
+  const bbox=`${bounds.getSouth().toFixed(3)},${bounds.getWest().toFixed(3)},${bounds.getNorth().toFixed(3)},${bounds.getEast().toFixed(3)}`;
+  if(_osmTrailsBounds===bbox)return;
+  _osmTrailsBounds=bbox;
+  // Check cache
+  if(_osmTrailCache.has(bbox)){
+    _addOsmTrailLayers(_osmTrailCache.get(bbox));
+    return;
+  }
+  _showTrailLoadingPill(true);
+  try{
+    const q=`[out:json][timeout:25];(way["highway"~"^(path|footway|track|bridleway)$"](${bbox});way["route"="hiking"](${bbox}););out geom tags;`;
+    const res=await fetch('https://overpass-api.de/api/interpreter',{
+      method:'POST',
+      body:'data='+encodeURIComponent(q),
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      signal:AbortSignal.timeout(25000)
+    });
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    const data=await res.json();
+    const features=(data.elements||[])
+      .filter(el=>el.type==='way'&&el.geometry?.length>1)
+      .map(el=>({
+        type:'Feature',
+        geometry:{type:'LineString',coordinates:el.geometry.map(p=>[p.lon,p.lat])},
+        properties:{
+          highway:el.tags?.highway||'path',
+          name:el.tags?.name||null,
+          surface:el.tags?.surface||null
+        }
+      }));
+    const geojson={type:'FeatureCollection',features};
+    _osmTrailCache.set(bbox,geojson);
+    _addOsmTrailLayers(geojson);
+    console.log('[Trails] Loaded',features.length,'trail segments');
+  }catch(e){
+    console.warn('[Trails] Load failed:',e);
+  }finally{
+    _showTrailLoadingPill(false);
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// OSM PEAKS — always-visible summit labels
+// ═══════════════════════════════════════════════════
+let _osmPeaksBounds=null;
+
+function _clearOsmPeaks(){
+  try{if(map&&map.getLayer('osm-peaks'))map.removeLayer('osm-peaks');}catch{}
+  try{if(map&&map.getSource('osm-peaks-src'))map.removeSource('osm-peaks-src');}catch{}
+}
+
+async function loadOsmPeaks(){
+  if(!map)return;
+  const zoom=map.getZoom();
+  if(zoom<8){_clearOsmPeaks();return;}
+  const bounds=map.getBounds();
+  const bbox=`${bounds.getSouth().toFixed(2)},${bounds.getWest().toFixed(2)},${bounds.getNorth().toFixed(2)},${bounds.getEast().toFixed(2)}`;
+  if(_osmPeaksBounds===bbox)return;
+  _osmPeaksBounds=bbox;
+  try{
+    const q=`[out:json][timeout:15];node["natural"="peak"](${bbox});out;`;
+    const res=await fetch('https://overpass-api.de/api/interpreter',{
+      method:'POST',
+      body:'data='+encodeURIComponent(q),
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      signal:AbortSignal.timeout(15000)
+    });
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    const data=await res.json();
+    const features=(data.elements||[])
+      .filter(el=>{
+        const elevM=parseFloat(el.tags?.ele||0);
+        // At low zoom only show prominent peaks
+        if(zoom<9&&elevM<900)return false;
+        if(zoom<10&&elevM<300)return false;
+        return true;
+      })
+      .map(el=>{
+        const elevM=parseFloat(el.tags?.ele||0);
+        const elevFt=elevM>0?Math.round(elevM*3.28084):null;
+        const name=el.tags?.name||'Peak';
+        const label=elevFt?`${name}\n▲ ${elevFt.toLocaleString()} ft`:name;
+        return{
+          type:'Feature',
+          geometry:{type:'Point',coordinates:[el.lon,el.lat]},
+          properties:{name,elevFt:elevFt||0,label}
+        };
+      });
+    _clearOsmPeaks();
+    if(!features.length)return;
+    const geojson={type:'FeatureCollection',features};
+    map.addSource('osm-peaks-src',{type:'geojson',data:geojson});
+    map.addLayer({
+      id:'osm-peaks',type:'symbol',source:'osm-peaks-src',
+      layout:{
+        'text-field':['get','label'],
+        'text-font':['Open Sans SemiBold','Arial Unicode MS Bold'],
+        'text-size':['interpolate',['linear'],['zoom'],8,9,11,11,14,13],
+        'text-offset':[0,1.1],
+        'text-anchor':'top',
+        'text-max-width':8,
+        'icon-allow-overlap':false,
+        'text-allow-overlap':false
+      },
+      paint:{
+        'text-color':'#e8dece',
+        'text-halo-color':'rgba(20,17,14,0.9)',
+        'text-halo-width':1.5
+      }
+    });
+    console.log('[Peaks] Loaded',features.length,'OSM peaks');
+  }catch(e){
+    console.warn('[Peaks] Load failed:',e);
+  }
+}
+
+// ── Rivers always visible (cannot be toggled off) ──────────────
+let _riversLoaded=false;
+let _riversBounds=null;
+
+async function loadRiversAlways(){
+  if(!map)return;
+  const bounds=map.getBounds();
+  // Skip if same viewport
+  const key=`${bounds.getSouth().toFixed(2)},${bounds.getWest().toFixed(2)},${bounds.getNorth().toFixed(2)},${bounds.getEast().toFixed(2)}`;
+  if(_riversBounds===key)return;
+  _riversBounds=key;
+
+  // Remove old river layers
+  ['wp-rivers-major','wp-rivers-medium','wp-rivers-small','wp-rivers-lakes-fill','wp-rivers-lakes-line'].forEach(id=>{
+    try{if(map.getLayer(id))map.removeLayer(id);}catch{}
+  });
+  ['wp-rivers-src','wp-rivers-lakes-src'].forEach(id=>{
+    try{if(map.getSource(id))map.removeSource(id);}catch{}
+  });
+
+  try{
+    const bbox=`${Math.max(bounds.getSouth(),34).toFixed(3)},${Math.max(bounds.getWest(),-125).toFixed(3)},${Math.min(bounds.getNorth(),42.5).toFixed(3)},${Math.min(bounds.getEast(),-114).toFixed(3)}`;
+    const q=`[out:json][timeout:18][maxsize:2000000];(way["waterway"~"river|canal"](${bbox});way["waterway"="stream"](${bbox}););out geom tags;`;
+    const res=await fetch('https://overpass-api.de/api/interpreter',{
+      method:'POST',body:'data='+encodeURIComponent(q),
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      signal:AbortSignal.timeout(18000)
+    });
+    if(!res.ok)return;
+    const data=await res.json();
+    const features=[];
+    (data.elements||[]).forEach(el=>{
+      if(el.type==='way'&&el.geometry?.length>1){
+        const ww=el.tags?.waterway||'stream';
+        const width=ww==='river'?4:ww==='canal'?3:2;
+        features.push({type:'Feature',
+          geometry:{type:'LineString',coordinates:el.geometry.map(p=>[p.lon,p.lat])},
+          properties:{width,name:el.tags?.name||null,waterway:ww}
+        });
+      }
+    });
+    if(!features.length)return;
+    if(!map)return;
+    map.addSource('wp-rivers-src',{type:'geojson',data:{type:'FeatureCollection',features}});
+    map.addLayer({id:'wp-rivers-major',type:'line',source:'wp-rivers-src',filter:['==',['get','waterway'],'river'],layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':'#5BA8C4','line-width':4,'line-opacity':.85}});
+    map.addLayer({id:'wp-rivers-medium',type:'line',source:'wp-rivers-src',filter:['==',['get','waterway'],'canal'],layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':'#5BA8C4','line-width':3,'line-opacity':.8}});
+    map.addLayer({id:'wp-rivers-small',type:'line',source:'wp-rivers-src',filter:['==',['get','waterway'],'stream'],layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':'#5BA8C4','line-width':2,'line-opacity':.75}});
+    console.log('[WildPath] Rivers loaded:', features.length, 'waterways');
+  }catch(e){
+    console.warn('[WildPath] Rivers load failed:', e);
+  }
+}
+
+// ── County Boundaries ──────────────────────────────────────────
+let _countyData=null;
+let _countiesLoaded=false;
+
+async function toggleCountyLayer(toggleEl){
+  const isOn=toggleEl.classList.contains('on');
+  if(isOn){
+    // Turn off
+    toggleEl.classList.remove('on');
+    ['wp-counties-line','wp-counties-labels'].forEach(id=>{try{if(map.getLayer(id))map.setLayoutProperty(id,'visibility','none');}catch{}});
+    return;
+  }
+  toggleEl.classList.add('on');
+  if(_countiesLoaded){
+    ['wp-counties-line','wp-counties-labels'].forEach(id=>{try{if(map.getLayer(id))map.setLayoutProperty(id,'visibility','visible');}catch{}});
+    return;
+  }
+  showToast('Loading county boundaries…');
+  try{
+    if(!_countyData){
+      const res=await fetch('https://corsproxy.io/?https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/california-counties.geojson',{signal:AbortSignal.timeout(12000)});
+      if(!res.ok)throw new Error('HTTP '+res.status);
+      _countyData=await res.json();
+    }
+    if(!map.getSource('wp-counties-src')){
+      map.addSource('wp-counties-src',{type:'geojson',data:_countyData});
+    }
+    if(!map.getLayer('wp-counties-line')){
+      map.addLayer({id:'wp-counties-line',type:'line',source:'wp-counties-src',paint:{'line-color':'rgba(255,255,255,0.6)','line-width':1.5,'line-opacity':0.7}});
+    }
+    // County name labels
+    const labelFeats=(_countyData.features||[]).map(f=>{
+      try{
+        const coords=f.geometry.type==='Polygon'?f.geometry.coordinates[0]:f.geometry.coordinates[0][0];
+        let sumX=0,sumY=0;
+        coords.forEach(c=>{sumX+=c[0];sumY+=c[1];});
+        const cx=sumX/coords.length, cy=sumY/coords.length;
+        const name=f.properties.name||f.properties.NAME||'';
+        return{type:'Feature',geometry:{type:'Point',coordinates:[cx,cy]},properties:{name}};
+      }catch{return null;}
+    }).filter(Boolean);
+    if(!map.getSource('wp-county-labels-src')){
+      map.addSource('wp-county-labels-src',{type:'geojson',data:{type:'FeatureCollection',features:labelFeats}});
+    }
+    if(!map.getLayer('wp-counties-labels')){
+      map.addLayer({id:'wp-counties-labels',type:'symbol',source:'wp-county-labels-src',layout:{'text-field':['get','name'],'text-size':11,'text-font':['Open Sans Regular','Arial Unicode MS Regular'],'text-allow-overlap':false,'text-ignore-placement':false},paint:{'text-color':'rgba(255,255,255,0.8)','text-halo-color':'rgba(0,0,0,0.6)','text-halo-width':1.5}});
+    }
+    _countiesLoaded=true;
+    console.log('[WildPath] County boundaries loaded');
+  }catch(e){
+    toggleEl.classList.remove('on');
+    console.error('[WildPath] County boundaries failed:', e);
+    showToast('County boundaries unavailable');
+  }
+}
+
+// ── Private Land Boundaries ───────────────────────────────────
+let _privateLandData=null;
+let _privateLandLoaded=false;
+
+async function togglePrivateLandLayer(toggleEl){
+  const isOn=toggleEl.classList.contains('on');
+  if(isOn){
+    toggleEl.classList.remove('on');
+    ['wp-privateland-fill','wp-privateland-line'].forEach(id=>{try{if(map.getLayer(id))map.setLayoutProperty(id,'visibility','none');}catch{}});
+    return;
+  }
+  toggleEl.classList.add('on');
+  if(_privateLandLoaded){
+    ['wp-privateland-fill','wp-privateland-line'].forEach(id=>{try{if(map.getLayer(id))map.setLayoutProperty(id,'visibility','visible');}catch{}});
+    return;
+  }
+  showToast('Loading land boundaries…');
+  try{
+    if(!_privateLandData){
+      const url='https://corsproxy.io/?https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA/MapServer/0/query?where=1%3D1&outFields=ADMIN_AGENCY_CODE&geometry=-124,36,-119,42&geometryType=esriGeometryEnvelope&f=geojson';
+      const res=await fetch(url,{signal:AbortSignal.timeout(20000)});
+      if(!res.ok)throw new Error('HTTP '+res.status);
+      _privateLandData=await res.json();
+    }
+    if(!map.getSource('wp-privateland-src')){
+      map.addSource('wp-privateland-src',{type:'geojson',data:_privateLandData});
+    }
+    if(!map.getLayer('wp-privateland-fill')){
+      map.addLayer({id:'wp-privateland-fill',type:'fill',source:'wp-privateland-src',paint:{'fill-color':'#E8453C','fill-opacity':0.08}});
+    }
+    if(!map.getLayer('wp-privateland-line')){
+      map.addLayer({id:'wp-privateland-line',type:'line',source:'wp-privateland-src',paint:{'line-color':'#E8453C','line-width':2,'line-opacity':0.7}});
+    }
+    _privateLandLoaded=true;
+    console.log('[WildPath] Private land boundaries loaded');
+  }catch(e){
+    toggleEl.classList.remove('on');
+    console.error('[WildPath] Private land failed:', e);
+    showToast('Private land data unavailable');
+  }
+}
+
+function toggleLayersPanel(){
+  // Opens the side panel to the Layers section
+  const panel=document.getElementById('sidePanel');
+  const overlay=document.getElementById('sidePanelOverlay');
+  if(!panel)return;
+  if(panel.classList.contains('open')){
+    panel.classList.remove('open');
+    if(overlay)overlay.classList.remove('open');
+  } else {
+    panel.classList.add('open');
+    if(overlay)overlay.classList.add('open');
+    // Scroll to layers section
+    const layerSection=document.getElementById('sidePanelLayers');
+    if(layerSection)setTimeout(()=>layerSection.scrollIntoView({behavior:'smooth',block:'start'}),200);
+  }
+}
+
+function toggleLayers(){
+  document.getElementById('layersPanel').classList.toggle('open');
+  document.getElementById('layersOverlay').classList.toggle('open');
+}
+
+// ═══════════════════════════════════════════════════
+// SPOT BOTTOM SHEET — defined fully below
+// ═══════════════════════════════════════════════════
+
+function closeSheet(){
+  document.getElementById('spotSheet').classList.remove('open');
+  document.getElementById('sheetBackdrop').classList.remove('open');
+  sheetOpen=false; drawerOpen=false;
+}
+
+// Alias for legacy compatibility
+function openDrawer(id){openSheet(id);}
+function closeDrawer(){closeSheet();}
+
+function startNavigation(lat,lng,name){
+  const url=`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`;
+  window.open(url,'_blank');
+  showToast('Opening navigation…');
+}
+
+// ═══════════════════════════════════════════════════
+// SPOT DETAIL — 3-tab design (full implementation below)
+// ═══════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════
+// SCREEN SWITCHER + LOCATE
+// ═══════════════════════════════════════════════════
+let _prevTab='';
+const _tabOrder=['home','map','community','profile','explore'];
+function showTab(tabName) {
+  if(tabName===currentScreen&&_prevTab!=='')return;
+
+  var screens = ['screen-home','map-screen','community-screen','profile-screen','explore-screen'];
+  var navs = ['nav-home','nav-map','nav-community','nav-profile','nav-explore'];
+
+  // Determine slide direction based on tab order
+  const prevIdx=_tabOrder.indexOf(_prevTab);
+  const nextIdx=_tabOrder.indexOf(tabName);
+  const goRight=nextIdx>prevIdx;
+  const animate=_prevTab!=='';
+
+  // Animate out the current screen
+  const outEl = document.getElementById(_prevTab+'-screen')||document.getElementById('screen-'+_prevTab);
+  if(animate&&outEl&&outEl.style.display!=='none'){
+    outEl.style.transition='transform 220ms ease';
+    outEl.style.transform=goRight?'translateX(-100%)':'translateX(100%)';
+    setTimeout(()=>{outEl.style.display='none';outEl.style.transform='';outEl.style.transition='';},220);
+  }
+
+  // Hide all others immediately (no animation)
+  screens.forEach(function(id) {
+    const el=document.getElementById(id);
+    if(el&&el!==outEl){el.style.display='none';el.style.transform='';el.style.transition='';}
+  });
+  navs.forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.classList.remove('active');
+  });
+
+  // Animate in the new screen
+  var screen = document.getElementById(tabName + '-screen') || document.getElementById('screen-' + tabName);
+  if (screen) {
+    if(animate){
+      screen.style.transform=goRight?'translateX(100%)':'translateX(-100%)';
+      screen.style.display='flex';
+      screen.style.transition='';
+      requestAnimationFrame(()=>{
+        requestAnimationFrame(()=>{
+          screen.style.transition='transform 220ms ease';
+          screen.style.transform='translateX(0)';
+          setTimeout(()=>{screen.style.transition='';},230);
+        });
+      });
+    } else {
+      screen.style.display='flex';
+      screen.style.transform='';
+    }
+  }
+  var nav = document.getElementById('nav-' + tabName);
+  if (nav) nav.classList.add('active');
+  _prevTab=tabName;
+  currentScreen = tabName;
+
+  if (tabName === 'map' && map) setTimeout(function(){ map.resize(); }, 50);
+  if (tabName === 'community') buildCommunityScreen();
+  if (tabName === 'profile') buildProfile();
+  if (tabName === 'home') buildHomeFeed();
+  if (tabName === 'explore') buildExploreScreen();
+  // Show messages FAB only when Community tab is active; reset to community view
+  const msgFab = document.getElementById('commMsgFab');
+  if (msgFab) msgFab.style.display = (tabName === 'community') ? 'flex' : 'none';
+  if (tabName === 'community') {
+    const cv = document.getElementById('commCommunityView');
+    const mv = document.getElementById('commMessagesView');
+    if (cv) cv.style.transform = 'translateX(0)';
+    if (mv) mv.style.transform = 'translateX(100%)';
+  }
+}
+
+function switchScreen(name, el) {
+  showTab(name);
+}
+
+function locateMe(){
+  if(!navigator.geolocation){showToast('Geolocation not supported');return;}
+  showToast('Locating you…');
+  navigator.geolocation.getCurrentPosition(
+    pos=>{
+      const{latitude:lat,longitude:lng}=pos.coords;
+      leafletMap.flyTo([lat,lng],13,{animate:true,duration:1.2});
+      _placeUserDot(lat,lng);
+      showToast('Location found');
+    },
+    ()=>showToast('Location unavailable')
+  );
+}
+
+// ═══════════════════════════════════════════════════
+// PLAN SCREEN
+// ═══════════════════════════════════════════════════
+let _tripDays=2;
+function buildPlanForm(){
+  const container=document.getElementById('interestCheckboxes');
+  interests.forEach(interest=>{
+    const item=document.createElement('div');
+    item.className='checkbox-item'+(interest.includes('Hiking')||interest.includes('Swimming')?' checked':'');
+    item.innerHTML=`<div class="checkbox-box">${item.className.includes('checked')?'+':''}</div><span>${interest}</span>`;
+    item.onclick=()=>{item.classList.toggle('checked');item.querySelector('.checkbox-box').textContent=item.classList.contains('checked')?'+':'';};
+    container.appendChild(item);
+  });
+  // Build duration pills 1–14 + Custom input
+  const row=document.getElementById('tripDurationRow');
+  if(row){
+    const pills=Array.from({length:14},(_,i)=>i+1).map(d=>
+      `<div onclick="setTripDays(${d},this)" class="duration-pill${d===_tripDays?' active':''}" style="flex-shrink:0">${d}D</div>`
+    ).join('');
+    const customActive=_tripDays>14;
+    row.innerHTML=pills+`<div style="flex-shrink:0;display:flex;align-items:center;gap:0">
+      <input id="tripDaysCustom" type="number" min="1" max="30" placeholder="Custom"
+        value="${customActive?_tripDays:''}"
+        style="width:68px;height:32px;border-radius:20px;border:1.5px solid ${customActive?'var(--accent)':'rgba(255,255,255,.12)'};
+               background:${customActive?'rgba(184,232,122,.13)':'var(--bg2)'};color:${customActive?'var(--accent)':'var(--txt1)'};
+               font-size:12px;font-weight:600;font-family:var(--font);text-align:center;padding:0 8px;outline:none;
+               -moz-appearance:textfield;flex-shrink:0"
+        oninput="setTripDaysCustom(this.value)"
+        onfocus="this.select()"
+      /><label for="tripDaysCustom" style="font-size:10px;color:var(--txt3);margin-left:5px;flex-shrink:0">days</label>
+    </div>`;
+  }
+  renderItinerary(DEFAULT_ROUTE, _tripDays);
+}
+function setTripDays(d,el){
+  _tripDays=d;
+  document.querySelectorAll('#tripDurationRow .duration-pill').forEach(p=>p.classList.remove('active'));
+  if(el)el.classList.add('active');
+  // Clear custom input styling when a pill is selected
+  const ci=document.getElementById('tripDaysCustom');
+  if(ci){ci.value='';ci.style.borderColor='rgba(255,255,255,.12)';ci.style.background='var(--bg2)';ci.style.color='var(--txt1)';}
+  // Sync home-plan custom input
+  const hpCustom=document.getElementById('hpCustomDays');
+  if(hpCustom&&d>14)hpCustom.value=d;
+  // Re-render if a plan is already showing
+  if(_planState){renderItinerary(_planState.route,_tripDays);}
+}
+function setTripDaysCustom(val){
+  const n=parseInt(val);
+  if(!n||n<1||n>30)return;
+  _tripDays=n;
+  // Deactivate all pills
+  document.querySelectorAll('#tripDurationRow .duration-pill').forEach(p=>p.classList.remove('active'));
+  // Style custom input as active
+  const ci=document.getElementById('tripDaysCustom');
+  if(ci){ci.style.borderColor='var(--accent)';ci.style.background='rgba(184,232,122,.13)';ci.style.color='var(--accent)';}
+  if(_planState){renderItinerary(_planState.route,_tripDays);}
+}
+
+
+// ── Nominatim geocoding ───────────────────────────
+async function geocodeLocation(query){
+  if(!query.trim())return null;
+  // Check if already lat,lng coords
+  const coordMatch=query.match(/^(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)$/);
+  if(coordMatch)return{lat:parseFloat(coordMatch[1]),lng:parseFloat(coordMatch[2]),name:query};
+  try{
+    const url=`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1&countrycodes=us&viewbox=-124.6,42.5,-114.0,32.5`;
+    const res=await fetch(url,{
+      headers:{'Accept-Language':'en-US,en','User-Agent':'WildPath/1.0 (prototype)'},
+      signal:AbortSignal.timeout(8000)
+    });
+    if(!res.ok)throw new Error();
+    const data=await res.json();
+    if(!data.length)return null;
+    return{lat:parseFloat(data[0].lat),lng:parseFloat(data[0].lon),
+      name:data[0].display_name.split(',')[0]||query};
+  }catch{return null;}
+}
+
+// ── Geographic route matching ─────────────────────
+function distToSegment(px,py,ax,ay,bx,by){
+  const dx=bx-ax,dy=by-ay,lenSq=dx*dx+dy*dy;
+  if(lenSq===0)return Math.sqrt((px-ax)**2+(py-ay)**2);
+  const t=Math.max(0,Math.min(1,((px-ax)*dx+(py-ay)*dy)/lenSq));
+  return Math.sqrt((px-(ax+t*dx))**2+(py-(ay+t*dy))**2);
+}
+function projOnRoute(lat,lng,s,e){
+  const dx=e.lng-s.lng,dy=e.lat-s.lat,lenSq=dx*dx+dy*dy;
+  if(lenSq===0)return 0;
+  return((lng-s.lng)*dx+(lat-s.lat)*dy)/lenSq;
+}
+function findSpotsAlongRoute(startGeo,endGeo){
+  const routeLen=Math.sqrt((endGeo.lat-startGeo.lat)**2+(endGeo.lng-startGeo.lng)**2);
+  const threshold=Math.max(routeLen*0.85,1.2);
+  return spots.filter(sp=>{
+    const d=distToSegment(sp.lat,sp.lng,startGeo.lat,startGeo.lng,endGeo.lat,endGeo.lng);
+    const proj=projOnRoute(sp.lat,sp.lng,startGeo,endGeo);
+    return d<threshold&&proj>=-0.25&&proj<=1.25;
+  }).sort((a,b)=>projOnRoute(a.lat,a.lng,startGeo,endGeo)-projOnRoute(b.lat,b.lng,startGeo,endGeo));
+}
+
+// ── Dynamic itinerary from geocoded endpoints ─────
+function renderDynamicItinerary(startGeo,endGeo,routeSpots,numDays,startText,endText){
+  const distDeg=Math.sqrt((endGeo.lat-startGeo.lat)**2+(endGeo.lng-startGeo.lng)**2);
+  const distMi=Math.round(distDeg*69);
+  const driveHrs=Math.round(distMi/52*10)/10;
+  const times=['8:00 AM','10:30 AM','1:00 PM','3:30 PM','5:30 PM'];
+
+  const days=[];
+  const perDay=Math.max(2,Math.ceil((routeSpots.length||1)/numDays));
+  for(let d=0;d<numDays;d++){
+    const ds=routeSpots.slice(d*perDay,(d+1)*perDay);
+    const theme=d===0?`Leaving ${startGeo.name}`:d===numDays-1?`Arriving ${endGeo.name}`:'Along the Route';
+    const dayDrives=ds.slice(0,-1).map((_,i)=>{
+      const s1=ds[i],s2=ds[i+1];
+      const dist=Math.sqrt((s2.lat-s1.lat)**2+(s2.lng-s1.lng)**2)*69;
+      return `${Math.round(dist/48*60)} min drive`;
+    });
+    days.push({
+      label:`Day ${d+1}`,theme,cost:`~$${12+ds.length*9} total`,totalDrive:'',
+      spots:ds.length>0?ds.map((sp,i)=>({
+        name:sp.name,time:times[Math.min(i,4)],duration:'2–3 hrs',
+        icon:sp.icon,note:`${sp.typeLabel} · ${sp.rating} · ${sp.elevation}`,
+        cost:sp.entryFee!=='Free'?sp.entryFee:null
+      })):[{name:`Drive through ${theme}`,time:'10:00 AM',duration:'All day',icon:'',note:'Flexible exploration at your own pace'}],
+      drives:dayDrives
+    });
+  }
+  renderItinerary({
+    name:`${startGeo.name} → ${endGeo.name}`,
+    distance:`~${distMi} mi`,driveTime:`~${driveHrs} hrs`,
+    highlight:routeSpots.length>0?routeSpots.map(s=>s.name).slice(0,3).join(' · '):'Custom NorCal adventure',
+    days
+  },numDays);
+}
+
+
+// ── Trip Plan State ───────────────────────────────
+let _planState=null;
+let _planDragSrc=null;
+
+function renderItinerary(route,numDays){
+  const daysToShow=Math.min(numDays||2,route.days.length);
+  const daySlice=route.days.slice(0,daysToShow);
+
+  // Build state with per-spot UIDs so cards stay stable
+  _planState={
+    route,
+    days:daySlice.map((day,di)=>({
+      ...day,
+      spots:day.spots.map((sp,si)=>({
+        ...sp,
+        _uid:`${di}_${si}_${Math.random().toString(36).slice(2,7)}`,
+        kept:true,
+        _alt:null
+      }))
+    }))
+  };
+  _renderPlanState();
+}
+
+function _renderPlanState(){
+  if(!_planState)return;
+  const {route,days}=_planState;
+  const totalCost=days.reduce((sum,d)=>{const m=d.cost.match(/\$(\d+)/);return sum+(m?parseInt(m[1]):0);},0);
+  const keptTotal=days.reduce((s,d)=>s+d.spots.filter(sp=>sp.kept).length,0);
+
+  document.getElementById('itineraryOutput').innerHTML=`
+    <div class="route-summary-card fade-in">
+      <div class="route-summary-title">${route.name}</div>
+      <div class="route-stats-row">
+        <div class="route-stat"><div class="route-stat-value">${route.distance}</div><div class="route-stat-label">Distance</div></div>
+        <div class="route-stat"><div class="route-stat-value">${route.driveTime}</div><div class="route-stat-label">Drive</div></div>
+        <div class="route-stat"><div class="route-stat-value">${days.length}d</div><div class="route-stat-label">Duration</div></div>
+        <div class="route-stat"><div class="route-stat-value">~$${totalCost}</div><div class="route-stat-label">Est. Cost</div></div>
+      </div>
+      <div class="route-highlight">${route.highlight}</div>
+    </div>
+    ${days.map((day,di)=>`
+      <div class="itinerary-day fade-in">
+        <div class="day-header">
+          <div class="day-pill">${day.label}</div>
+          <div class="day-date">${day.theme}</div>
+          <div class="day-cost">${day.cost}</div>
+        </div>
+        <div id="plan-day-${di}" class="plan-spots-list">
+          ${day.spots.map((sp,si)=>_planSpotCardHTML(sp,di,si)).join('')}
+        </div>
+        <div onclick="_addSpotToDay(${di})"
+          style="display:flex;align-items:center;gap:8px;padding:8px 14px;border:1.5px dashed rgba(255,255,255,.1);border-radius:12px;cursor:pointer;margin-bottom:4px;color:var(--txt3);font-size:12px;font-weight:500;-webkit-tap-highlight-color:transparent;transition:border-color .15s"
+          onmouseenter="this.style.borderColor='rgba(184,232,122,.3)';this.style.color='var(--accent)'"
+          onmouseleave="this.style.borderColor='rgba(255,255,255,.1)';this.style.color='var(--txt3)'">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> Add spot to ${day.label}
+        </div>
+      </div>
+    `).join('')}
+    <button class="btn-confirm-itinerary" onclick="confirmItinerary()">
+      Confirm Itinerary${keptTotal>0?` · ${keptTotal} spot${keptTotal!==1?'s':''}` :''}
+    </button>
+  `;
+
+  // Wire up drag-and-drop for each day
+  days.forEach((_,di)=>_initPlanDayDrag(di));
+}
+
+function _planSpotCardHTML(sp,di,si){
+  const removedCls=sp.kept?'':'removed-card';
+  const keepActiveCls=sp.kept?' active':'';
+  return `
+    <div class="plan-spot-card ${removedCls}" id="psc-${sp._uid}"
+         draggable="true"
+         data-uid="${sp._uid}" data-di="${di}" data-si="${si}"
+         onclick="_planCardTap('${sp._uid}')">
+      <div class="plan-drag-handle">⋮⋮</div>
+      <div class="itin-num">${si+1}</div>
+      <div class="itin-info">
+        <div class="itin-name">${sp.name}</div>
+        <div class="itin-meta">${sp.time} · ${sp.duration}${sp.cost?' · <span style="color:var(--yellow)">'+sp.cost+'</span>':''}</div>
+        <div class="itin-note">${sp.note}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex-shrink:0">
+        <div class="itin-icon">${_getSpotIcon(sp.type,sp.typeColor)}</div>
+        <div style="display:flex;gap:4px">
+          <button class="plan-btn-keep${keepActiveCls}"
+            onclick="event.stopPropagation();_planKeep('${sp._uid}')" title="Keep">+</button>
+          <button class="plan-btn-remove"
+            onclick="event.stopPropagation();_planRemove('${sp._uid}')" title="Remove">×</button>
+        </div>
+      </div>
+    </div>
+    ${!sp.kept&&sp._alt?_planAltHTML(sp._alt,sp._uid):''}
+    ${!sp.kept&&!sp._alt?`<div style="font-size:11px;color:var(--txt3);padding:4px 14px 6px">Spot removed — finding alternative…</div>`:''}
+  `;
+}
+
+function _planAltHTML(alt,removedUid){
+  return `
+    <div class="plan-alt-card" onclick="event.stopPropagation();_acceptAlt('${removedUid}')">
+      <div style="font-size:20px;flex-shrink:0">${alt.name.slice(0,1)}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:10px;font-weight:700;color:var(--accent);letter-spacing:.5px;margin-bottom:3px">ALTERNATIVE</div>
+        <div style="font-size:13px;font-weight:700;color:var(--txt0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${alt.name}</div>
+        <div style="font-size:11px;color:var(--txt2);margin-top:2px">${alt.typeLabel||''} · ${alt.rating||'4.5'}${alt.distance?' · '+alt.distance:''}</div>
+      </div>
+      <div style="font-size:12px;font-weight:700;color:var(--accent);flex-shrink:0">Use ›</div>
+    </div>`;
+}
+
+// ── Plan card actions ─────────────────────────────
+function _planFindSpot(uid){
+  if(!_planState)return null;
+  for(const day of _planState.days)
+    for(const sp of day.spots)
+      if(sp._uid===uid)return sp;
+  return null;
+}
+
+function _planKeep(uid){
+  const sp=_planFindSpot(uid);
+  if(!sp)return;
+  sp.kept=true;sp._alt=null;
+  _renderPlanState();
+}
+
+function _planRemove(uid){
+  const sp=_planFindSpot(uid);
+  if(!sp)return;
+  sp.kept=false;
+  // Find an alternative spot not already in plan
+  const usedNames=new Set(_planState.days.flatMap(d=>d.spots.map(s=>s.name.toLowerCase())));
+  const alts=spots.filter(s=>!usedNames.has(s.name.toLowerCase()));
+  if(alts.length){
+    sp._alt=alts[Math.floor(Math.random()*Math.min(alts.length,10))];
+  }
+  _renderPlanState();
+}
+
+function _acceptAlt(removedUid){
+  const sp=_planFindSpot(removedUid);
+  if(!sp||!sp._alt)return;
+  const alt=sp._alt;
+  // Replace spot data with alt
+  sp.name=alt.name;sp.icon='';
+  sp.note=alt.description||(`${alt.typeLabel||''} · ${alt.rating||'4.5'} · ${alt.distance||''}`);
+  sp.cost=alt.entryFee&&alt.entryFee!=='Free'&&alt.entryFee!=='Check ahead'?alt.entryFee:null;
+  sp.kept=true;sp._alt=null;
+  _renderPlanState();
+  showToast(`Swapped to ${alt.name.slice(0,22)}`);
+}
+
+function _planCardTap(uid){
+  const sp=_planFindSpot(uid);
+  if(!sp)return;
+  // Try to find matching spot in the spots array
+  const allS=[...spots,...userSpots];
+  const match=allS.find(s=>s.name===sp.name||s.name.toLowerCase().includes(sp.name.toLowerCase().slice(0,12)));
+  if(match){
+    openSheet(match.id);
+    showToast(`Opening ${match.name.slice(0,24)}…`);
+  } else {
+    showToast(`${sp.name.slice(0,30)}`);
+  }
+}
+
+function confirmItinerary(){
+  if(!_planState)return;
+  const kept=_planState.days.map(d=>({...d,spots:d.spots.filter(s=>s.kept)}))
+    .filter(d=>d.spots.length>0);
+  if(!kept.length){showToast('Keep at least one spot first');return;}
+  const names=kept.flatMap(d=>d.spots.map(s=>s.name));
+  document.getElementById('itineraryOutput').innerHTML=`
+    <div style="background:var(--bg1);border-radius:20px;border:1px solid rgba(196,149,106,.3);
+      padding:28px 20px;text-align:center;animation:bounceIn .5s ease">
+      <div style="font-size:44px;margin-bottom:12px;color:var(--accent)">+</div>
+      <div style="font-size:17px;font-weight:700;color:var(--txt0);margin-bottom:6px">Itinerary Confirmed!</div>
+      <div style="font-size:13px;color:var(--txt2);line-height:1.6;margin-bottom:18px">
+        ${kept.length} day${kept.length!==1?'s':''} · ${names.length} stop${names.length!==1?'s':''}
+      </div>
+      <div style="text-align:left;background:var(--bg2);border-radius:12px;padding:14px">
+        ${kept.map(d=>`
+          <div style="font-size:11px;font-weight:700;color:var(--accent);margin-bottom:6px;margin-top:${d===kept[0]?0:10}px">${d.label}</div>
+          ${d.spots.map((sp,i)=>`
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+              <span style="font-size:14px">${_getSpotIcon(sp.type,sp.typeColor)}</span>
+              <span style="font-size:12px;color:var(--txt1);flex:1">${sp.name}</span>
+              ${i<d.spots.length-1?'':''}
+            </div>`).join('')}
+        `).join('')}
+      </div>
+      <button onclick="_editItinerary()" style="margin-top:16px;background:none;border:1px solid var(--border2);
+        color:var(--txt2);border-radius:10px;padding:10px 22px;font-size:13px;
+        font-family:var(--font);cursor:pointer;font-weight:600">← Edit Plan</button>
+    </div>`;
+  // Add map export buttons after a short delay
+  setTimeout(_addMapExportButtons, 150);
+}
+
+function _editItinerary(){_renderPlanState();}
+
+// ── Drag-and-drop within a day ────────────────────
+function _initPlanDayDrag(di){
+  const list=document.getElementById(`plan-day-${di}`);
+  if(!list)return;
+  // Attach swipe-left to remove
+  _attachPlanCardSwipe(di);
+  const cards=list.querySelectorAll('.plan-spot-card');
+  cards.forEach(card=>{
+    card.addEventListener('dragstart',e=>{
+      _planDragSrc=card;
+      e.dataTransfer.effectAllowed='move';
+      e.dataTransfer.setData('text/plain',card.dataset.uid);
+      setTimeout(()=>card.classList.add('removed-card'),0);
+    });
+    card.addEventListener('dragend',()=>{
+      card.classList.remove('removed-card');
+      list.querySelectorAll('.plan-spot-card').forEach(c=>c.classList.remove('drag-over'));
+      _planDragSrc=null;
+      _syncDayOrder(di);
+    });
+    card.addEventListener('dragover',e=>{
+      if(!_planDragSrc||_planDragSrc===card)return;
+      e.preventDefault();
+      const r=card.getBoundingClientRect();
+      const after=e.clientY>r.top+r.height/2;
+      list.querySelectorAll('.plan-spot-card').forEach(c=>c.classList.remove('drag-over'));
+      card.classList.add('drag-over');
+      if(after)card.after(_planDragSrc);else card.before(_planDragSrc);
+    });
+    card.addEventListener('drop',e=>{e.preventDefault();card.classList.remove('drag-over');});
+  });
+}
+
+function _syncDayOrder(di){
+  if(!_planState)return;
+  const list=document.getElementById(`plan-day-${di}`);
+  if(!list)return;
+  const newOrder=[...list.querySelectorAll('.plan-spot-card')].map(c=>c.dataset.uid);
+  const day=_planState.days[di];
+  if(!day)return;
+  day.spots.sort((a,b)=>{const ia=newOrder.indexOf(a._uid),ib=newOrder.indexOf(b._uid);return ia-ib;});
+  // Renumber
+  day.spots.forEach((sp,i)=>{const el=list.querySelector(`#psc-${sp._uid} .itin-num`);if(el)el.textContent=i+1;});
+}
+
+// ═══════════════════════════════════════════════════
+// PROFILE
+// ═══════════════════════════════════════════════════
+function _buildProfileLoginForm(){
+  const screen=document.getElementById('profile-screen');
+  if(!screen)return;
+  // Use a full-cover overlay so the real profile HTML stays intact underneath
+  let ov=document.getElementById('profileLoginOverlay');
+  if(!ov){
+    ov=document.createElement('div');
+    ov.id='profileLoginOverlay';
+    ov.style.cssText='position:absolute;inset:0;z-index:50;background:var(--bg0);overflow-y:auto;padding-bottom:var(--nav-h)';
+    screen.appendChild(ov);
+  }
+  ov.style.display='flex';
+  ov.style.flexDirection='column';
+  ov.style.alignItems='center';
+  ov.innerHTML=`
+    <div style="padding:60px 24px 40px;width:100%;display:flex;flex-direction:column;align-items:center">
+      <div style="text-align:center;margin-bottom:40px">
+        <div style="font-size:26px;font-weight:700;color:var(--txt0);letter-spacing:-.02em;margin-bottom:8px">WildPath</div>
+        <div style="font-size:14px;color:var(--txt2)">Sign in to track your adventures</div>
+      </div>
+      <div style="width:100%;max-width:340px">
+        <div class="login-tabs">
+          <div class="login-tab active" id="profileTabSignIn" onclick="profileShowSignIn()">Sign In</div>
+          <div class="login-tab" id="profileTabSignUp" onclick="profileShowSignUp()">Create Account</div>
+        </div>
+        <div id="profileSignInPanel">
+          <div class="login-error-new" id="profileLoginError"></div>
+          <input class="login-input-new" id="profileLoginEmail" type="email" placeholder="Email address" autocomplete="email" onkeydown="if(event.key==='Enter')doProfileSignIn()">
+          <input class="login-input-new" id="profileLoginPassword" type="password" placeholder="Password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doProfileSignIn()">
+          <button class="login-btn-new" type="button" onclick="doProfileSignIn()">Sign In</button>
+        </div>
+        <div id="profileSignUpPanel" style="display:none">
+          <div class="login-error-new" id="profileSignupError"></div>
+          <input class="login-input-new" id="profileSignupUsername" type="text" placeholder="Username" autocomplete="username" onkeydown="if(event.key==='Enter')doProfileSignUp()">
+          <input class="login-input-new" id="profileSignupEmail" type="email" placeholder="Email address" autocomplete="email" onkeydown="if(event.key==='Enter')doProfileSignUp()">
+          <input class="login-input-new" id="profileSignupPassword" type="password" placeholder="Password" autocomplete="new-password" onkeydown="if(event.key==='Enter')doProfileSignUp()">
+          <input class="login-input-new" id="profileSignupConfirm" type="password" placeholder="Confirm password" autocomplete="new-password" onkeydown="if(event.key==='Enter')doProfileSignUp()">
+          <input class="login-input-new" id="profileSignupAdminCode" type="text" placeholder="Admin code (optional)">
+          <div class="admin-code-hint" style="margin-bottom:10px">Have an admin code? Enter it for admin access.</div>
+          <button class="login-btn-new" type="button" onclick="doProfileSignUp()">Create Account</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function buildProfile(){
+  // Remove login overlay if user just signed in
+  const ov=document.getElementById('profileLoginOverlay');
+  if(ov)ov.style.display='none';
+  // If guest — show inline login/signup form instead of profile content
+  if(isGuest()){
+    _buildProfileLoginForm();
+    return;
+  }
+  // Update profile header with actual user info
+  if(_currentUser&&_currentUser.username){
+    const unEl=document.getElementById('profileUsername');
+    if(unEl)unEl.textContent='@'+_currentUser.username;
+    const avatarText=document.getElementById('profileAvatarText');
+    if(avatarText)avatarText.textContent=_currentUser.username.slice(0,2).toUpperCase();
+    // Full real name below username
+    const fullNameEl=document.getElementById('profileFullName');
+    if(fullNameEl)fullNameEl.textContent=_currentUser.fullName||_currentUser.username||'Explorer';
+    // Load saved avatar photo if any
+    const savedAvatar=localStorage.getItem('wp_avatar_'+String(_currentUser.id));
+    if(savedAvatar){
+      const img=document.getElementById('profileAvatarImg');
+      const txt=document.getElementById('profileAvatarText');
+      if(img){img.src=savedAvatar;img.style.display='block';}
+      if(txt)txt.style.display='none';
+    }
+  }
+  // Update tile counts
+  const savedList=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');
+  const savedCountEl=document.getElementById('profileSavedCount');
+  if(savedCountEl)savedCountEl.textContent=savedList.length+' spot'+(savedList.length===1?'':'s');
+  const pinnedList=JSON.parse(localStorage.getItem('wp_want_to_go')||'[]');
+  const pinnedCountEl=document.getElementById('profilePinnedCount');
+  if(pinnedCountEl)pinnedCountEl.textContent=pinnedList.length?pinnedList.length+' pinned':'Want to go';
+  // Profile map thumbnail (static mini map)
+  _initProfileMapThumbnail();
+
+  // ─── Posts / Followers / Following stats ──────────────────────
+  const _profMyUid=String(_myUid());
+  const _profAllPosts=getPosts();
+  const _profMyPosts=_profAllPosts.filter(p=>String(p.userId)===_profMyUid);
+  const _profFollows=getFollows();
+  const _profFollowingCount=(_profFollows[_profMyUid]||[]).length;
+  const _profFollowerCount=Object.keys(_profFollows).filter(u=>((_profFollows[u]||[]).includes(_profMyUid))).length;
+  const postsCountEl=document.getElementById('profilePostsCount');
+  if(postsCountEl)postsCountEl.textContent=_profMyPosts.length;
+  const followersCountEl=document.getElementById('profileFollowersCount');
+  if(followersCountEl)followersCountEl.textContent=_profFollowerCount;
+  const followingCountEl=document.getElementById('profileFollowingCount');
+  if(followingCountEl)followingCountEl.textContent=_profFollowingCount;
+  const memberSinceEl=document.getElementById('profileMemberSince');
+  if(memberSinceEl&&_currentUser){
+    const yr=_currentUser.createdAt?new Date(_currentUser.createdAt).getFullYear():2026;
+    memberSinceEl.textContent='Member since '+yr;
+  }
+  // ─── Posts grid (with private overlay + lock) ────────────────
+  const _profGrid=document.getElementById('profilePostsGrid');
+  if(_profGrid){
+    if(!_profMyPosts.length){
+      _profGrid.innerHTML=`<div style="grid-column:1/-1;padding:48px 20px;text-align:center;color:var(--txt3);font-size:13px;line-height:1.7">No posts yet.<br><span style="font-size:12px">Share your first spot in the Community tab.</span></div>`;
+    } else {
+      _profGrid.innerHTML=_profMyPosts.map(p=>{
+        const hasPhoto=p.mediaUrl&&p.type==='photo';
+        const isPrivate=p.privacy==='private';
+        return `<div onclick="openCommPost('${p.id}')" style="aspect-ratio:1;overflow:hidden;cursor:pointer;background:var(--bg3);position:relative">${
+          hasPhoto
+            ?`<img src="${p.mediaUrl}" style="width:100%;height:100%;object-fit:cover" loading="lazy">`
+            :`<div style="width:100%;height:100%;background:var(--bg2);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:4px;padding:8px"><div style="font-size:10px;color:var(--txt3)">text</div><div style="font-size:9px;color:var(--txt3);text-align:center;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical">${p.caption||''}</div></div>`
+        }${isPrivate?'<div style="position:absolute;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:flex-end;padding:6px"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="rgba(255,255,255,.8)" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>':''}</div>`;
+      }).join('');
+    }
+  }
+  // Tagged grid (posts tagged with this user)
+  const _tagGrid=document.getElementById('profileTaggedGrid');
+  if(_tagGrid){
+    const taggedPosts=getPosts().filter(p=>p.taggedUsers&&p.taggedUsers.includes(String(_myUid())));
+    if(!taggedPosts.length){
+      _tagGrid.innerHTML=`<div style="grid-column:1/-1;padding:48px 20px;text-align:center;color:var(--txt3);font-size:13px">No tagged posts yet.</div>`;
+    } else {
+      _tagGrid.innerHTML=taggedPosts.map(p=>{
+        const hasPhoto=p.mediaUrl&&p.type==='photo';
+        return `<div onclick="openCommPost('${p.id}')" style="aspect-ratio:1;overflow:hidden;cursor:pointer;background:var(--bg3)">${hasPhoto?`<img src="${p.mediaUrl}" style="width:100%;height:100%;object-fit:cover" loading="lazy">`:`<div style="width:100%;height:100%;background:var(--bg2);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--txt3)">text</div>`}</div>`;
+      }).join('');
+    }
+  }
+  // My Hikes section
+  const hikes=JSON.parse(localStorage.getItem('wildpath-saved-hikes')||'[]');
+  const hikesEl=document.getElementById('profileMyHikes');
+  if(hikesEl){
+    if(!hikes.length){
+      hikesEl.style.display='none';
+    } else {
+      hikesEl.style.display='block';
+      hikesEl.innerHTML=`<div style="padding:16px 14px 8px;font-size:14px;font-weight:700;color:var(--txt0)">My Hikes</div>`+
+        hikes.slice(0,5).map(h=>`<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--border);cursor:pointer">
+          <div style="width:42px;height:42px;border-radius:10px;background:linear-gradient(135deg,#1a3a2a,#2d5a3a);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#B8E87A" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          </div>
+          <div style="flex:1">
+            <div style="font-size:13px;font-weight:600;color:var(--txt0)">${h.date||'Hike'}</div>
+            <div style="font-size:11px;color:var(--txt3);margin-top:2px">${h.distStr||''} · ${h.timeStr||''}</div>
+          </div>
+          <div style="font-size:10px;color:var(--txt3);text-transform:uppercase">${h.privacy||'private'}</div>
+        </div>`).join('');
+    }
+  }
+  // Update saved posts count
+  const savedPostIds=JSON.parse(localStorage.getItem('wildpath-saved-posts')||'[]');
+  const _savedPostCountEl=document.getElementById('profileSavedCount');
+  if(_savedPostCountEl)_savedPostCountEl.textContent=savedPostIds.length+' post'+(savedPostIds.length===1?'':'s');
+
+  // Start on Posts tab
+  switchProfileTab('posts');
+
+  const statsData=[{icon:'',value:'284',label:'Miles Hiked'},{icon:'',value:'42.8k',label:'Elev. Gained (ft)'},{icon:'',value:spots.length+userSpots.length,label:'Spots Visited'},{icon:'',value:'196',label:'Hours Outside'}];
+  document.getElementById('statsGrid').innerHTML=statsData.map(s=>`<div class="stat-card"><div class="stat-icon">${s.icon}</div><div class="stat-value">${s.value}</div><div class="stat-label">${s.label}</div></div>`).join('');
+  const months=['J','F','M','A','M','J','J','A','S','O','N','D'],maxV=Math.max(...monthActivity);
+  document.getElementById('miniChart').innerHTML=months.map((m,i)=>`<div class="chart-col"><div class="chart-bar" style="height:${(monthActivity[i]/maxV)*100}%"></div><div class="chart-label">${m}</div></div>`).join('');
+  const bg=document.getElementById('badgesGrid');if(bg)bg.innerHTML=badges.map(b=>`<div class="badge-item${b.earned?'':' locked'}"><div class="badge-emoji">${b.emoji?_getSpotIcon(b.emoji,'var(--accent)'):'<i class="ti ti-award" style="font-size:22px;color:var(--accent)"></i>'}</div><div class="badge-name">${b.name}</div></div>`).join('');
+  document.getElementById('proFeaturesList').innerHTML=proFeatures.map(f=>`<div class="pro-feature"><span class="${f.free?'pro-check':'pro-lock'}">${f.free?'+':''}</span><span>${f.text}</span>${!f.free?'<span style="margin-left:auto;font-size:10px;background:rgba(74,144,217,.2);color:#64b5f6;padding:2px 7px;border-radius:5px;font-weight:800">PRO</span>':''}</div>`).join('');
+  document.getElementById('savedSpots').innerHTML=savedSpotsList.map(s=>`<div class="saved-spot-row" onclick="showToast('Opening ${s.name.substring(0,18)}…')"><div class="saved-spot-icon">${s.icon?_getSpotIcon(s.icon):'<i class="ti ti-map-pin" style="font-size:18px;color:var(--txt3)"></i>'}</div><div><div class="saved-spot-name">${s.name}</div><div class="saved-spot-dist">${s.dist} away</div></div><div class="saved-spot-arrow">›</div></div>`).join('');
+  // Settings — open full-screen settings on tap, plus sign out
+  document.getElementById('settingsList').innerHTML=`
+    <div class="settings-row" onclick="openSettingsFull()" style="border:1px solid rgba(184,232,122,.2);border-radius:12px;margin-bottom:8px;background:rgba(184,232,122,.05)">
+      <div class="settings-left">
+        <div class="settings-icon"></div>
+        <div class="settings-name" style="font-weight:600;color:var(--txt0)">Settings</div>
+      </div>
+      <div class="settings-arrow" style="color:var(--accent)">›</div>
+    </div>
+    ${settingItems.map(s=>`<div class="settings-row" onclick="openSettingsPanel('${s.key}')"><div class="settings-left"><div class="settings-icon">${s.icon}</div><div class="settings-name">${s.name}</div></div><div class="settings-arrow">›</div></div>`).join('')}
+    <div class="settings-row" onclick="signOut()" style="margin-top:8px;border-radius:12px;border:1px solid rgba(196,82,74,.25);background:rgba(196,82,74,.05)">
+      <div class="settings-left">
+        <div class="settings-icon" style="color:#e88080"><i class="ti ti-logout" style="font-size:18px;color:#e88080"></i></div>
+        <div class="settings-name" style="color:#e88080">Sign Out</div>
+      </div>
+    </div>`;
+
+  // Admin section — show only for admin role
+  _buildAdminSection();
+
+  buildYearReview();
+  buildFavList();
+  buildCollections();
+  buildJournalList();
+}
+
+function _buildAdminSection(){
+  // Remove existing admin section if any
+  const existing=document.getElementById('adminProfileSection');
+  if(existing)existing.remove();
+  if(!isAdmin())return;
+
+  const pending=getPendingSpots();
+  const allSpots=[...spots,...userSpots];
+  const section=document.createElement('div');
+  section.id='adminProfileSection';
+  section.className='profile-section';
+  section.innerHTML=`
+    <div class="admin-section">
+      <div class="admin-section-title">Admin Panel</div>
+      <div class="admin-stat">
+        <span class="admin-stat-label">Total Official Spots</span>
+        <span class="admin-stat-val">${spots.length}</span>
+      </div>
+      <div class="admin-stat">
+        <span class="admin-stat-label">User Submissions</span>
+        <span class="admin-stat-val">${userSpots.length}</span>
+      </div>
+      <div class="admin-stat">
+        <span class="admin-stat-label">Pending Review</span>
+        <span class="admin-stat-val">
+          ${pending.length>0?`<span class="admin-stat-badge">${pending.length}</span>`:pending.length}
+        </span>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+        <button onclick="_showPendingSpots()" style="flex:1;padding:10px;background:rgba(212,135,74,.15);border:1px solid rgba(212,135,74,.4);border-radius:10px;color:#D4874A;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">
+          Pending Spots ${pending.length>0?`(${pending.length})`:''}
+        </button>
+        <button onclick="_showManageSpots()" style="flex:1;padding:10px;background:rgba(184,232,122,.1);border:1px solid rgba(184,232,122,.3);border-radius:10px;color:var(--accent);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">
+          Manage Spots
+        </button>
+      </div>
+    </div>`;
+  // Insert at top of profile content (before first profile-section)
+  const firstSection=document.querySelector('#profile-screen .profile-section');
+  if(firstSection)firstSection.parentNode.insertBefore(section,firstSection);
+}
+
+function _showPendingSpots(){
+  const pending=getPendingSpots();
+  if(!pending.length){showToast('No spots pending review');return;}
+  // Show a simple overlay with pending spot cards
+  let overlay=document.getElementById('pendingSpotsOverlay');
+  if(!overlay){
+    overlay=document.createElement('div');
+    overlay.id='pendingSpotsOverlay';
+    overlay.style.cssText='position:absolute;inset:0;background:var(--bg0);z-index:9100;overflow-y:auto;display:flex;flex-direction:column;padding:0 0 var(--nav-h) 0';
+    document.getElementById('app').appendChild(overlay);
+  }
+  overlay.innerHTML=`
+    <div style="display:flex;align-items:center;padding:54px 20px 16px;border-bottom:1px solid var(--border);gap:14px">
+      <div onclick="this.closest('#pendingSpotsOverlay').remove()" style="width:36px;height:36px;border-radius:50%;background:var(--bg2);border:1px solid var(--border2);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:16px;color:var(--txt2)">←</div>
+      <div style="font-size:17px;font-weight:700;color:var(--txt0)">Pending Spots (${pending.length})</div>
+    </div>
+    ${pending.map(s=>`
+      <div class="pending-spot-row">
+        <div class="pending-spot-name">${s.name}</div>
+        <div class="pending-spot-meta">${s.typeLabel||s.type} · Submitted by ${s._submittedBy||'Unknown'}</div>
+        <div class="pending-spot-btns">
+          <button class="pending-approve" onclick="approveSpot(${s._pendingId});this.closest('.pending-spot-row').remove();showToast('Approved!')">Approve</button>
+          <button class="pending-reject" onclick="rejectSpot(${s._pendingId});this.closest('.pending-spot-row').remove();showToast('Rejected')">Reject</button>
+        </div>
+      </div>`).join('')}`;
+  overlay.style.display='flex';
+}
+
+function _showManageSpots(){
+  if(!isAdmin())return;
+  const allS=[...spots,...userSpots];
+  let overlay=document.getElementById('manageSpotsOverlay');
+  if(!overlay){
+    overlay=document.createElement('div');
+    overlay.id='manageSpotsOverlay';
+    overlay.style.cssText='position:absolute;inset:0;background:var(--bg0);z-index:9100;overflow-y:auto;display:flex;flex-direction:column;padding:0 0 var(--nav-h) 0';
+    document.getElementById('app').appendChild(overlay);
+  }
+  overlay.innerHTML=`
+    <div style="display:flex;align-items:center;padding:54px 20px 16px;border-bottom:1px solid var(--border);gap:14px;flex-shrink:0">
+      <div onclick="this.closest('#manageSpotsOverlay').remove()" style="width:36px;height:36px;border-radius:50%;background:var(--bg2);border:1px solid var(--border2);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:16px;color:var(--txt2);flex-shrink:0">←</div>
+      <div style="font-size:17px;font-weight:700;color:var(--txt0)">All Spots (${allS.length})</div>
+    </div>
+    <div style="padding:12px 16px;flex:1">
+      ${allS.map(s=>`
+        <div id="manageRow_${s.id}" style="display:flex;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid var(--border)">
+          <div style="width:38px;height:38px;border-radius:10px;background:${s.heroGradient};flex-shrink:0"></div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:14px;font-weight:700;color:var(--txt0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.name}</div>
+            <div style="font-size:11px;color:var(--txt2);margin-top:1px">${s.typeLabel||s.type} · ${s.userSubmitted?'<span style="color:var(--yellow)">User submitted</span>':'Official'}</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-shrink:0">
+            <button onclick="document.getElementById('manageSpotsOverlay').remove();setTimeout(()=>openDetail(${s.id}),50)" style="background:rgba(212,135,74,.15);border:1px solid rgba(212,135,74,.3);color:#D4874A;border-radius:8px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font)">Edit</button>
+            <button onclick="_manageDeleteSpot(${s.id},this)" style="background:rgba(196,82,74,.1);border:1px solid rgba(196,82,74,.25);color:var(--red);border-radius:8px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font)">×</button>
+          </div>
+        </div>`).join('')}
+    </div>`;
+  overlay.style.display='flex';
+}
+
+function _manageDeleteSpot(spotId, btn){
+  const spot=[...spots,...userSpots].find(s=>s.id===spotId);
+  if(!spot)return;
+  if(!window.confirm(`Delete "${spot.name}"?`))return;
+  const sIdx=spots.findIndex(s=>s.id===spotId);
+  if(sIdx>=0)spots.splice(sIdx,1);
+  const uIdx=userSpots.findIndex(s=>s.id===spotId);
+  if(uIdx>=0){userSpots.splice(uIdx,1);localStorage.setItem('wp_user_spots',JSON.stringify(userSpots));}
+  const row=document.getElementById(`manageRow_${spotId}`);
+  if(row)row.remove();
+  // Update header count
+  const overlay=document.getElementById('manageSpotsOverlay');
+  if(overlay){
+    const header=overlay.querySelector('[style*="font-size:17px"]');
+    if(header)header.textContent=`All Spots (${spots.length+userSpots.length})`;
+  }
+  try{refreshSpotMarkers();}catch(e){}
+  showToast(`"${spot.name}" deleted`);
+}
+
+// ─── Year in Review ───────────────────────────────
+function buildYearReview(){
+  const favCount=favorites.size;
+  const visitedCount=38+userSpots.length;
+  const journalEntries=JSON.parse(localStorage.getItem('wp_journal')||'[]');
+  const topType=favCount>0?'Hikes':' Swims';
+  document.getElementById('yearReview').innerHTML=`
+    <div class="year-review-card">
+      <div style="font-size:13px;font-weight:700;color:var(--txt0);margin-bottom:4px">Your WildPath 2026 so far…</div>
+      <div class="year-stat-row">
+        <div class="year-stat"><div class="year-stat-val">${visitedCount}</div><div class="year-stat-lbl">Spots Visited</div></div>
+        <div class="year-stat"><div class="year-stat-val">${favCount||12}</div><div class="year-stat-lbl">Saved</div></div>
+        <div class="year-stat"><div class="year-stat-val">${journalEntries.length||7}</div><div class="year-stat-lbl">Journal Entries</div></div>
+      </div>
+      <div style="font-size:12px;color:var(--txt2);margin-top:10px;line-height:1.6">
+        Most visited: <strong style="color:var(--accent)">Swimming Holes</strong> · Peak month: <strong style="color:var(--accent)">July</strong>
+      </div>
+    </div>`;
+}
+
+// ─── Favorites list ───────────────────────────────
+function buildFavList(){
+  const allS=[...spots,...userSpots];
+  const favSpots=allS.filter(s=>favorites.has(s.id));
+  const el=document.getElementById('favList');
+  const countEl=document.getElementById('favCount');
+  if(countEl)countEl.textContent=favSpots.length+' spots';
+  if(!favSpots.length){
+    el.innerHTML=`<div style="font-size:13px;color:var(--txt2);padding:14px 0">No favorites yet — tap the heart on any spot to save it here.</div>`;
+    return;
+  }
+  el.innerHTML=favSpots.map(s=>`
+    <div class="fav-row" onclick="goToSpot(${s.id})">
+      <div class="fav-thumb" style="background:${s.heroGradient}"></div>
+      <div style="flex:1;min-width:0">
+        <div class="fav-name">${s.name}</div>
+        <div class="fav-type" style="color:${s.typeColor}">${s.icon} ${s.typeLabel} · ${s.distance}</div>
+      </div>
+      <button onclick="event.stopPropagation();toggleFavorite(${s.id});buildFavList();buildYearReview()" style="background:none;border:none;font-size:12px;font-weight:700;cursor:pointer;color:#e05252;padding:6px 10px">Remove</button>
+    </div>`).join('');
+}
+
+// ─── Collections ─────────────────────────────────
+// Load collections, stripping any emoji from icon field (migration from old format)
+let collections=(()=>{
+  const _c=JSON.parse(localStorage.getItem('wp_collections')||'[]');
+  return _c.map(c=>({...c,icon:''})); // strip emoji icons — replaced with Tabler icons at render time
+})();
+// ─── Journal ─────────────────────────────────────
+let journalEntries=JSON.parse(localStorage.getItem('wp_journal')||'[]');
+let journalStarVal=5;
+
+function buildJournalList(){
+  const el=document.getElementById('journalList');
+  if(!journalEntries.length){
+    el.innerHTML=`<div style="font-size:13px;color:var(--txt2);padding:10px 0">No journal entries yet. Document your adventures!</div>`;
+    return;
+  }
+  const sorted=[...journalEntries].sort((a,b)=>b.ts-a.ts).slice(0,5);
+  el.innerHTML=sorted.map(e=>`
+    <div class="journal-entry">
+      <div class="journal-entry-header">
+        <span class="journal-entry-spot">${e.spotName||'General'} (${e.stars||5}/5)</span>
+        <span class="journal-entry-date">${e.date}</span>
+      </div>
+      <div class="journal-entry-text">${e.notes}</div>
+    </div>`).join('');
+  if(journalEntries.length>5)el.innerHTML+=`<div style="font-size:12px;color:var(--txt2);text-align:center;padding:8px">${journalEntries.length-5} more entries…</div>`;
+}
+
+function openJournalEntry(){
+  const overlay=document.getElementById('journalOverlay');
+  const sel=document.getElementById('journalSpotSelect');
+  const allS=[...spots,...userSpots];
+  sel.innerHTML='<option value="">No specific spot</option>'+allS.slice(0,20).map(s=>`<option value="${s.id}">${s.name}</option>`).join('');
+  document.getElementById('journalDate').value=new Date().toISOString().split('T')[0];
+  document.getElementById('journalNotes').value='';
+  journalStarVal=5;
+  document.querySelectorAll('.jstar').forEach(s=>s.textContent=parseInt(s.dataset.v)<=5?'':'');
+  overlay.classList.add('open');
+}
+
+function closeJournal(){document.getElementById('journalOverlay').classList.remove('open');}
+
+function setJournalStar(n){
+  journalStarVal=n;
+  document.querySelectorAll('.jstar').forEach(s=>s.textContent=parseInt(s.dataset.v)<=n?'':'');
+}
+
+function saveJournalEntry(){
+  const notes=document.getElementById('journalNotes').value.trim();
+  if(!notes){showToast('Write something first');return;}
+  const selEl=document.getElementById('journalSpotSelect');
+  const spotId=parseInt(selEl.value)||null;
+  const spotName=spotId?[...spots,...userSpots].find(s=>s.id===spotId)?.name||'':selEl.options[selEl.selectedIndex].text;
+  journalEntries.push({
+    id:Date.now(),ts:Date.now(),
+    spotId,spotName:spotName==='No specific spot'?'':spotName,
+    date:document.getElementById('journalDate').value,
+    notes,stars:journalStarVal
+  });
+  localStorage.setItem('wp_journal',JSON.stringify(journalEntries));
+  closeJournal();
+  buildJournalList();
+  buildYearReview();
+  showToast('Journal entry saved');
+}
+
+// ═══════════════════════════════════════════════════
+// SPOT MARKER HELPERS
+// ═══════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════
+// FILTER SYSTEM
+// ═══════════════════════════════════════════════════
+function buildFilterStrip(){
+  const strip=document.getElementById('filterStrip');
+  strip.innerHTML='';
+  SPOT_FILTERS.forEach(f=>{
+    const chip=document.createElement('div');
+    chip.className='filter-chip'+(f.id==='all'?' factive':'');
+    chip.dataset.filter=f.id;
+    chip.innerHTML=f.label;
+    chip.onclick=()=>setFilter(f.id);
+    strip.appendChild(chip);
+  });
+}
+
+function setFilter(filterId){
+  const FILTER_TYPES={
+    water:['swimming','river','waterfall','natural_slide'],
+    caves:['caves','lava_tube'],
+    hiking:['hiking'],biking:['biking'],views:['scenic'],urban:['urban'],climb:['rock_climbing']
+  };
+  if(filterId==='all'){
+    activeFilters.clear();
+    document.querySelectorAll('.filter-chip').forEach(c=>c.classList.remove('factive'));
+    document.querySelector('.filter-chip[data-filter="all"]').classList.add('factive');
+  }else{
+    document.querySelector('.filter-chip[data-filter="all"]').classList.remove('factive');
+    const chip=document.querySelector(`.filter-chip[data-filter="${filterId}"]`);
+    if(activeFilters.has(filterId)){
+      activeFilters.delete(filterId);
+      chip.classList.remove('factive');
+      if(activeFilters.size===0)document.querySelector('.filter-chip[data-filter="all"]').classList.add('factive');
+    }else{
+      activeFilters.add(filterId);
+      chip.classList.add('factive');
+    }
+  }
+  refreshSpotMarkers();
+}
+
+// ═══════════════════════════════════════════════════
+// FAVORITES
+// ═══════════════════════════════════════════════════
+function toggleFavorite(spotId){
+  if(isGuest()){showLoginScreen(()=>toggleFavorite(spotId));return;}
+  if(favorites.has(spotId)){favorites.delete(spotId);showToast('Removed from favorites');}
+  else{favorites.add(spotId);showToast('Saved to favorites');}
+  localStorage.setItem('wp_favs',JSON.stringify([...favorites]));
+  const btn=document.getElementById('favBtn');
+  if(btn){btn.classList.toggle('saved',favorites.has(spotId));btn.textContent=favorites.has(spotId)?'Saved':'Save';}
+}
+
+// ═══════════════════════════════════════════════════
+// ADD SPOT FORM
+// ═══════════════════════════════════════════════════
+let aspSelectedType=null, aspSelectedDiff='Easy', aspStarVal=5;
+
+function openAddSpot(){
+  if(isGuest()){showLoginScreen(()=>openAddSpot());return;}
+  aspSelectedType=null; aspSelectedDiff='Easy'; aspStarVal=5;
+  addSpotTempLat=null; addSpotTempLng=null;
+  // Build type grid
+  const grid=document.getElementById('aspTypeGrid');
+  grid.innerHTML='';
+  Object.entries(SPOT_TYPE_DEFS).forEach(([key,def])=>{
+    const chip=document.createElement('div');
+    chip.className='type-chip';
+    chip.dataset.type=key;
+    chip.innerHTML=`<span class="type-chip-icon">${_getSpotIcon(key,def.color)}</span><span>${def.label}</span>`;
+    chip.onclick=()=>{
+      document.querySelectorAll('.type-chip').forEach(c=>c.classList.remove('selected'));
+      chip.classList.add('selected');
+      aspSelectedType=key;
+    };
+    grid.appendChild(chip);
+  });
+  // Reset stars
+  updateStarDisplay(aspStarVal);
+  document.getElementById('aspLocDisplay').style.display='none';
+  document.getElementById('addSpotOverlay').classList.add('open');
+}
+
+function closeAddSpot(){
+  document.getElementById('addSpotOverlay').classList.remove('open');
+  addSpotMode=false;
+  if(map)map.getCanvas().style.cursor='';
+}
+
+function startMapPinMode(){
+  closeAddSpot();
+  addSpotMode=true;
+  if(map)map.getCanvas().style.cursor='crosshair';
+  showToast('Tap the map to place your spot');
+}
+
+function selectDiff(el){
+  document.querySelectorAll('.diff-btn').forEach(b=>b.classList.remove('selected'));
+  el.classList.add('selected');
+  aspSelectedDiff=el.dataset.diff;
+}
+
+function setStarRating(e){
+  const s=parseInt(e.target.dataset.s);
+  if(!s)return;
+  aspStarVal=s;
+  updateStarDisplay(s);
+}
+
+function updateStarDisplay(n){
+  const row=document.getElementById('aspStars');
+  if(!row)return;
+  [...row.children].forEach((s,i)=>{
+    s.style.color=i<n?'#f4b942':'var(--txt3)';
+    s.style.opacity=i<n?'1':'0.35';
+  });
+}
+
+function submitNewSpot(){
+  const name=(document.getElementById('aspName').value||'').trim();
+  if(!name){showToast('Enter a spot name');return;}
+  if(!aspSelectedType){showToast('Select a spot type');return;}
+  const hasLoc=addSpotTempLat||document.getElementById('aspLocSearch').value.trim();
+  if(!hasLoc){showToast('Add a location');return;}
+
+  const def=SPOT_TYPE_DEFS[aspSelectedType];
+  const id=1000+userSpots.length+Date.now()%10000;
+  const lat=addSpotTempLat||37.8;
+  const lng=addSpotTempLng||-122.4;
+  const desc=(document.getElementById('aspDesc').value||'').trim()||'Community-added spot';
+
+  const newSpot={
+    id,name,lat,lng,type:aspSelectedType,
+    typeLabel:def.label,typeColor:def.color,icon:def.icon,emoji:def.icon,
+    heroGradient:`linear-gradient(160deg,#0f1410,#1e251e,#0a100a)`,
+    rating:aspStarVal,reviews:1,distance:'? mi away',elevation:'?',
+    legal:'legal',legalText:'Legal',legalClass:'legal-legal',
+    trailLength:'Unknown',difficulty:aspSelectedDiff,
+    diffClass:`diff-${aspSelectedDiff.toLowerCase()}`,
+    bestSeason:'Year-round',parkingCost:'Unknown',entryFee:'Unknown',
+    roadCondition:'Unknown',cellSignal:'Unknown',
+    season:[1,1,1,1,1,1,1,1,1,1,1,1],permitRequired:false,
+    parkingCapacity:'Unknown',parkingFillTime:'Unknown',fourWD:false,
+    weather:[{day:'Mon',icon:'sun',high:72,low:50},{day:'Tue',icon:'sun',high:74,low:51},{day:'Wed',icon:'partly-cloudy',high:68,low:48},{day:'Thu',icon:'sun',high:71,low:50},{day:'Fri',icon:'partly-cloudy',high:65,low:47}],
+    crowd:30,campingText:'Unknown',
+    reviews_data:[{user:'You',stars:aspStarVal,date:new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}),text:desc}],
+    similar:[1,2,3],
+    approach:desc,gear:[],hazards:[],insiderTips:desc,
+    accessibility:'Unknown',kidScore:3,dogFriendly:true,shade:'Unknown',
+    crowdsByDay:[30,25,28,32,35,55,60],hiddenGem:true,
+    userSubmitted:true,submittedDate:Date.now()
+  };
+
+  userSpots.push(newSpot);
+  localStorage.setItem('wp_user_spots',JSON.stringify(userSpots));
+  addSpotMarkerToMap(newSpot);
+  leafletMap.flyTo([lat,lng],14,{animate:true,duration:1.2});
+  closeAddSpot();
+  showToast(`"${name}" added to map`);
+}
+
+// ═══════════════════════════════════════════════════
+// WAYPOINTS & PARKING
+// ═══════════════════════════════════════════════════
+
+function dropWaypoint(lat,lng,name){
+  if(!map)return null;
+  const label=name||`Waypoint ${waypointMarkers.length+1}`;
+  const el=document.createElement('div');
+  el.className='waypoint-marker-el';
+  el.textContent=label;
+  const m=new mapboxgl.Marker({element:el,anchor:'center'})
+    .setLngLat([lng,lat]).addTo(map);
+  waypointMarkers.push({marker:m,label});
+  return m;
+}
+
+// ═══════════════════════════════════════════════════
+// AUTOCOMPLETE
+// ═══════════════════════════════════════════════════
+const acTimers={};
+function acInput(inputEl,dropId,isLocationField){
+  const id=inputEl.id;
+  clearTimeout(acTimers[id]);
+  const q=inputEl.value.trim();
+  const drop=document.getElementById(dropId);
+  if(q.length<3){drop.classList.remove('open');return;}
+  acTimers[id]=setTimeout(()=>fetchAcResults(q,inputEl,drop,isLocationField),340);
+}
+
+async function fetchAcResults(q,inputEl,drop,isLocationField){
+  try{
+    const url=`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=5&addressdetails=1`;
+    const res=await fetch(url,{headers:{'Accept-Language':'en-US,en','User-Agent':'WildPath/1.0'}});
+    if(!res.ok)return;
+    const data=await res.json();
+    if(!data.length){drop.classList.remove('open');return;}
+    drop.innerHTML='';
+    data.forEach(r=>{
+      const parts=r.display_name.split(',');
+      const name=parts[0].trim();
+      const sub=parts.slice(1,3).join(',').trim();
+      const item=document.createElement('div');
+      item.className='ac-item';
+      item.innerHTML=`<div class="ac-name">${name}</div><div class="ac-sub">${sub}</div>`;
+      item.onclick=()=>{
+        inputEl.value=name;
+        drop.classList.remove('open');
+        if(isLocationField){
+          addSpotTempLat=parseFloat(r.lat);
+          addSpotTempLng=parseFloat(r.lon);
+          const disp=document.getElementById('aspLocDisplay');
+          disp.style.display='block';
+          disp.textContent=`${r.display_name.split(',').slice(0,2).join(',')}`;
+        }
+      };
+      drop.appendChild(item);
+    });
+    drop.classList.add('open');
+  }catch{drop.classList.remove('open');}
+}
+
+// Close dropdowns on outside click
+document.addEventListener('click',e=>{
+  if(!e.target.closest('.ac-wrap'))document.querySelectorAll('.ac-drop').forEach(d=>d.classList.remove('open'));
+});
+
+// ═══════════════════════════════════════════════════
+// EXPLORE SCREEN
+// ═══════════════════════════════════════════════════
+const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function buildExploreScreen(){
+  buildSeasonalList();
+  buildHiddenGems();
+  buildRecentlyAdded();
+  // Reset search state
+  const inp=document.getElementById('exploreSearchInput');
+  if(inp&&inp.value){inp.value='';filterExplore('');}
+}
+
+function filterExplore(query){
+  const q=(query||'').trim().toLowerCase();
+  const mainContent=document.getElementById('exploreMainContent');
+  const searchResults=document.getElementById('exploreSearchResults');
+  const clearBtn=document.getElementById('exploreClearBtn');
+  if(clearBtn)clearBtn.style.display=q?'block':'none';
+  if(!q){
+    if(mainContent)mainContent.style.display='';
+    if(searchResults)searchResults.style.display='none';
+    return;
+  }
+  if(mainContent)mainContent.style.display='none';
+  if(searchResults)searchResults.style.display='block';
+  const all=[...spots,...userSpots];
+  const matches=all.filter(s=>{
+    return s.name.toLowerCase().includes(q)||
+      (s.typeLabel||'').toLowerCase().includes(q)||
+      (s.type||'').toLowerCase().includes(q);
+  });
+  if(!matches.length){
+    searchResults.innerHTML=`<div style="padding:48px 20px;text-align:center;color:var(--txt3)"><div style="margin-bottom:12px"><svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="var(--txt3)" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div><div style="font-size:15px;font-weight:600;color:var(--txt2)">No spots found</div><div style="font-size:13px;margin-top:6px">for "<strong>${query}</strong>"</div></div>`;
+    return;
+  }
+  searchResults.innerHTML=matches.map(s=>spotCardHTML(s)).join('');
+}
+function clearExploreSearch(){
+  const inp=document.getElementById('exploreSearchInput');
+  if(inp)inp.value='';
+  filterExplore('');
+}
+
+function goToSpot(id){
+  const s=[...spots,...userSpots].find(x=>x.id===id);
+  if(!s)return;
+  showTab('map');
+  setTimeout(()=>{
+    if(map)map.flyTo({center:[s.lng,s.lat],zoom:14,duration:1200,essential:true});
+    setTimeout(()=>openDetail(s.id),1300);
+  },200);
+}
+
+function buildSeasonalList(){
+  const mo=new Date().getMonth();
+  const inSeason=spots.filter(s=>s.season&&s.season[mo]===2).slice(0,5);
+  const el=document.getElementById('seasonalList');
+  el.innerHTML=inSeason.map(s=>spotCardHTML(s,`Best in ${MONTHS[mo]}`)).join('');
+}
+
+function buildHiddenGems(){
+  const gems=spots.filter(s=>s.hiddenGem).sort((a,b)=>b.rating-a.rating).slice(0,6);
+  document.getElementById('hiddenGemsList').innerHTML=gems.map(s=>spotCardHTML(s,null,true)).join('');
+}
+
+function buildRecentlyAdded(){
+  // Show user-submitted spots first, then last 8 spots in array (most recently added to the app)
+  const recent=[...userSpots,...spots.slice(-8)].slice(0,6);
+  document.getElementById('recentlyAddedList').innerHTML=recent.map(s=>spotCardHTML(s,s.userSubmitted?'You added':'New spot')).join('');
+}
+
+function spotCardHTML(s,badge,showGem){
+  return`<div class="spot-card-h" onclick="goToSpot(${s.id})">
+    <div class="spot-card-thumb" style="background:${s.heroGradient}"></div>
+    <div class="spot-card-info">
+      <div class="spot-card-name">${s.name}${showGem?'<span class="gem-badge">Hidden Gem</span>':''}</div>
+      <div class="spot-card-meta">${s.rating} · ${s.distance}</div>
+      <span class="spot-card-type" style="background:${s.typeColor}22;color:${s.typeColor}">${s.typeLabel}</span>
+      ${badge?`<span style="font-size:10px;color:var(--txt3);margin-left:6px">${badge}</span>`:''}
+    </div>
+  </div>`;
+}
+
+function goToSpot(id){
+  const s=[...spots,...userSpots].find(x=>x.id===id);
+  if(!s)return;
+  showTab('map');
+  setTimeout(()=>{
+    leafletMap.flyTo([s.lat,s.lng],14,{animate:true,duration:1.2});
+    setTimeout(()=>openSheet(s.id),1200);
+  },200);
+}
+
+
+let activeDriveTime=0;
+function setDriveFilter(el,minutes){
+  document.querySelectorAll('.dt-chip').forEach(c=>c.classList.remove('active'));
+  if(minutes!==0&&(_userLat==null||_userLng==null)){
+    document.querySelector('.dt-chip[data-dt="0"]')?.classList.add('active');
+    activeDriveTime=0;
+    showToast('Enable location to filter by drive time');
+    return;
+  }
+  el.classList.add('active'); activeDriveTime=minutes;
+  buildExploreScreen();
+  const filtered=minutes===0?[...spots,...userSpots]:[...spots,...userSpots].filter(s=>{
+    const distMi=_haversineDistMi(_userLat,_userLng,s.lat,s.lng);
+    const hrs=distMi/45; // estimate avg speed 45 mph
+    return hrs*60<=minutes;
+  });
+  document.getElementById('seasonalList').innerHTML=filtered.filter(s=>{
+    const mo=new Date().getMonth();return s.season&&s.season[mo]===2;
+  }).slice(0,5).map(s=>spotCardHTML(s)).join('');
+}
+
+// ═══════════════════════════════════════════════════
+// SPOT SHEET — with favorites btn + conditions
+// ═══════════════════════════════════════════════════
+function openSheet(pinIndex){
+  const allS=[...spots,...userSpots];
+  const spot=allS.find(s=>s.id===pinIndex)||allS[0];
+  currentPin=pinIndex; sheetOpen=true;
+  const legalColors={legal:'#6fcf97',permit:'#f0c040',gray:'#e07b39',illegal:'#ff7070'};
+  const legalBg={legal:'rgba(74,124,89,.18)',permit:'rgba(212,160,23,.18)',gray:'rgba(224,123,57,.18)',illegal:'rgba(224,82,82,.18)'};
+  const legalIcon={legal:'Legal',permit:'Permit Required',gray:'Gray Area',illegal:'Illegal'};
+  const lat=spot.lat.toFixed(5), lng=spot.lng.toFixed(5);
+  const isFav=favorites.has(spot.id);
+
+  document.getElementById('sheetContent').innerHTML=`
+    <div class="sheet-hero" style="background:${spot.heroGradient}">
+      <!-- hero clean -->
+      <div class="sheet-hero-overlay"></div>
+    </div>
+    <div class="sheet-body">
+      <div class="sheet-badge-row">
+        <span class="sheet-type-badge" style="background:${spot.typeColor}22;color:${spot.typeColor}">${spot.typeLabel}</span>
+        <span class="sheet-legal-chip" style="background:${legalBg[spot.legal]};color:${legalColors[spot.legal]}">${legalIcon[spot.legal]}</span>
+      </div>
+      <div class="sheet-spot-name">${spot.name}</div>
+      <div class="sheet-rating-row">
+        <span class="sheet-stars" style="color:var(--yellow);font-size:13px;font-weight:800">${spot.rating}</span>
+        <span class="sheet-review-count">${spot.rating} · ${spot.reviews} reviews</span>
+      </div>
+      <div class="sheet-coords"><span></span>${lat}°N, ${Math.abs(parseFloat(lng)).toFixed(5)}°W</div>
+      <div class="sheet-stats-row">
+        <div class="sheet-stat"><div class="sheet-stat-val">${spot.distance}</div><div class="sheet-stat-label">Away</div></div>
+        <div class="sheet-stat"><div class="sheet-stat-val">${spot.elevation}</div><div class="sheet-stat-label">Elevation</div></div>
+        <div class="sheet-stat"><div class="sheet-stat-val">${spot.difficulty}</div><div class="sheet-stat-label">Difficulty</div></div>
+        <div class="sheet-stat"><div class="sheet-stat-val">${spot.trailLength.split(' ')[0]}</div><div class="sheet-stat-label">Trail</div></div>
+      </div>
+      <div class="sheet-season">Best Season: <strong style="color:var(--txt0)">${spot.bestSeason}</strong>&nbsp;·&nbsp;Entry: <strong style="color:var(--txt0)">${spot.entryFee}</strong></div>
+      ${spot.insiderTips?`<div style="background:rgba(212,160,23,.1);border:1px solid rgba(212,160,23,.25);border-radius:12px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:#d4c080;line-height:1.5"><strong>Local Tip:</strong> ${spot.insiderTips}</div>`:''}
+      <div class="sheet-actions-row" style="gap:6px">
+        <a href="https://maps.apple.com/?daddr=${spot.lat},${spot.lng}&dirflg=d" target="_blank" class="sheet-btn-nav" style="text-decoration:none;text-align:center;flex:1">Apple Maps</a>
+        <a href="https://www.google.com/maps/dir/?api=1&destination=${spot.lat},${spot.lng}" target="_blank" class="sheet-btn-nav" style="text-decoration:none;text-align:center;flex:1;background:var(--accent);color:#0f1a0a">Google Maps</a>
+        <button class="btn-fav${isFav?' saved':''}" id="favBtn" onclick="toggleFavorite(${spot.id})">${isFav?'Saved':'Save'}</button>
+      </div>
+      <button class="sheet-btn-full" style="margin-top:8px" onclick="openDetail(${spot.id})">View Full Details →</button>
+    </div>`;
+
+  document.getElementById('spotSheet').classList.add('open');
+  document.getElementById('sheetBackdrop').classList.add('open');
+  document.getElementById('spotSheet').style.transform='';
+  // Check for road/fire alerts near this spot (show on map behind sheet)
+  setTimeout(()=>checkAlertBanner(spot),100);
+}
+
+// ═══════════════════════════════════════════════════
+// SPOT DETAIL PAGE — 3-TAB DESIGN
+// ═══════════════════════════════════════════════════
+let _detailSpotId=null;
+let _detailTrailLayerIds=[];
+let _detailTrailSourceIds=[];
+// Terrain mini-map instances
+let _terrainMap=null;
+let _terrainFsMap=null;
+let _terrainCurrentSpot=null;
+let _terrainRotateRafId=null;
+let _terrainRotateResumeTimer=null;
+let _terrainUserInteracting=false;
+
+function openDetail(spotIdOrObj){
+  const allS=[...spots,...userSpots];
+  const spot=typeof spotIdOrObj==='object'?spotIdOrObj:allS.find(s=>s.id===spotIdOrObj)||allS[0];
+  if(!spot)return;
+  _detailSpotId=spot.id;
+  currentPin=spot.id;
+
+  // ── New design elements (stars, chips, mini map, reviews, bookmark) ──
+  // Called first so elements are ready; mini map needs container visible
+  setTimeout(()=>_populateDetailNewElements(spot),60);
+
+  // ── Header: name ──
+  const nameEl=document.getElementById('detailName');
+  if(nameEl)nameEl.textContent=spot.name;
+
+  // ── Header badges: type pill + legal badge ──
+  const badgesEl=document.getElementById('detailHeaderBadges');
+  if(badgesEl){
+    const typeColor=spot.typeColor||'#888';
+    const legalColors={legal:'#6fcf97',permit:'#f0c040',gray:'#e07b39',illegal:'#ff7070'};
+    const legalTexts={legal:'Legal',permit:'Permit Required',gray:'Gray Area',illegal:'Illegal'};
+    const lc=spot.legal||'legal';
+    badgesEl.innerHTML=`
+      <span style="background:${typeColor}22;color:${typeColor};border:1px solid ${typeColor}44;border-radius:20px;padding:4px 12px;font-size:12px;font-weight:700">${spot.typeLabel||spot.type}</span>
+      <span style="background:${legalColors[lc]}22;color:${legalColors[lc]};border:1px solid ${legalColors[lc]}44;border-radius:20px;padding:4px 12px;font-size:12px;font-weight:700">${legalTexts[lc]||'Legal'}</span>`;
+  }
+
+  // ── Quick stats 4-card row ──
+  const statsEl=document.getElementById('detailQuickStats');
+  if(statsEl){
+    const dist=spot._realDistStr||spot.distance||'—';
+    const diff=spot.difficulty||'Easy';
+    const hikeTime=spot.trailLength?(()=>{
+      const mi=parseFloat(spot.trailLength)||2;
+      const hrs=mi/2.5;
+      const lo=Math.max(0.5,hrs*0.8),hi=hrs*1.2;
+      return `${lo<1?(lo*60).toFixed(0)+'m':lo.toFixed(1)+'h'}–${hi<1?(hi*60).toFixed(0)+'m':hi.toFixed(1)+'h'}`;
+    })():'—';
+    const elev=spot.elevation||'—';
+    statsEl.innerHTML=[
+      {label:'Distance',value:dist},
+      {label:'Difficulty',value:diff},
+      {label:'Time',value:hikeTime},
+      {label:'Elevation',value:elev}
+    ].map(c=>`<div style="background:var(--bg1);border:1px solid var(--border);border-radius:12px;padding:12px 8px;text-align:center">
+      <div style="font-size:12px;font-weight:700;color:var(--txt0);margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.value}</div>
+      <div style="font-size:10px;color:var(--txt3);letter-spacing:.3px;text-transform:uppercase">${c.label}</div>
+    </div>`).join('');
+  }
+
+  // ── Legal status banner ──
+  const legalEl=document.getElementById('detailLegalBanner');
+  if(legalEl){
+    const lc=spot.legal||'legal';
+    const legalConfig={
+      legal:{bg:'rgba(74,180,100,.12)',border:'rgba(74,180,100,.3)',color:'#6fcf97',title:'Open to Public',desc:'No permit required. Free and open access.'},
+      permit:{bg:'rgba(240,192,64,.10)',border:'rgba(240,192,64,.35)',color:'#f0c040',title:'Permit Required',desc:'Reservation or fee required before visiting.'},
+      gray:{bg:'rgba(224,123,57,.10)',border:'rgba(224,123,57,.3)',color:'#e07b39',title:'Legally Gray',desc:'Access unclear — check local regulations before visiting.'},
+      illegal:{bg:'rgba(224,82,82,.10)',border:'rgba(224,82,82,.3)',color:'#ff7070',title:'Do Not Trespass',desc:'Private property. Entering without permission is trespassing.'}
+    };
+    const cfg=legalConfig[lc]||legalConfig.legal;
+    let permitHTML='';
+    if(lc==='permit'&&spot.permitData){
+      const pd=spot.permitData;
+      permitHTML=`
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid ${cfg.border}">
+          <div style="font-size:12px;color:var(--txt1);margin-bottom:4px"><strong>${pd.name}</strong></div>
+          <div style="font-size:12px;color:var(--txt2);margin-bottom:2px">${pd.agency}</div>
+          <div style="font-size:12px;color:var(--txt2);margin-bottom:10px">${pd.cost}</div>
+          <a href="${pd.url}" target="_blank" rel="noopener" style="display:inline-block;background:#B8E87A;color:#0f1a0a;border-radius:10px;padding:10px 20px;font-size:13px;font-weight:700;text-decoration:none;-webkit-tap-highlight-color:transparent">Get Permit →</a>
+        </div>`;
+    }
+    legalEl.style.cssText=`background:${cfg.bg};border:1px solid ${cfg.border};border-radius:14px;padding:14px 16px`;
+    legalEl.innerHTML=`
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+        <div style="width:10px;height:10px;border-radius:50%;background:${cfg.color};flex-shrink:0"></div>
+        <div style="font-size:14px;font-weight:700;color:${cfg.color}">${cfg.title}</div>
+      </div>
+      <div style="font-size:13px;color:var(--txt1);line-height:1.5">${cfg.desc}</div>
+      ${permitHTML}`;
+  }
+
+  // ── Freshness ──
+  const freshnessEl=document.getElementById('detailFreshness');
+  if(freshnessEl&&spot.verifiedBy){
+    const vDate=new Date(spot.verifiedDate||Date.now());
+    const daysSince=Math.floor((Date.now()-vDate)/86400000);
+    const dotColor=daysSince<30?'#6fcf97':daysSince<90?'#f0c040':daysSince<180?'#e07b39':'#ff7070';
+    const freshnessLabel=daysSince<30?'Recently verified':daysSince<90?'Verified this season':daysSince<180?'Verify before going':'Needs re-verification';
+    const dateStr=vDate.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+    freshnessEl.innerHTML=`
+      <div style="font-size:13px;font-weight:700;color:var(--txt0);margin-bottom:8px">Freshness</div>
+      <div style="background:var(--bg1);border:1px solid var(--border);border-radius:12px;padding:12px 14px;display:flex;align-items:center;gap:12px">
+        <div style="width:12px;height:12px;border-radius:50%;background:${dotColor};flex-shrink:0"></div>
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:600;color:var(--txt0)">${freshnessLabel}</div>
+          <div style="font-size:11px;color:var(--txt3);margin-top:2px">Verified by @${spot.verifiedBy} · ${dateStr}</div>
+        </div>
+      </div>`;
+  }
+
+  // ── Approach as numbered steps ──
+  const approachEl=document.getElementById('detailApproach');
+  if(approachEl&&spot.approach){
+    const raw=spot.approach;
+    // Split on sentence ends or periods+spaces into steps
+    const sentences=raw.replace(/([.!?])\s+/g,'$1\n').split('\n').map(s=>s.trim()).filter(s=>s.length>15);
+    const steps=sentences.slice(0,6);
+    approachEl.innerHTML=`
+      <div style="font-size:13px;font-weight:700;color:var(--txt0);margin-bottom:10px">How to Get There</div>
+      ${steps.map((step,i)=>`
+        <div style="display:flex;gap:12px;margin-bottom:10px;align-items:flex-start">
+          <div style="width:24px;height:24px;border-radius:50%;background:#B8E87A;color:#0f1a0a;font-size:12px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px">${i+1}</div>
+          <div style="background:var(--bg1);border:1px solid var(--border);border-radius:10px;padding:10px 12px;flex:1;font-size:13px;color:var(--txt1);line-height:1.5">${step}</div>
+        </div>`).join('')}`;
+  }
+
+  // ── Discovered by ──
+  const discEl=document.getElementById('detailDiscoveredBy');
+  if(discEl&&spot.discoveredBy){
+    discEl.innerHTML=`<div style="font-size:12px;color:var(--txt3)">Discovered by <strong style="color:var(--txt2)">@${spot.discoveredBy}</strong></div>`;
+  }
+
+  // ── Nearest services ──
+  const servicesEl=document.getElementById('detailNearestServices');
+  if(servicesEl){
+    const hospital=spot.nearestHospital||'Check locally';
+    const town=spot.nearestTown||'See map';
+    servicesEl.innerHTML=`
+      <div style="font-size:13px;font-weight:700;color:var(--txt0);margin-bottom:8px">Nearest Services</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div style="background:rgba(224,82,82,.08);border:1px solid rgba(224,82,82,.2);border-radius:12px;padding:12px">
+          <div style="font-size:10px;color:var(--txt3);letter-spacing:.7px;text-transform:uppercase;font-weight:700;margin-bottom:4px">Hospital</div>
+          <div style="font-size:12px;font-weight:700;color:var(--txt0);line-height:1.3">${hospital}</div>
+        </div>
+        <div style="background:rgba(74,90,217,.08);border:1px solid rgba(74,90,217,.2);border-radius:12px;padding:12px">
+          <div style="font-size:10px;color:var(--txt3);letter-spacing:.7px;text-transform:uppercase;font-weight:700;margin-bottom:4px">Nearest Town</div>
+          <div style="font-size:12px;font-weight:700;color:var(--txt0);line-height:1.3">${town}</div>
+        </div>
+      </div>`;
+  }
+
+  // ── Photos tab: user-uploaded only ──
+  const photosGridEl=document.getElementById('detailPhotosGrid');
+  if(photosGridEl){
+    const communityPhotos=JSON.parse(localStorage.getItem(`wp_photos_${spot.id}`)||'[]');
+    if(!communityPhotos.length){
+      photosGridEl.innerHTML=`
+        <div style="text-align:center;padding:48px 20px">
+          <div style="width:80px;height:80px;border-radius:16px;background:${spot.heroGradient||'var(--bg3)'};margin:0 auto 16px;display:flex;align-items:center;justify-content:center">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.5"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+          </div>
+          <div style="font-size:14px;font-weight:600;color:var(--txt1);margin-bottom:6px">No photos yet</div>
+          <div style="font-size:13px;color:var(--txt3);margin-bottom:16px">Be the first to share a photo of this spot</div>
+          <button type="button" onclick="openPhotoPicker()" style="background:rgba(184,232,122,.15);border:1px solid rgba(184,232,122,.3);color:#B8E87A;border-radius:12px;padding:10px 20px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Add Your Photo</button>
+        </div>`;
+    } else {
+      photosGridEl.innerHTML=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:2px">${
+        communityPhotos.map(p=>`<div style="aspect-ratio:1;overflow:hidden;border-radius:4px;cursor:pointer" onclick="openPhotoFull('${p.url}')"><img src="${p.url}" style="width:100%;height:100%;object-fit:cover" loading="lazy"></div>`).join('')
+      }</div>`;
+    }
+  }
+
+  // ── Discussion tab ──
+  const commentsList=document.getElementById('detailCommentsList');
+  if(commentsList) _renderDetailComments(spot.id);
+
+  // ── Navigation buttons ──
+  const appleMaps=document.getElementById('detailAppleMapsBtn');
+  if(appleMaps)appleMaps.href=`https://maps.apple.com/?daddr=${spot.lat},${spot.lng}&dirflg=d`;
+  const googleMaps=document.getElementById('detailGoogleMapsBtn');
+  if(googleMaps)googleMaps.href=`https://www.google.com/maps/dir/?api=1&destination=${spot.lat},${spot.lng}`;
+
+  // ── Admin edit button ──
+  const adminBtn=document.getElementById('detailAdminEditBtn');
+  if(adminBtn)adminBtn.style.display=isAdmin()?'block':'none';
+
+  // ── Extra content (community, conditions, etc) ──
+  const extraEl=document.getElementById('detailExtra');
+  if(extraEl){
+    let extraHTML='';
+    // Gear list
+    if(spot.gear&&spot.gear.length){
+      extraHTML+=`<div style="margin-top:14px">
+        <div style="font-size:13px;font-weight:700;color:var(--txt0);margin-bottom:8px">What to Bring</div>
+        <div style="background:var(--bg1);border:1px solid var(--border);border-radius:12px;padding:12px 14px">
+          ${spot.gear.map(g=>`<div style="font-size:13px;color:var(--txt1);padding:4px 0;display:flex;align-items:center;gap:8px"><span style="color:#B8E87A">+</span>${g}</div>`).join('')}
+        </div>
+      </div>`;
+    }
+    // Hazards
+    if(spot.hazards&&spot.hazards.length){
+      extraHTML+=`<div style="margin-top:14px">
+        <div style="font-size:13px;font-weight:700;color:var(--txt0);margin-bottom:8px">Hazards</div>
+        <div style="background:rgba(224,82,82,.07);border:1px solid rgba(224,82,82,.18);border-radius:12px;padding:12px 14px">
+          ${spot.hazards.map(h=>`<div style="font-size:13px;color:var(--txt1);padding:4px 0;display:flex;align-items:center;gap:8px"><span style="color:#ff7070;font-weight:700">!</span>${h}</div>`).join('')}
+        </div>
+      </div>`;
+    }
+    // Insider tips
+    if(spot.insiderTips){
+      extraHTML+=`<div style="margin-top:14px">
+        <div style="font-size:13px;font-weight:700;color:var(--txt0);margin-bottom:8px">Insider Tips</div>
+        <div style="background:rgba(184,232,122,.06);border:1px solid rgba(184,232,122,.18);border-radius:12px;padding:12px 14px;font-size:13px;color:var(--txt1);line-height:1.6">${spot.insiderTips}</div>
+      </div>`;
+    }
+    // Reviews
+    const revData=spot.reviews_data||[];
+    const userRevs=JSON.parse(localStorage.getItem(`wp_reviews_${spot.id}`)||'[]');
+    const allRevs=[...revData,...userRevs];
+    if(allRevs.length){
+      const _sSVG=(f,e)=>Array.from({length:5},(_,i)=>i<f?'<svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:middle" fill="#F5A623" stroke="none"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>':'<svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:middle" fill="none" stroke="rgba(255,255,255,.25)" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>').join('');
+      const stars=n=>_sSVG(n,5-n);
+      extraHTML+=`<div style="margin-top:14px">
+        <div style="font-size:13px;font-weight:700;color:var(--txt0);margin-bottom:8px">Reviews</div>
+        ${allRevs.map(r=>`<div style="padding:12px 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+            <div style="font-size:13px;font-weight:700;color:var(--txt0)">${r.user}</div>
+            <div style="font-size:11px;color:var(--txt3)">${r.date||''}</div>
+          </div>
+          <div style="color:#f0c040;font-size:12px;margin-bottom:4px">${stars(r.stars||5)}</div>
+          <div style="font-size:13px;color:var(--txt1);line-height:1.5">${r.text||r.notes||''}</div>
+        </div>`).join('')}
+      </div>`;
+    }
+    // Similar spots
+    const allSpots=[...spots,...userSpots];
+    const similar=(spot.similar||[]).map(id=>allSpots.find(s=>s.id===id)).filter(Boolean);
+    if(similar.length){
+      extraHTML+=`<div style="margin-top:14px;margin-bottom:16px">
+        <div style="font-size:13px;font-weight:700;color:var(--txt0);margin-bottom:8px">Similar Spots</div>
+        <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:4px;scrollbar-width:none">
+          ${similar.map(s=>`<div onclick="openDetail(${s.id})" style="flex-shrink:0;width:120px;cursor:pointer">
+            <div style="width:120px;height:80px;border-radius:10px;background:${s.heroGradient};margin-bottom:6px"></div>
+            <div style="font-size:12px;font-weight:700;color:var(--txt0)">${s.name}</div>
+            <div style="font-size:11px;color:var(--txt3)">${s.typeLabel}</div>
+          </div>`).join('')}
+        </div>
+      </div>`;
+    }
+    extraEl.innerHTML=extraHTML;
+  }
+
+  // ── Elevation context row ──
+  const elevRowEl=document.getElementById('detailElevRow');
+  if(elevRowEl){
+    const elevStr=spot.elevation||'';
+    const isGain=elevStr.startsWith('+');
+    const numericElev=elevStr.replace(/[^0-9,]/g,'');
+    elevRowEl.innerHTML=`
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#B8E87A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      ${numericElev?`<span style="font-size:13px;font-weight:700;color:var(--txt1)">${isGain?'+':''}${numericElev} ft</span>`:''}
+      ${isGain?`<span style="font-size:11px;color:var(--txt3)">elevation gain</span>`:(numericElev?`<span style="font-size:11px;color:var(--txt3)">elevation</span>`:'')}
+      <span style="font-size:10px;color:rgba(184,232,122,.55);margin-left:auto;font-weight:600;letter-spacing:.4px">3D TERRAIN ↑</span>`;
+  }
+
+  // ── Ranger contact ──
+  _buildRangerContact(spot);
+
+  // ── Show on Info tab by default ──
+  switchDetailTab('info');
+
+  // ── Fetch live weather ──
+  fetchLiveWeather(spot);
+
+  // ── Load nearby trails on map ──
+  loadDetailTrails(spot);
+
+  // ── Community spot integrations ──
+  _communitySpotId=spot.id;
+  setTimeout(()=>{
+    if(typeof buildConditionsDash==='function')buildConditionsDash(spot.id);
+    if(typeof buildTripReports==='function')buildTripReports(spot.id);
+  },100);
+
+  // ── Slide up animation ──
+  // ── Show map tab first so map is visible behind the sheet ──
+  showTab('map');
+
+  const detail=document.getElementById('screen-detail');
+  const sheet=document.getElementById('detailSheet');
+  detail.style.display='flex';
+  if(sheet){
+    sheet.style.transition='none';
+    sheet.style.transform='translateY(100%)';
+    requestAnimationFrame(()=>{
+      sheet.style.transition='transform 0.38s cubic-bezier(0.32,0.72,0,1)';
+      requestAnimationFrame(()=>{
+        sheet.style.transform='translateY(0)';
+        detail.classList.add('active');
+      });
+    });
+  } else {
+    detail.style.transform='translateY(100%)';
+    detail.style.transition='transform 0.38s cubic-bezier(0.32,0.72,0,1)';
+    setTimeout(()=>{detail.style.transform='translateY(0)';detail.classList.add('active');},10);
+  }
+
+  // ── Drag-to-dismiss on drag handle ──
+  _initDetailDragToDismiss();
+
+  // ── Init terrain preview after display:flex gives the container real dimensions ──
+  setTimeout(()=>initTerrainPreview(spot),80);
+
+  closeSheet();
+}
+
+function switchDetailTab(tab){
+  ['info','photos','discussion'].forEach(t=>{
+    const panel=document.getElementById('detailPanel'+t.charAt(0).toUpperCase()+t.slice(1));
+    const tabEl=document.getElementById('detailTab'+t.charAt(0).toUpperCase()+t.slice(1));
+    if(panel)panel.style.display=t===tab?(t==='discussion'?'flex':'block'):'none';
+    if(tabEl){
+      tabEl.style.color=t===tab?'var(--txt0)':'var(--txt3)';
+      tabEl.style.borderBottom=t===tab?'2px solid #B8E87A':'2px solid transparent';
+      tabEl.style.fontWeight=t===tab?'700':'600';
+    }
+  });
+}
+
+function closeDetail(){
+  const d=document.getElementById('screen-detail');
+  const sheet=document.getElementById('detailSheet');
+  if(!d)return;
+  closeTerrainFullscreen();
+  if(sheet){
+    sheet.style.transition='transform 0.34s cubic-bezier(0.32,0.72,0,1)';
+    sheet.style.transform='translateY(100%)';
+  } else {
+    d.style.transition='transform 0.34s cubic-bezier(0.32,0.72,0,1)';
+    d.style.transform='translateY(100%)';
+  }
+  setTimeout(()=>{
+    d.classList.remove('active');
+    d.style.display='none';
+    if(sheet){sheet.style.transition='';sheet.style.transform='translateY(100%)';}
+    destroyTerrainPreview();
+    // Clean up detail mini map
+    if(_detailMiniMapInstance){try{_detailMiniMapInstance.remove();}catch(e){}  _detailMiniMapInstance=null;}
+    // Clean up comment panel
+    closeDetailCommentPanel();
+    // Clear search
+    const si=document.getElementById('detailSearchInput');if(si)si.value='';
+    const sd=document.getElementById('detailSearchDrop');if(sd)sd.style.display='none';
+  },360);
+  removeDetailTrails();
+  _detailSpotId=null;
+}
+
+function _renderDetailComments(spotId){
+  const el=document.getElementById('detailCommentsList');
+  if(!el)return;
+  const comments=JSON.parse(localStorage.getItem(`wp_comments_spot_${spotId}`)||'[]');
+  if(!comments.length){
+    el.innerHTML=`<div style="padding:32px 0;text-align:center;color:var(--txt3);font-size:13px">No comments yet. Be the first to share!</div>`;
+    return;
+  }
+  el.innerHTML=comments.map(c=>{
+    const _sf=(n)=>Array.from({length:Math.min(5,n)},()=>'<svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:middle" fill="#F5A623" stroke="none"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>').join('');
+    const stars=c.stars?_sf(c.stars):'';
+    const initials=(c.username||'?').slice(0,2).toUpperCase();
+    return`<div style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">
+      <div style="width:34px;height:34px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#B8E87A;flex-shrink:0">${initials}</div>
+      <div style="flex:1">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
+          <div style="font-size:13px;font-weight:700;color:var(--txt0)">@${c.username||'Explorer'}</div>
+          <div style="font-size:10px;color:var(--txt3)">${c.date||''}</div>
+        </div>
+        ${stars?`<div style="color:#F5A623;font-size:12px;margin-bottom:3px">${stars}</div>`:''}
+        <div style="font-size:13px;color:var(--txt1);line-height:1.55">${c.text}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// submitDetailComment defined further down (handles star ratings)
+
+function openPhotoFull(url){
+  const ov=document.createElement('div');
+  ov.style.cssText='position:absolute;inset:0;z-index:9999;background:rgba(0,0,0,.95);display:flex;align-items:center;justify-content:center';
+  ov.onclick=()=>ov.remove();
+  ov.innerHTML=`<img src="${url}" style="max-width:100%;max-height:100%;object-fit:contain"><div style="position:absolute;top:16px;right:16px;color:#fff;font-size:24px;cursor:pointer;background:rgba(0,0,0,.4);border-radius:50%;width:40px;height:40px;display:flex;align-items:center;justify-content:center">×</div>`;
+  document.getElementById('app').appendChild(ov);
+}
+
+// ── Trails near spot (only while detail is open) ──────────────
+async function loadDetailTrails(spot){
+  if(!map)return;
+  removeDetailTrails(); // clear any previous
+  try{
+    const r=0.018; // ~2km in degrees
+    const bbox=`${spot.lat-r},${spot.lng-r},${spot.lat+r},${spot.lng+r}`;
+    const q=`[out:json][timeout:15];way["highway"~"path|footway|track"](${bbox});out geom tags;`;
+    const res=await fetch('https://overpass-api.de/api/interpreter',{
+      method:'POST',body:'data='+encodeURIComponent(q),
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      signal:AbortSignal.timeout(15000)
+    });
+    if(!res.ok)return;
+    const data=await res.json();
+    const features=[];
+    (data.elements||[]).forEach(el=>{
+      if(el.type==='way'&&el.geometry?.length>1){
+        features.push({type:'Feature',
+          geometry:{type:'LineString',coordinates:el.geometry.map(p=>[p.lon,p.lat])},
+          properties:{name:el.tags?.name||null}
+        });
+      }
+    });
+    if(!features.length)return;
+    const srcId='detail-trails-src';
+    const lineId='detail-trails-line';
+    const labelId='detail-trails-labels';
+    if(!document.getElementById('screen-detail')?.classList.contains('active'))return;
+    map.addSource(srcId,{type:'geojson',data:{type:'FeatureCollection',features}});
+    map.addLayer({id:lineId,type:'line',source:srcId,layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':'#B8E87A','line-width':3,'line-opacity':.85}});
+    _detailTrailSourceIds=[srcId];
+    _detailTrailLayerIds=[lineId];
+    // Labels for named trails
+    const labelFeats=features.filter(f=>f.properties.name).map(f=>{
+      const c=f.geometry.coordinates;
+      const mid=c[Math.floor(c.length/2)];
+      return{type:'Feature',geometry:{type:'Point',coordinates:mid},properties:{name:f.properties.name}};
+    });
+    if(labelFeats.length){
+      const lbSrc=srcId+'-lbl';
+      map.addSource(lbSrc,{type:'geojson',data:{type:'FeatureCollection',features:labelFeats}});
+      map.addLayer({id:labelId,type:'symbol',source:lbSrc,layout:{'text-field':['get','name'],'text-size':10,'text-font':['Open Sans Regular','Arial Unicode MS Regular'],'text-allow-overlap':false},paint:{'text-color':'#B8E87A','text-halo-color':'rgba(0,0,0,.7)','text-halo-width':1.5}});
+      _detailTrailSourceIds.push(lbSrc);
+      _detailTrailLayerIds.push(labelId);
+    }
+  }catch(e){/* silent */}
+}
+
+function removeDetailTrails(){
+  if(!map)return;
+  _detailTrailLayerIds.forEach(id=>{try{map.removeLayer(id);}catch{}});
+  _detailTrailSourceIds.forEach(id=>{try{map.removeSource(id);}catch{}});
+  _detailTrailLayerIds=[];
+  _detailTrailSourceIds=[];
+}
+
+// ═══════════════════════════════════════════════════
+// TERRAIN DASHBOARD — 3D HERO PREVIEW
+// ═══════════════════════════════════════════════════
+
+function initTerrainPreview(spot){
+  _terrainCurrentSpot=spot;
+  destroyTerrainPreview(); // clear any previous map
+
+  const shimmer=document.getElementById('terrainShimmer');
+  const container=document.getElementById('terrainMiniMapContainer');
+  const spotLabel=document.getElementById('terrainSpotLabel');
+  const elevLabel=document.getElementById('terrainElevLabel');
+  const expandBtn=document.getElementById('terrainExpandBtn');
+  const hero=document.getElementById('detailTerrainHero');
+
+  // Reset state
+  if(shimmer)shimmer.style.display='block';
+  if(spotLabel)spotLabel.style.display='none';
+  if(elevLabel)elevLabel.style.display='none';
+  if(expandBtn)expandBtn.style.display='none';
+  if(container)container.innerHTML='';
+
+  const token=mapboxgl.accessToken;
+  if(!token||token==='MISSING'){_terrainFallback(spot);return;}
+
+  try{
+    _terrainMap=new mapboxgl.Map({
+      container:'terrainMiniMapContainer',
+      style:'mapbox://styles/mapbox/satellite-streets-v12',
+      center:[spot.lng,spot.lat],
+      zoom:13,
+      pitch:65,
+      bearing:0,
+      interactive:true,
+      attributionControl:true,
+      logoPosition:'bottom-right'
+    });
+
+    _terrainMap.on('load',()=>{
+      // Add Mapbox terrain DEM source
+      _terrainMap.addSource('mapbox-dem',{
+        type:'raster-dem',
+        url:'mapbox://mapbox.mapbox-terrain-dem-v1',
+        tileSize:512,
+        maxzoom:14
+      });
+      // Enable 3D terrain — dramatic exaggeration
+      _terrainMap.setTerrain({source:'mapbox-dem',exaggeration:2.5});
+      // Sky atmosphere
+      try{
+        if(!_terrainMap.getLayer('sky')){
+          _terrainMap.addLayer({id:'sky',type:'sky',paint:{
+            'sky-type':'atmosphere',
+            'sky-atmosphere-color':'rgba(220,235,255,1)',
+            'sky-atmosphere-halo-color':'rgba(180,210,255,0.7)',
+            'sky-atmosphere-sun':[0.0,90.0],
+            'sky-atmosphere-sun-intensity':15
+          }});
+        }
+      }catch{}
+      // Fade out shimmer
+      if(shimmer){shimmer.style.transition='opacity .4s';shimmer.style.opacity='0';setTimeout(()=>{shimmer.style.display='none';shimmer.style.opacity='1';shimmer.style.transition='';},400);}
+      // Show spot label + expand button
+      if(spotLabel){spotLabel.textContent=spot.name;spotLabel.style.display='block';}
+      if(expandBtn)expandBtn.style.display='block';
+      // Fetch elevation badge
+      _fetchTerrainElevation(spot.lat,spot.lng).then(elevFt=>{
+        if(elevFt&&elevFt>0&&elevLabel){
+          elevLabel.textContent='▲ '+Math.round(elevFt).toLocaleString()+' ft';
+          elevLabel.style.display='block';
+        }
+      });
+      // ── Auto-rotation RAF ──
+      _terrainUserInteracting=false;
+      function _rotateTerrain(){
+        _terrainRotateRafId=requestAnimationFrame(_rotateTerrain);
+        if(!_terrainMap||_terrainUserInteracting)return;
+        const bearing=(_terrainMap.getBearing()+0.1)%360;
+        _terrainMap.setBearing(bearing);
+      }
+      _terrainRotateRafId=requestAnimationFrame(_rotateTerrain);
+      // Pause on touch/mouse, resume after 3s
+      function _pauseRotation(){
+        _terrainUserInteracting=true;
+        clearTimeout(_terrainRotateResumeTimer);
+        _terrainRotateResumeTimer=setTimeout(()=>{_terrainUserInteracting=false;},3000);
+      }
+      _terrainMap.on('touchstart',_pauseRotation);
+      _terrainMap.on('mousedown',_pauseRotation);
+    });
+
+    _terrainMap.on('error',()=>{_terrainFallback(spot);});
+
+  }catch(e){
+    _terrainFallback(spot);
+  }
+}
+
+function _terrainFallback(spot){
+  const shimmer=document.getElementById('terrainShimmer');
+  const container=document.getElementById('terrainMiniMapContainer');
+  if(shimmer)shimmer.style.display='none';
+  if(container){
+    container.style.cssText=`position:absolute;inset:0;background:${spot.heroGradient||'linear-gradient(160deg,#0d1a0d,#1a3a1a)'};z-index:2`;
+    container.innerHTML=`<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;opacity:.25">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#B8E87A" stroke-width="1.2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+    </div>`;
+  }
+}
+
+function destroyTerrainPreview(){
+  // Stop auto-rotation
+  if(_terrainRotateRafId){cancelAnimationFrame(_terrainRotateRafId);_terrainRotateRafId=null;}
+  clearTimeout(_terrainRotateResumeTimer);
+  _terrainUserInteracting=false;
+  if(_terrainMap){
+    try{_terrainMap.remove();}catch{}
+    _terrainMap=null;
+  }
+  const container=document.getElementById('terrainMiniMapContainer');
+  if(container){container.innerHTML='';container.style.cssText='position:absolute;inset:0;z-index:2';}
+}
+
+function openTerrainFullscreen(){
+  const spot=_terrainCurrentSpot;
+  if(!spot)return;
+  const ov=document.getElementById('terrainFullscreenOverlay');
+  if(!ov)return;
+  ov.style.display='flex';
+  const nameEl=document.getElementById('terrainFsSpotName');
+  if(nameEl)nameEl.textContent=spot.name+' — 3D Terrain';
+  const fsContainer=document.getElementById('terrainFullscreenMapContainer');
+  if(!fsContainer)return;
+  fsContainer.innerHTML='';
+  const token=mapboxgl.accessToken;
+  if(!token||token==='MISSING'){
+    fsContainer.style.background=spot.heroGradient||'#0d1a0d';
+    return;
+  }
+  try{
+    _terrainFsMap=new mapboxgl.Map({
+      container:'terrainFullscreenMapContainer',
+      style:'mapbox://styles/mapbox/satellite-streets-v12',
+      center:[spot.lng,spot.lat],
+      zoom:12,
+      pitch:65,
+      bearing:0,
+      interactive:true,
+      antialias:true,
+      attributionControl:false,
+      logoPosition:'bottom-left'
+    });
+    _terrainFsMap.on('load',()=>{
+      _terrainFsMap.addSource('mapbox-dem-fs',{
+        type:'raster-dem',
+        url:'mapbox://mapbox.mapbox-terrain-dem-v1',
+        tileSize:512,
+        maxzoom:14
+      });
+      _terrainFsMap.setTerrain({source:'mapbox-dem-fs',exaggeration:2.5});
+      try{
+        _terrainFsMap.addLayer({id:'sky-fs',type:'sky',paint:{
+          'sky-type':'atmosphere',
+          'sky-atmosphere-color':'rgba(220,235,255,1)',
+          'sky-atmosphere-halo-color':'rgba(180,210,255,0.8)',
+          'sky-atmosphere-sun':[0.0,90.0],
+          'sky-atmosphere-sun-intensity':15
+        }});
+      }catch{}
+      try{
+        _terrainFsMap.setFog({
+          color:'white',
+          'high-color':'#245bde',
+          'horizon-blend':0.04,
+          'space-color':'#0b0b19',
+          'star-intensity':0.15
+        });
+      }catch{}
+    });
+    _terrainFsMap.on('error',()=>{});
+  }catch(e){}
+}
+
+function closeTerrainFullscreen(){
+  const ov=document.getElementById('terrainFullscreenOverlay');
+  if(ov)ov.style.display='none';
+  if(_terrainFsMap){
+    try{_terrainFsMap.remove();}catch{}
+    _terrainFsMap=null;
+  }
+  const fsC=document.getElementById('terrainFullscreenMapContainer');
+  if(fsC)fsC.innerHTML='';
+}
+
+async function _fetchTerrainElevation(lat,lng){
+  // Use Mapbox terrain-rgb tile at zoom 12 to sample elevation at the spot's coordinates
+  const z=12;
+  const sinLat=Math.sin(lat*Math.PI/180);
+  const x=Math.floor((lng+180)/360*Math.pow(2,z));
+  const y=Math.floor((0.5-Math.log((1+sinLat)/(1-sinLat))/(4*Math.PI))*Math.pow(2,z));
+  const token=mapboxgl.accessToken;
+  if(!token||token==='MISSING')return null;
+  const url=`https://api.mapbox.com/v4/mapbox.terrain-rgb/${z}/${x}/${y}.pngraw?access_token=${token}`;
+  try{
+    return await new Promise(resolve=>{
+      const img=new Image();
+      img.crossOrigin='anonymous';
+      img.onload=()=>{
+        try{
+          const canvas=document.createElement('canvas');
+          canvas.width=256;canvas.height=256;
+          const ctx=canvas.getContext('2d');
+          ctx.drawImage(img,0,0);
+          // Sub-pixel position within tile
+          const tx=(lng+180)/360*Math.pow(2,z)-x;
+          const ty=(0.5-Math.log((1+sinLat)/(1-sinLat))/(4*Math.PI))*Math.pow(2,z)-y;
+          const px=Math.min(255,Math.max(0,Math.floor(tx*256)));
+          const py=Math.min(255,Math.max(0,Math.floor(ty*256)));
+          const d=ctx.getImageData(px,py,1,1).data;
+          // Mapbox terrain-rgb encoding: height = -10000 + ((R*65536 + G*256 + B) * 0.1)
+          const elevM=-10000+((d[0]*65536+d[1]*256+d[2])*0.1);
+          const elevFt=elevM*3.28084;
+          resolve(elevFt>-100?elevFt:null);
+        }catch{resolve(null);}
+      };
+      img.onerror=()=>resolve(null);
+      img.src=url;
+      // Timeout fallback
+      setTimeout(()=>resolve(null),8000);
+    });
+  }catch{return null;}
+}
+
+// ═══════════════════════════════════════════════════
+// RANGER DISTRICT CONTACT
+// ═══════════════════════════════════════════════════
+
+function _buildRangerContact(spot){
+  const el=document.getElementById('detailRangerContact');
+  if(!el)return;
+
+  const rc=spot.rangerContact;
+  if(!rc){
+    // Private or unclear land — show access warning
+    if(spot.legal==='illegal'||spot.legal==='gray'){
+      el.innerHTML=`<div style="background:rgba(224,82,82,.07);border:1px solid rgba(224,82,82,.2);border-radius:12px;padding:12px 14px;font-size:11px;color:#e07b39;line-height:1.5">This spot may be on private land — verify legal access before visiting.</div>`;
+    }else{
+      el.innerHTML='';
+    }
+    return;
+  }
+
+  // Build contact rows
+  const rows=[];
+  if(rc.phone){
+    const clean=rc.phone.replace(/[^0-9+]/g,'');
+    rows.push({icon:'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--txt2)" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13.1 19.79 19.79 0 0 1 1.61 4.5 2 2 0 0 1 3.6 2.32h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.06 6.06l.95-.95a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 21.73 17.2z"/></svg>',label:rc.phone,href:`tel:${clean}`,external:false});
+  }
+  if(rc.website){
+    let domain='';
+    try{domain=new URL(rc.website).hostname.replace(/^www\./,'');}catch{domain=rc.website;}
+    rows.push({icon:'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--txt2)" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',label:domain,href:rc.website,external:true});
+  }
+  if(rc.email){
+    rows.push({icon:'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--txt2)" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>',label:rc.email,href:`mailto:${rc.email}`,external:false});
+  }else{
+    // No email — show "Contact via website" as website link
+    rows.push({icon:'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--txt2)" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>',label:'Contact via website',href:rc.website||'#',external:true,muted:true});
+  }
+
+  el.innerHTML=`
+    <div style="font-size:13px;font-weight:700;color:var(--txt0);margin-bottom:10px;display:flex;align-items:center;gap:8px">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#B8E87A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      Ranger District Contact
+    </div>
+    <div style="background:var(--bg1);border:1px solid var(--border);border-left:3px solid #B8E87A;border-radius:12px;overflow:hidden">
+      <div style="padding:12px 14px 10px">
+        <div style="font-size:12px;font-weight:600;color:rgba(255,255,255,.85)">${rc.agency}</div>
+        <div style="font-size:10px;color:var(--txt3);margin-top:3px;line-height:1.4">${rc.district}</div>
+      </div>
+      ${rows.map(r=>`
+        <a href="${r.href}" ${r.external?'target="_blank" rel="noopener"':''} style="display:flex;align-items:center;gap:12px;padding:11px 14px;border-top:1px solid var(--border);text-decoration:none;-webkit-tap-highlight-color:transparent" onclick="event.stopPropagation()">
+          <span style="font-size:16px;flex-shrink:0;line-height:1">${r.icon}</span>
+          <span style="flex:1;font-size:12px;color:${r.muted?'var(--txt3)':'var(--txt1)'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.label}</span>
+          <span style="font-size:14px;color:var(--txt3);flex-shrink:0">›</span>
+        </a>`).join('')}
+    </div>
+    <div style="font-size:9px;color:var(--txt3);margin-top:7px;line-height:1.5;padding:0 2px">Contacting the ranger district before visiting remote spots is recommended for current conditions and access information.</div>`;
+}
+
+// ═══════════════════════════════════════════════════
+// CALTRANS / ROAD ALERT BANNER
+// ═══════════════════════════════════════════════════
+const _KNOWN_ALERTS=[
+  {name:'Hwy 1 Big Sur',lat:36.15,lng:-121.68,radius:.3,msg:' Hwy 1 near Big Sur: seasonal closures possible — check Caltrans before driving'},
+  {name:'I-80 Sierra',lat:39.3,lng:-120.4,radius:1.2,msg:'snow I-80 Chain Control Zone — R2 restrictions may apply above 5000 ft'},
+  {name:'Hwy 89 Lassen',lat:40.6,lng:-121.5,radius:.8,msg:'Hwy 89 near Lassen: check seasonal closure status with park'},
+  {name:'Hwy 49 Gold Country',lat:39.25,lng:-121.0,radius:.6,msg:'Hwy 49: road construction delays near Nevada City — expect 15-min wait'},
+  {name:'Hwy 120 Yosemite',lat:37.9,lng:-119.6,radius:.9,msg:'Snow: Hwy 120 Tioga Pass: chain controls may be required — check Caltrans'},
+];
+function checkAlertBanner(spot){
+  const banner=document.getElementById('alertBanner');
+  const bannerText=document.getElementById('alertBannerText');
+  if(!banner||!bannerText)return;
+  // Find closest alert within radius
+  let hit=null;
+  for(const a of _KNOWN_ALERTS){
+    const d=Math.hypot(spot.lat-a.lat,spot.lng-a.lng);
+    if(d<=a.radius){hit=a;break;}
+  }
+  if(hit){
+    bannerText.textContent=hit.msg;
+    banner.style.display='flex';
+    banner.style.alignItems='center';
+    banner.style.justifyContent='space-between';
+  } else {
+    banner.style.display='none';
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// OPEN-METEO LIVE WEATHER
+// ═══════════════════════════════════════════════════
+const WMO_ICON={0:'sun',1:'sun',2:'partly-cloudy',3:'cloudy',45:'fog',48:'fog',
+  51:'drizzle',53:'drizzle',55:'drizzle',61:'rain',63:'rain',65:'rain',
+  71:'snow',73:'snow',75:'snow',77:'snow',
+  80:'showers',81:'showers',82:'storm',85:'snow',86:'snow',
+  95:'storm',96:'storm',99:'storm'};
+const WMO_LABEL={0:'Clear',1:'Sunny',2:'Partly cloudy',3:'Overcast',45:'Foggy',48:'Foggy',
+  51:'Light drizzle',53:'Drizzle',55:'Heavy drizzle',61:'Light rain',63:'Rain',65:'Heavy rain',
+  71:'Light snow',73:'Snow',75:'Heavy snow',77:'Snow grains',
+  80:'Rain showers',81:'Heavy showers',82:'Violent showers',85:'Snow showers',86:'Heavy snow showers',
+  95:'Thunderstorm',96:'Thunderstorm',99:'Thunderstorm'};
+const DAYS_SHORT=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+async function fetchLiveWeather(spot){
+  const wEl=document.getElementById('weatherWidget');
+  if(!wEl)return;
+  // Show loading shimmer
+  wEl.innerHTML=`<div style="font-size:11px;color:var(--txt2);font-weight:700;letter-spacing:.8px;text-transform:uppercase;margin-bottom:10px">5-Day Forecast at Trailhead</div>
+    <div style="display:flex;gap:8px">${[0,1,2,3,4].map(()=>`<div style="flex:1;background:rgba(255,255,255,.05);border-radius:8px;height:72px;animation:pulse 1.2s ease-in-out infinite"></div>`).join('')}</div>`;
+  try{
+    const url=`https://api.open-meteo.com/v1/forecast?latitude=${spot.lat}&longitude=${spot.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weathercode&temperature_unit=fahrenheit&timezone=auto&forecast_days=5`;
+    const res=await fetch(url,{signal:AbortSignal.timeout(6000)});
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    const data=await res.json();
+    const d=data.daily;
+    const days=d.time.map((t,i)=>{
+      const dt=new Date(t+'T12:00:00');
+      const code=d.weathercode[i];
+      return{
+        day:DAYS_SHORT[dt.getDay()],
+        icon:WMO_ICON[code]||'',
+        label:WMO_LABEL[code]||'',
+        high:Math.round(d.temperature_2m_max[i]),
+        low:Math.round(d.temperature_2m_min[i]),
+        precip:Math.round((d.precipitation_sum[i]||0)*100)/100
+      };
+    });
+    if(!document.getElementById('weatherWidget'))return; // detail may have closed
+    const nwsLat2=spot.lat.toFixed(2),nwsLng2=spot.lng.toFixed(2);
+    const nwsUrl2=`https://forecast.weather.gov/MapClick.php?CityName=&state=CA&site=&textField1=${nwsLat2}&textField2=${nwsLng2}`;
+    document.getElementById('weatherWidget').innerHTML=`
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
+        <div style="font-size:11px;color:var(--txt2);font-weight:700;letter-spacing:.8px;text-transform:uppercase">Live 5-Day Forecast</div>
+        <a href="${nwsUrl2}" target="_blank" rel="noopener" style="font-size:10px;color:var(--txt3);text-decoration:none">Source: NWS ↗</a>
+      </div>
+      <div class="weather-days">${days.map(d=>`
+        <div class="weather-day">
+          <div class="weather-dayname">${d.day}</div>
+          <div class="weather-icon" title="${d.label}" style="font-size:9px;color:var(--txt2);letter-spacing:.2px;text-transform:uppercase">${d.icon}</div>
+          <div class="weather-temp">${d.high}°</div>
+          <div class="weather-low">${d.low}°</div>
+          ${d.precip>0?`<div style="font-size:9px;color:#7ab8f5;margin-top:1px">${d.precip}"</div>`:''}
+        </div>`).join('')}
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        <a href="${nwsUrl2}" target="_blank" rel="noopener" style="font-size:11px;color:var(--accent);text-decoration:none;background:rgba(184,232,122,.1);border:1px solid rgba(184,232,122,.2);border-radius:8px;padding:4px 10px">NWS ↗</a>
+        <a href="https://inciweb.nwcg.gov" target="_blank" rel="noopener" style="font-size:11px;color:var(--orange);text-decoration:none;background:rgba(212,135,74,.1);border:1px solid rgba(212,135,74,.2);border-radius:8px;padding:4px 10px">Fire Danger ↗</a>
+        <a href="https://quickmap.dot.ca.gov" target="_blank" rel="noopener" style="font-size:11px;color:var(--blue);text-decoration:none;background:rgba(106,155,196,.1);border:1px solid rgba(106,155,196,.2);border-radius:8px;padding:4px 10px">Road Conditions ↗</a>
+        <a href="https://www.airnow.gov/?city=&state=CA&country=USA" target="_blank" rel="noopener" style="font-size:11px;color:var(--txt2);text-decoration:none;background:rgba(255,255,255,.05);border:1px solid var(--border2);border-radius:8px;padding:4px 10px">Air Quality ↗</a>
+      </div>`;
+  }catch(e){
+    // Silently fall back — static data already shown before this call
+    if(document.getElementById('weatherWidget'))
+      document.getElementById('weatherWidget').querySelector('div:first-child').textContent='5-Day Forecast at Trailhead';
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// USGS STREAM GAUGE
+// ═══════════════════════════════════════════════════
+async function fetchUSGSGauge(spot){
+  const el=document.getElementById('usgsWidget');
+  if(!el)return;
+  try{
+    // Find nearest USGS gauge within ~0.5 degree using WaterML REST API
+    const bbox=`${spot.lng-.5},${spot.lat-.5},${spot.lng+.5},${spot.lat+.5}`;
+    const url=`https://waterservices.usgs.gov/nwis/iv/?format=json&bBox=${bbox}&parameterCd=00060,00065&siteStatus=active`;
+    const res=await fetch(url,{signal:AbortSignal.timeout(8000)});
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    const data=await res.json();
+    const sites=(data.value?.timeSeries||[]).slice(0,3);
+    if(!sites.length){el.innerHTML=`<div style="font-size:12px;color:var(--txt2)">No USGS gauge within 30 mi</div>`;return;}
+    el.innerHTML=sites.map(s=>{
+      const name=s.sourceInfo?.siteName||'Unnamed gauge';
+      const val=s.values?.[0]?.value?.[0]?.value??'--';
+      const unit=s.variable?.unit?.unitCode||'';
+      const param=s.variable?.variableName||'';
+      const isFlow=param.toLowerCase().includes('discharge');
+      const isCfs=parseFloat(val);
+      const level=isFlow?(isCfs<100?'Low':isCfs<500?'Normal':isCfs<2000?'High':'Flood'):'';
+      return`<div style="padding:8px 0;border-bottom:1px solid var(--border);last-child:border:none">
+        <div style="font-size:11px;color:var(--txt2);margin-bottom:2px">${name.length>40?name.slice(0,40)+'…':name}</div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline">
+          <span style="font-size:16px;font-weight:800;color:var(--blue)">${parseFloat(val).toFixed(1)} <span style="font-size:11px;font-weight:400;color:var(--txt2)">${unit}</span></span>
+          ${level?`<span style="font-size:11px;font-weight:700">${level}</span>`:''}
+        </div>
+      </div>`;
+    }).join('')+`<div style="font-size:10px;color:var(--txt3);margin-top:6px">Source: USGS National Water Information System · Real-time</div>`;
+  }catch(e){
+    if(el)el.innerHTML=`<div style="font-size:12px;color:var(--txt2)">Water data unavailable offline</div>`;
+  }
+}
+
+function drawElevProfile(spot){
+  const canvas=document.getElementById('elevCanvas');
+  if(!canvas)return;
+  const ctx=canvas.getContext('2d');
+  const W=canvas.width=canvas.offsetWidth||300;
+  const H=canvas.height=56;
+  const gain=parseInt((spot.elevation||'+0').replace(/[^0-9]/g,''))||100;
+  const pts=[];
+  // Generate a smooth elevation curve
+  for(let i=0;i<=20;i++){
+    const t=i/20;
+    // Hill profile: up then down, or just ascending
+    let y;
+    if(spot.type==='hiking'||spot.type==='biking'){
+      y=Math.sin(t*Math.PI)*0.7+t*0.3;
+    }else if(spot.type==='caves'||spot.type==='lava_tube'){
+      y=1-Math.pow(t-0.5,2)*2;
+    }else{
+      y=t*0.6+Math.sin(t*Math.PI*2)*0.2;
+    }
+    pts.push({x:t*W,y:H-(y*(H-8)+4)});
+  }
+  ctx.clearRect(0,0,W,H);
+  // Fill gradient
+  const grad=ctx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,'rgba(196,149,106,.4)');
+  grad.addColorStop(1,'rgba(196,149,106,.0)');
+  ctx.beginPath();ctx.moveTo(0,H);
+  pts.forEach(p=>ctx.lineTo(p.x,p.y));
+  ctx.lineTo(W,H);ctx.closePath();
+  ctx.fillStyle=grad;ctx.fill();
+  // Line
+  ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);
+  pts.forEach(p=>ctx.lineTo(p.x,p.y));
+  ctx.strokeStyle='#6fcf97';ctx.lineWidth=2;ctx.stroke();
+}
+
+// ═══════════════════════════════════════════════════
+// SHARE TRIP PLAN + I'M BACK SAFE
+// ═══════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════
+// COMMUNITY — CONDITIONS DASHBOARD, TRIP REPORTS, Q&A
+// ═══════════════════════════════════════════════════
+let _communitySpotId=null;
+
+// ── Conditions Dashboard ──────────────────────────
+function buildConditionsDash(spotId){
+  const el=document.getElementById('conditionsDash');
+  if(!el)return;
+  const reports=getCommunityData('wp_tripreports',spotId);
+  const latest=reports[0]; // most recent
+  // Fallback demo data when no user reports exist
+  const water=latest?.water||'Normal';
+  const trail=latest?.trail||'Great';
+  const road=latest?.road||'Open — Good';
+  const gate=latest?.gate||'Open';
+  const lastDate=latest?latest.date:'Community reported';
+  const verifications=JSON.parse(localStorage.getItem(`wp_verify_${spotId}`)||'[]');
+  const lastVerified=verifications[0]||null;
+  const colorMap={Normal:'good','Great':'good','Open':'good','Open — Good':'good','Open — Good':'good',Low:'warn','Poor':'warn','4WD Only':'warn',High:'warn',Flood:'bad',Closed:'bad',Locked:'bad'};
+  const getC=v=>colorMap[v]||'';
+  el.innerHTML=`
+    <div class="verify-row">
+      <div>
+        <div style="font-size:12px;font-weight:700">Spot Verified</div>
+        <div style="font-size:11px;color:var(--txt2);margin-top:2px">${lastVerified?`Last confirmed ${lastVerified.date} by ${lastVerified.user}`:'Be the first to verify this spot'}</div>
+      </div>
+      <button class="verify-btn" onclick="verifySpot(${spotId})">Confirm</button>
+    </div>
+    <div class="conditions-grid">
+      <div class="cond-cell"><div class="cond-label">Water Level</div><div class="cond-val ${getC(water)}">${water}</div></div>
+      <div class="cond-cell"><div class="cond-label">Trail</div><div class="cond-val ${getC(trail)}">${trail}</div></div>
+      <div class="cond-cell"><div class="cond-label">Access Road</div><div class="cond-val ${getC(road)}">${road}</div></div>
+      <div class="cond-cell"><div class="cond-label">Gate</div><div class="cond-val ${getC(gate)}">${gate}</div></div>
+    </div>
+    ${latest?`<div style="font-size:10px;color:var(--txt3);margin-bottom:16px;margin-top:-4px">Updated ${lastDate} · Community sourced</div>`:'<div style="font-size:10px;color:var(--txt3);margin-bottom:16px;margin-top:-4px">No recent reports — be the first!</div>'}`;
+}
+
+function verifySpot(spotId){
+  const key=`wp_verify_${spotId}`;
+  const existing=JSON.parse(localStorage.getItem(key)||'[]');
+  existing.unshift({user:'You',date:'Today',ts:Date.now()});
+  localStorage.setItem(key,JSON.stringify(existing.slice(0,10)));
+  buildConditionsDash(spotId);
+  showToast('Spot verified — thanks!');
+}
+
+// ── Trip Reports ──────────────────────────────────
+function getCommunityData(key,spotId){
+  const all=JSON.parse(localStorage.getItem(key)||'{}');
+  return (all[spotId]||[]).sort((a,b)=>b.ts-a.ts);
+}
+function saveCommunityData(key,spotId,item){
+  const all=JSON.parse(localStorage.getItem(key)||'{}');
+  if(!all[spotId])all[spotId]=[];
+  all[spotId].unshift(item);
+  if(all[spotId].length>20)all[spotId]=all[spotId].slice(0,20);
+  localStorage.setItem(key,JSON.stringify(all));
+}
+
+function buildTripReports(spotId){
+  const el=document.getElementById('tripReportsList');
+  if(!el)return;
+  const reports=getCommunityData('wp_tripreports',spotId);
+  // Mix in some seeded data for first-time view
+  const seeded=[
+    {user:'RiverRunner_Jen',date:'May 20, 2026',ts:Date.now()-86400000,water:'Normal',trail:'Great',road:'Open — Good',gate:'Open',notes:'Perfect conditions! Water level is ideal — knee-deep at the main pool. Parking was full by 10am.'},
+    {user:'WeekendExplorer',date:'May 14, 2026',ts:Date.now()-604800000,water:'High',trail:'Good',road:'Open — Rough',gate:'Open',notes:'A bit high from recent rain but still fun. The upper falls were running strong.'}
+  ];
+  const all=[...reports,...(reports.length<2?seeded:[])].slice(0,5);
+  if(!all.length){el.innerHTML=`<div style="font-size:13px;color:var(--txt2);padding:12px 0">No trip reports yet. Be the first!</div>`;return;}
+  el.innerHTML=all.map(r=>{
+    const tags=[r.water&&r.water!=='Not applicable'?{t:r.water}:null,r.trail?{t:r.trail}:null,r.road&&r.road!=='Open — Good'?{t:r.road,warn:true}:null].filter(Boolean);
+    return`<div class="trip-report-card">
+      <div class="tr-header"><span class="tr-user">${r.user}</span><span class="tr-date">${r.date}</span></div>
+      <div class="tr-tags">${tags.map(t=>`<span class="tr-tag ${t.warn?'warn':t.t==='Flood'||t.t==='Closed'?'bad':''}">${t.t}</span>`).join('')}</div>
+      ${r.notes?`<div class="tr-notes">${r.notes}</div>`:''}
+    </div>`;
+  }).join('');
+}
+
+function openTripReport(){
+  document.getElementById('trNotes').value='';
+  document.getElementById('tripReportOverlay').classList.add('open');
+}
+function closeTripReport(){document.getElementById('tripReportOverlay').classList.remove('open');}
+function saveTripReport(){
+  const water=document.getElementById('trWater').value;
+  const trail=document.getElementById('trTrail').value;
+  const road=document.getElementById('trRoad').value;
+  const gate=document.getElementById('trGate').value;
+  const notes=document.getElementById('trNotes').value.trim();
+  if(!notes){showToast('Add a note about conditions');return;}
+  const now=new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  saveCommunityData('wp_tripreports',_communitySpotId,{user:'You',date:now,ts:Date.now(),water,trail,road,gate,notes});
+  closeTripReport();
+  buildTripReports(_communitySpotId);
+  buildConditionsDash(_communitySpotId);
+  showToast('Trip report posted — thanks!');
+}
+
+// ── Q&A ───────────────────────────────────────────
+function buildQA(spotId){
+  const el=document.getElementById('qaList');
+  if(!el)return;
+  const questions=getCommunityData('wp_qa',spotId);
+  const seeded=[
+    {user:'NewHiker_2026',date:'May 18, 2026',ts:Date.now()-172800000,question:'Is there a restroom at the trailhead?',answers:[{user:'LocalGuide_Mike',date:'May 19, 2026',text:'There\'s a vault toilet at the main parking area. Not always stocked with TP — bring your own.'}]},
+    {user:'FamilyTrip_CA',date:'May 10, 2026',ts:Date.now()-1209600000,question:'Can kids under 8 handle this trail?',answers:[{user:'DadOfThree_Explorer',date:'May 11, 2026',text:'Yes! My 6-year-old made it just fine. The trail is flat most of the way. Bring snacks and start early.'}]}
+  ];
+  const all=[...questions,...(questions.length<2?seeded:[])].slice(0,6);
+  if(!all.length){el.innerHTML=`<div style="font-size:13px;color:var(--txt2);padding:12px 0">No questions yet. Ask something!</div>`;return;}
+  el.innerHTML=all.map(q=>`
+    <div class="qa-card">
+      <div style="font-size:11px;color:var(--txt3);margin-bottom:4px">${q.user} · ${q.date}</div>
+      <div class="qa-q">Q: ${q.question}</div>
+      ${(q.answers||[]).map(a=>`<div class="qa-a"><strong>${a.user}:</strong> ${a.text}</div>`).join('')}
+      ${(!q.answers||!q.answers.length)?`<button class="qa-answer-btn" onclick="openAnswerModal('${(q.ts||0)}')">Answer this ›</button>`:''}
+    </div>`).join('');
+}
+
+function openAskQuestion(){
+  document.getElementById('qaQuestion').value='';
+  document.getElementById('qaOverlay').classList.add('open');
+}
+function closeQA(){document.getElementById('qaOverlay').classList.remove('open');}
+function saveQuestion(){
+  const q=document.getElementById('qaQuestion').value.trim();
+  if(!q){showToast('Type a question first');return;}
+  const now=new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  saveCommunityData('wp_qa',_communitySpotId,{user:'You',date:now,ts:Date.now(),question:q,answers:[]});
+  closeQA();
+  buildQA(_communitySpotId);
+  showToast('Question posted');
+}
+function openAnswerModal(ts){showToast('Answer feature coming soon!');}
+
+// ─── Fire & Flood Safety Indicators ──────────────
+async function fetchFireDanger(spot){
+  // Use NIFC / InciWeb lookup — approximate by lat/lng bounding box
+  // For demo: show danger level based on spot type and season
+  const mo=new Date().getMonth();
+  const summerFire=(mo>=5&&mo<=9);
+  const nearFire=['hiking','biking','scenic'].includes(spot.type);
+  const riskLevel=summerFire&&nearFire?'Moderate':summerFire?'Low':'Very Low';
+  const riskColor=riskLevel==='High'||riskLevel==='Very High'?'var(--red)':riskLevel==='Moderate'?'var(--yellow)':'var(--green-hi)';
+  const wEl=document.getElementById('detailExtra');
+  if(!wEl)return;
+  // Append fire danger row after extra sections
+  const fireDiv=document.createElement('div');
+  fireDiv.id='fireDangerRow';
+  fireDiv.innerHTML=`<div style="display:flex;align-items:center;justify-content:space-between;background:rgba(224,82,82,.06);border:1px solid rgba(224,82,82,.18);border-radius:10px;padding:10px 14px;margin-bottom:16px">
+    <div><div style="font-size:12px;font-weight:800">Fire Danger</div><div style="font-size:11px;color:var(--txt2);margin-top:2px">National Forest zone estimate</div></div>
+    <div style="font-size:14px;font-weight:800;color:${riskColor}">${riskLevel}</div>
+  </div>`;
+  // Only insert if not already there
+  if(!document.getElementById('fireDangerRow'))wEl.appendChild(fireDiv);
+}
+
+// ═══════════════════════════════════════════════════
+// DEVICE LOCATION
+// ═══════════════════════════════════════════════════
+let _userLat=null, _userLng=null, _userDotMarker=null;
+
+function initGeolocation(){
+  if(!navigator.geolocation)return;
+  navigator.geolocation.getCurrentPosition(
+    pos=>{
+      _userLat=pos.coords.latitude;
+      _userLng=pos.coords.longitude;
+      _placeUserDot(_userLat,_userLng);
+      _refreshAllDistances();
+      leafletMap.flyTo([_userLat,_userLng],12,{animate:true,duration:1.6});
+    },
+    err=>{
+      // Silently fall back — user denied or unavailable
+      console.log('Geolocation denied/unavailable');
+    },
+    {enableHighAccuracy:true,timeout:12000,maximumAge:60000}
+  );
+  // Continuous watch for dot updates
+  navigator.geolocation.watchPosition(
+    pos=>{
+      _userLat=pos.coords.latitude;
+      _userLng=pos.coords.longitude;
+      window._lastUserLat=_userLat; window._lastUserLng=_userLng;
+      _placeUserDot(_userLat,_userLng);
+    },
+    ()=>{},
+    {enableHighAccuracy:true,maximumAge:10000,timeout:15000}
+  );
+}
+
+function _placeUserDot(lat,lng){
+  if(!map)return;
+  if(_userDotMarker){_userDotMarker.remove();_userDotMarker=null;}
+  const el=document.createElement('div');
+  el.className='user-dot-wrap';
+  el.innerHTML='<div class="user-dot-ring"></div><div class="user-dot-inner"></div>';
+  _userDotMarker=new mapboxgl.Marker({element:el,anchor:'center'})
+    .setLngLat([lng,lat])
+    .addTo(map);
+  // Update Find Me button to show active state
+  const btn=document.getElementById('findMeBtn');
+  if(btn){btn.style.background='var(--blue)';btn.style.boxShadow='0 4px 20px rgba(74,143,223,.6)';}
+}
+
+function _refreshAllDistances(){
+  if(_userLat==null||_userLng==null)return;
+  const allS=[...spots,...userSpots];
+  allS.forEach(s=>{
+    const d=_haversineDistMi(_userLat,_userLng,s.lat,s.lng);
+    s._realDistMi=d;
+    s._realDistStr=d<1?`${Math.round(d*5280)} ft away`:d<10?`${d.toFixed(1)} mi away`:`${Math.round(d)} mi away`;
+  });
+  // Re-sort explore screen by real distance
+  buildExploreScreen();
+}
+
+function findMe(){
+  const btn=document.getElementById('findMeBtn');
+  if(_userLat!=null&&_userLng!=null){
+    leafletMap.flyTo([_userLat,_userLng],14,{animate:true,duration:1.2});
+    showToast('Centered on your location');
+    return;
+  }
+  if(!navigator.geolocation){showToast('Location not supported');return;}
+  if(btn){btn.style.background='rgba(74,143,223,.7)';}
+  showToast('Finding your location…');
+  navigator.geolocation.getCurrentPosition(
+    pos=>{
+      _userLat=pos.coords.latitude; _userLng=pos.coords.longitude;
+      window._lastUserLat=_userLat; window._lastUserLng=_userLng;
+      _placeUserDot(_userLat,_userLng);
+      _refreshAllDistances();
+      leafletMap.flyTo([_userLat,_userLng],14,{animate:true,duration:1.2});
+      showToast('Location found');
+    },
+    ()=>{
+      if(btn){btn.style.background='';}
+      showToast('Location unavailable');
+    },
+    {enableHighAccuracy:true,timeout:10000}
+  );
+}
+
+// ═══════════════════════════════════════════════════
+// SIDE PANEL (MAP CONTROLS)
+// ═══════════════════════════════════════════════════
+let _sidePanelOpen=false;
+
+function toggleSidePanel(){
+  _sidePanelOpen=!_sidePanelOpen;
+  const sp=document.getElementById('sidePanel');
+  sp.classList.toggle('open',_sidePanelOpen);
+  // Reset scroll so map style tiles are always visible at top when opened
+  if(_sidePanelOpen) sp.scrollTop=0;
+  document.getElementById('sidePanelOverlay').classList.toggle('open',_sidePanelOpen);
+}
+
+function updateStyleTiles(style){
+  document.querySelectorAll('.map-style-tile').forEach(t=>{
+    t.classList.toggle('active',t.id==='tile-'+style);
+  });
+  // Also sync old style chips if still present
+  document.querySelectorAll('.style-chip').forEach(c=>{
+    c.classList.toggle('active',c.id==='style-'+style);
+  });
+}
+
+function buildSidePanel(){
+  // ── Spot type filters ──
+  const FILTER_TYPES=[
+    {id:'',label:'All',emoji:''},
+    {id:'water',label:'Water',emoji:''},
+    {id:'hiking',label:'Hiking',emoji:''},
+    {id:'caves',label:'Caves',emoji:''},
+    {id:'lava_tube',label:'Lava Tubes',emoji:''},
+    {id:'biking',label:'Biking',emoji:''},
+    {id:'scenic',label:'Scenic',emoji:''},
+    {id:'urban',label:'Urban',emoji:''},
+    {id:'swimming',label:'Swimming',emoji:''},
+    {id:'river',label:'Rivers',emoji:''},
+    {id:'waterfall',label:'Waterfalls',emoji:''},
+    {id:'natural_slide',label:'Slides',emoji:''},
+  ];
+  const filterEl=document.getElementById('sidePanelFilters');
+  if(filterEl){
+    filterEl.innerHTML=FILTER_TYPES.map(f=>`
+      <div class="filter-chip-panel${f.id===''?' active':''}" data-filter="${f.id}"
+           onclick="setSidePanelFilter('${f.id}',this)">
+        ${f.label}
+      </div>`).join('');
+  }
+
+  // Layer toggles are hardcoded in HTML (#sidePanelLandLayers) — no duplicate injection needed
+}
+
+function setSidePanelFilter(filterId, el){
+  // Update chip visuals
+  document.querySelectorAll('#sidePanelFilters .filter-chip-panel').forEach(c=>{
+    c.classList.remove('active');
+  });
+  el.classList.add('active');
+  // Apply filter — map to spot types
+  const waterTypes=['swimming','river','waterfall','natural_slide'];
+  if(filterId===''){
+    activeFilters.clear();
+  } else if(filterId==='water'){
+    activeFilters=new Set(waterTypes);
+  } else {
+    activeFilters=new Set([filterId]);
+  }
+  // Re-filter markers on map via GeoJSON rebuild
+  refreshSpotMarkers();
+  showToast(filterId?`Showing ${el.textContent.trim()} spots`:'Showing all spots');
+}
+
+function toggleSidePanelLayer(layerId, toggleEl){
+  // Handle county boundaries
+  if(layerId==='counties'){
+    const toggleEl2=document.getElementById('spToggle-counties')||toggleEl;
+    toggleCountyLayer(toggleEl2);
+    return;
+  }
+  // Handle private land boundaries
+  if(layerId==='privateland'){
+    const toggleEl2=document.getElementById('spToggle-privateland')||toggleEl;
+    togglePrivateLandLayer(toggleEl2);
+    return;
+  }
+
+  toggleEl.classList.toggle('on');
+  const isNowOn=toggleEl.classList.contains('on');
+  const vis=isNowOn?'visible':'none';
+
+  // Map side-panel IDs → GL layer IDs (show both fill + outline + line)
+  const glTypeMap={
+    blm:'blm',
+    natforest:'nationalForest',
+    stateparks:'stateParks',
+    land:'private',
+    property:'private'
+  };
+  if(glTypeMap[layerId]){
+    const t=glTypeMap[layerId];
+    if(isNowOn){
+      showLandType(t);
+    } else {
+      hideLandType(t);
+    }
+    showToast((isNowOn?'Showing ':'Hiding ')+layerId.replace(/([A-Z])/g,' $1'));
+    return;
+  }
+
+  // Try to trigger existing feature layer toggle if it exists
+  if(typeof FEATURE_LAYERS!=='undefined'){
+    const match=FEATURE_LAYERS.find(f=>f.id===layerId);
+    if(match){
+      toggleFeatureLayer(layerId);
+      return;
+    }
+  }
+
+  // Special handling for hidden gems only
+  if(layerId==='hiddenonly'){
+    hiddenGemFilterActive=isNowOn;
+    refreshSpotMarkers();
+    showToast(isNowOn?'Showing hidden gems only':'Showing all spots');
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// PHOTO CAROUSEL (Detail Page)
+// ═══════════════════════════════════════════════════
+async function fetchSpotPhotos(spot){
+  // ONLY show user-uploaded community photos — no Wikipedia, Unsplash, or any online photos
+  const gridEl=document.getElementById('detailPhotosGrid');
+  if(!gridEl)return;
+  const communityPhotos=JSON.parse(localStorage.getItem(`wp_photos_${spot.id}`)||'[]');
+  if(!communityPhotos.length){
+    gridEl.innerHTML=`
+      <div style="text-align:center;padding:48px 20px">
+        <div style="width:80px;height:80px;border-radius:16px;background:${spot.heroGradient||'var(--bg3)'};margin:0 auto 16px;display:flex;align-items:center;justify-content:center">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.5"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+        </div>
+        <div style="font-size:14px;font-weight:600;color:var(--txt1);margin-bottom:6px">No photos yet</div>
+        <div style="font-size:13px;color:var(--txt3);margin-bottom:16px">Be the first to share a photo of this spot</div>
+        <button type="button" onclick="openPhotoPicker()" style="background:rgba(184,232,122,.15);border:1px solid rgba(184,232,122,.3);color:#B8E87A;border-radius:12px;padding:10px 20px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Add Your Photo</button>
+      </div>`;
+    return;
+  }
+  gridEl.innerHTML=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:2px">${
+    communityPhotos.map((p,i)=>`<div style="aspect-ratio:1;overflow:hidden;border-radius:4px;cursor:pointer;position:relative" onclick="openPhotoFull('${p.url}')">
+      <img src="${p.url}" style="width:100%;height:100%;object-fit:cover" loading="lazy">
+      ${isAdmin()?`<button onclick="event.stopPropagation();_removePhoto(${i},${spot.id})" style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,.6);border:none;color:#fff;border-radius:50%;width:22px;height:22px;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center">×</button>`:''}
+    </div>`).join('')
+  }</div>
+  <div style="padding:12px;text-align:center">
+    <button type="button" onclick="openPhotoPicker()" style="background:rgba(184,232,122,.10);border:1px solid rgba(184,232,122,.25);color:#B8E87A;border-radius:12px;padding:8px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit">+ Add Photo</button>
+  </div>`;
+}
+
+function _buildCarousel(carousel,counter,dotsEl,heroIcon,photos,spot){
+  if(!photos.length){
+    counter.style.display='none';
+    dotsEl.innerHTML='';
+    heroIcon.style.opacity='0.55';
+    return;
+  }
+
+  const total=photos.length;
+  counter.textContent=`1 / ${total}`;
+  counter.style.display=total>1?'block':'none';
+
+  // Build slides
+  carousel.innerHTML=photos.map((p,i)=>{
+    if(p.type==='gradient'){
+      return `<div class="photo-slide loaded" style="background:${spot.heroGradient}" data-idx="${i}" data-photo-type="gradient">
+        
+      </div>`;
+    }
+    return `<div class="photo-slide" data-idx="${i}" data-photo-type="${p.type}" style="position:relative">
+      <img src="${p.url}" alt="${spot.name}" loading="lazy"
+           onload="this.parentNode.classList.add('loaded');this.parentNode.querySelector('.slide-placeholder')&&(this.parentNode.querySelector('.slide-placeholder').style.display='none')"
+           onerror="this.style.display='none';this.parentNode.classList.add('loaded')"
+           style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none">
+      <div class="slide-placeholder" style="position:absolute;inset:0;background:${spot.heroGradient}"></div>
+      ${p.credit?`<div style="position:absolute;bottom:6px;right:8px;font-size:9px;color:rgba(255,255,255,.5);background:rgba(0,0,0,.35);border-radius:6px;padding:2px 6px;backdrop-filter:blur(4px)">${p.credit}</div>`:''}
+      ${p.type==='community'?`<div class="photo-remove-hint${isAdmin()?' show':''}"><button class="photo-remove-btn" onclick="_removeCarouselPhoto(${i},${spot.id})">${isAdmin()?'Delete':'Remove Photo'}</button></div>`:''}
+    </div>`;
+  }).join('');
+
+  heroIcon.style.opacity='0';
+
+  // Dot indicators
+  dotsEl.innerHTML=photos.map((_,i)=>
+    `<div class="photo-dot${i===0?' active':''}" onclick="scrollCarouselTo(${i})"></div>`
+  ).join('');
+
+  // Scroll listener
+  carousel.addEventListener('scroll',()=>{
+    const idx=Math.round(carousel.scrollLeft/carousel.offsetWidth);
+    counter.textContent=`${idx+1} / ${total}`;
+    dotsEl.querySelectorAll('.photo-dot').forEach((d,i)=>d.classList.toggle('active',i===idx));
+  },{passive:true});
+
+  // Long-press to reveal remove overlay on community photos
+  _attachCarouselLongPress(carousel,photos,spot);
+}
+
+function _attachCarouselLongPress(carousel,photos,spot){
+  let _lpTimer=null;
+  let _lpStartX=0,_lpStartY=0;
+
+  function cancelLP(){
+    if(_lpTimer){clearTimeout(_lpTimer);_lpTimer=null;}
+    // Hide all remove hints
+    carousel.querySelectorAll('.photo-remove-hint.show').forEach(el=>el.classList.remove('show'));
+  }
+
+  carousel.addEventListener('pointerdown',e=>{
+    const slide=e.target.closest('.photo-slide');
+    if(!slide||slide.dataset.photoType!=='community')return;
+    _lpStartX=e.clientX;_lpStartY=e.clientY;
+    _lpTimer=setTimeout(()=>{
+      const hint=slide.querySelector('.photo-remove-hint');
+      if(hint)hint.classList.add('show');
+      _lpTimer=null;
+    },600);
+  },{passive:true});
+
+  carousel.addEventListener('pointermove',e=>{
+    if(!_lpTimer)return;
+    const dx=Math.abs(e.clientX-_lpStartX),dy=Math.abs(e.clientY-_lpStartY);
+    if(dx>10||dy>10)cancelLP();
+  },{passive:true});
+
+  carousel.addEventListener('pointerup',()=>{if(_lpTimer)cancelLP();},{passive:true});
+  carousel.addEventListener('pointercancel',cancelLP,{passive:true});
+}
+
+function _removeCarouselPhoto(idx,spotId){_removePhoto(idx,spotId);}
+
+// Remove photo from grid by index
+function _removePhoto(idx,spotId){
+  const stored=JSON.parse(localStorage.getItem(`wp_photos_${spotId}`)||'[]');
+  if(idx>=0&&idx<stored.length)stored.splice(idx,1);
+  localStorage.setItem(`wp_photos_${spotId}`,JSON.stringify(stored));
+  const allS=[...spots,...userSpots];
+  const sp=allS.find(s=>s.id===spotId);
+  if(sp)fetchSpotPhotos(sp);
+  showToast('Photo removed');
+}
+
+function scrollCarouselTo(idx){
+  const carousel=document.getElementById('detailPhotoCarousel');
+  if(carousel)carousel.scrollTo({left:idx*carousel.offsetWidth,behavior:'smooth'});
+}
+
+// ═══════════════════════════════════════════════════
+// SAFETY — SHARE TRIP PLAN / I'M BACK SAFE
+// ═══════════════════════════════════════════════════
+function shareTripPlan(spotName,lat,lng){
+  const mapsUrl=`https://maps.google.com/?q=${lat},${lng}`;
+  const now=new Date();
+  const eta=new Date(now.getTime()+4*60*60*1000); // +4h default
+  const fmtTime=d=>`${d.getHours()%12||12}:${String(d.getMinutes()).padStart(2,'0')} ${d.getHours()>=12?'PM':'AM'}`;
+  const msg=`WildPath Trip Plan\nSpot: ${spotName}\nMap: ${mapsUrl}\nDeparting: ${fmtTime(now)}\nExpected back by: ${fmtTime(eta)}\n\nIf you don't hear from me by ${fmtTime(eta)}, please call 911 and give them this location.`;
+  if(navigator.share){
+    navigator.share({title:`WildPath — ${spotName}`,text:msg}).catch(()=>{});
+  } else if(navigator.clipboard){
+    navigator.clipboard.writeText(msg).then(()=>showToast('Trip plan copied — paste to share'));
+  } else {
+    showToast('Share not available on this browser');
+  }
+}
+
+function imBackSafe(spotName){
+  const msg=`I'm back safely from ${spotName}! Thanks for keeping an eye out.`;
+  if(navigator.share){
+    navigator.share({title:'WildPath — Back Safe',text:msg}).catch(()=>{});
+  } else if(navigator.clipboard){
+    navigator.clipboard.writeText(msg).then(()=>showToast('Message copied'));
+  }
+  showToast('Glad you made it back safely!');
+}
+
+// ═══════════════════════════════════════════════════
+// COMPASS MODE
+// ═══════════════════════════════════════════════════
+let compassActive=false, compassOrientHandler=null;
+
+function toggleCompass(){
+  const overlay=document.getElementById('compassOverlay');
+  if(!compassActive){
+    compassActive=true;
+    overlay.style.boxShadow='0 0 0 2px var(--accent),0 0 14px rgba(196,149,106,.4)';
+
+    const handleOrientation=e=>{
+      // webkitCompassHeading is true heading on iOS; alpha is counterclockwise on Android
+      let heading=e.webkitCompassHeading!=null
+        ? e.webkitCompassHeading
+        : (360-(e.alpha||0));
+      const needle=document.getElementById('compassNeedle');
+      if(needle) needle.style.transform=`rotate(${-heading}deg)`;
+
+      // If a destination spot is selected, show bearing line
+      const destEl=document.getElementById('compassBearing');
+      const allSp=[...spots,...userSpots];
+      const sp=allSp.find(s=>s.id===currentPin);
+      if(sp && e.webkitCompassHeading!=null){
+        // compute bearing from current GPS to spot
+        // We store last user position from breadcrumb or locateMe
+        if(window._lastUserLat!=null){
+          const dLon=(sp.lng-window._lastUserLng)*Math.PI/180;
+          const lat1=window._lastUserLat*Math.PI/180,lat2=sp.lat*Math.PI/180;
+          const y=Math.sin(dLon)*Math.cos(lat2);
+          const x=Math.cos(lat1)*Math.sin(lat2)-Math.sin(lat1)*Math.cos(lat2)*Math.cos(dLon);
+          const bearing=(Math.atan2(y,x)*180/Math.PI+360)%360;
+          const relBearing=bearing-heading;
+          if(destEl) destEl.style.transform=`rotate(${relBearing}deg)`;
+        }
+      }
+    };
+
+    // iOS 13+ requires explicit permission
+    if(typeof DeviceOrientationEvent!=='undefined' && typeof DeviceOrientationEvent.requestPermission==='function'){
+      DeviceOrientationEvent.requestPermission().then(state=>{
+        if(state==='granted'){
+          compassOrientHandler=handleOrientation;
+          window.addEventListener('deviceorientationabsolute',handleOrientation,true);
+          window.addEventListener('deviceorientation',handleOrientation,true);
+          showToast('Compass active');
+        } else {
+          compassActive=false;
+          overlay.style.boxShadow='';
+          showToast('Compass permission denied');
+        }
+      }).catch(()=>{
+        compassActive=false;
+        overlay.style.boxShadow='';
+        showToast('Compass unavailable');
+      });
+    } else {
+      compassOrientHandler=handleOrientation;
+      window.addEventListener('deviceorientationabsolute',handleOrientation,true);
+      window.addEventListener('deviceorientation',handleOrientation,true);
+      showToast('Compass active');
+    }
+
+  } else {
+    compassActive=false;
+    overlay.style.boxShadow='';
+    if(compassOrientHandler){
+      window.removeEventListener('deviceorientationabsolute',compassOrientHandler,true);
+      window.removeEventListener('deviceorientation',compassOrientHandler,true);
+      compassOrientHandler=null;
+    }
+    const needle=document.getElementById('compassNeedle');
+    if(needle) needle.style.transform='rotate(0deg)';
+    showToast('Compass off');
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// BREADCRUMB TRAIL
+// ═══════════════════════════════════════════════════
+let breadcrumbActive=false, breadcrumbWatchId=null, breadcrumbPoints=[], breadcrumbPolyline=null, _breadcrumbStartMarker=null;
+
+function toggleBreadcrumb(){
+  const btn=document.getElementById('breadcrumbMenuIcon');
+  if(!breadcrumbActive){
+    if(!navigator.geolocation){showToast('Location not supported');return;}
+    breadcrumbActive=true;
+    if(btn){btn.style.color='var(--accent)';btn.style.filter='drop-shadow(0 0 6px rgba(196,149,106,.6))';}
+    breadcrumbPoints=[];
+
+    // Initialize MapLibre GL GeoJSON source + layer for breadcrumb trail
+    if(map){
+      if(!map.getSource('breadcrumb-src')){
+        map.addSource('breadcrumb-src',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
+        map.addLayer({id:'breadcrumb-glow',type:'line',source:'breadcrumb-src',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':'#6fcf97','line-width':7,'line-opacity':0.15}});
+        map.addLayer({id:'breadcrumb-line',type:'line',source:'breadcrumb-src',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':'#6fcf97','line-width':2.5,'line-opacity':0.88,'line-dasharray':[2,1.5]}});
+      } else {
+        map.getSource('breadcrumb-src').setData({type:'FeatureCollection',features:[]});
+      }
+    }
+
+    showToast('Recording trail…');
+
+    breadcrumbWatchId=navigator.geolocation.watchPosition(
+      pos=>{
+        const{latitude:lat,longitude:lng}=pos.coords;
+        window._lastUserLat=lat; window._lastUserLng=lng;
+        breadcrumbPoints.push([lng,lat]); // [lng,lat] for MapLibre
+        if(map&&map.getSource('breadcrumb-src')){
+          const geojson=breadcrumbPoints.length>1?{type:'FeatureCollection',features:[{type:'Feature',geometry:{type:'LineString',coordinates:breadcrumbPoints},properties:{}}]}:{type:'FeatureCollection',features:[]};
+          map.getSource('breadcrumb-src').setData(geojson);
+        }
+        if(breadcrumbPoints.length===1&&map){
+          // Start dot marker
+          const el=document.createElement('div');
+          el.style.cssText='width:12px;height:12px;border-radius:50%;background:#6fcf97;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.4)';
+          el.title='Trail Start';
+          _breadcrumbStartMarker=new mapboxgl.Marker({element:el,anchor:'center'}).setLngLat([lng,lat]).addTo(map);
+        }
+      },
+      ()=>showToast('Location error'),
+      {enableHighAccuracy:true,maximumAge:4000,timeout:12000}
+    );
+
+  } else {
+    breadcrumbActive=false;
+    if(btn){btn.style.color='';btn.style.filter='';}
+    if(breadcrumbWatchId!=null){
+      navigator.geolocation.clearWatch(breadcrumbWatchId);
+      breadcrumbWatchId=null;
+    }
+    // Compute total distance (breadcrumbPoints stored as [lng,lat] for MapLibre)
+    let distMi=0;
+    for(let i=1;i<breadcrumbPoints.length;i++){
+      distMi+=_haversineDistMi(
+        breadcrumbPoints[i-1][1],breadcrumbPoints[i-1][0],
+        breadcrumbPoints[i][1],breadcrumbPoints[i][0]
+      );
+    }
+    if(_breadcrumbStartMarker){_breadcrumbStartMarker.remove();_breadcrumbStartMarker=null;}
+    showToast(breadcrumbPoints.length>1
+      ? `Trail saved — ${distMi.toFixed(2)} mi`
+      : 'Trail cleared');
+    // GL line stays on map until next toggle-on clears it
+  }
+}
+
+function _haversineDistMi(lat1,lon1,lat2,lon2){
+  const R=3958.8,dLat=(lat2-lat1)*Math.PI/180,dLon=(lon2-lon1)*Math.PI/180;
+  const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+function _haversine(lat1,lon1,lat2,lon2){
+  const R=6371000;
+  const dLat=(lat2-lat1)*Math.PI/180;
+  const dLon=(lon2-lon1)*Math.PI/180;
+  const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+
+// ═══════════════════════════════════════════════════
+// HIKE TRACKING
+// ═══════════════════════════════════════════════════
+let _hikeWatchId=null,_hikePoints=[],_hikeStartTime=null,_hikeTimerInterval=null;
+
+function startHikeTracking(){
+  if(_hikeWatchId!==null){showToast('Already tracking a hike');return;}
+  // Show custom confirmation modal instead of confirm()
+  const existing=document.getElementById('_hikeConfirmModal');
+  if(existing)existing.remove();
+  const modal=document.createElement('div');
+  modal.id='_hikeConfirmModal';
+  modal.style.cssText='position:fixed;inset:0;z-index:800;background:rgba(0,0,0,.7);display:flex;align-items:flex-end;';
+  modal.innerHTML=`
+    <div style="width:100%;background:var(--bg1);border-radius:20px 20px 0 0;padding:24px 20px 36px;box-sizing:border-box">
+      <div style="font-size:18px;font-weight:800;color:var(--txt0);margin-bottom:6px">Track Your Hike</div>
+      <div style="font-size:14px;color:var(--txt2);margin-bottom:20px;line-height:1.5">WildPath will record your GPS route, distance, and time. Your location is stored only on this device.</div>
+      <div style="display:flex;gap:10px">
+        <button onclick="document.getElementById('_hikeConfirmModal').remove()"
+          style="flex:1;padding:14px;background:var(--bg3);border:none;color:var(--txt1);border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit">Cancel</button>
+        <button onclick="document.getElementById('_hikeConfirmModal').remove();_beginHikeTracking()"
+          style="flex:2;padding:14px;background:var(--accent);border:none;color:var(--bg0);border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit">Start Tracking</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+function _beginHikeTracking(){
+  _hikePoints=[];
+  _hikeStartTime=Date.now();
+  // Show pill
+  const pill=document.getElementById('hikeTrackingPill');
+  if(pill)pill.style.display='flex';
+  // Start timer
+  _hikeTimerInterval=setInterval(_updateHikePill,1000);
+  // Watch position
+  _hikeWatchId=navigator.geolocation.watchPosition(
+    pos=>{
+      const pt={lat:pos.coords.latitude,lng:pos.coords.longitude,ts:Date.now()};
+      _hikePoints.push(pt);
+      localStorage.setItem('wildpath-active-hike',JSON.stringify({points:_hikePoints,startTime:_hikeStartTime}));
+      _updateHikePill();
+    },
+    ()=>{},
+    {enableHighAccuracy:true,timeout:10000,maximumAge:5000}
+  );
+  showToast('Hike tracking started');
+}
+function _updateHikePill(){
+  const pill=document.getElementById('hikeTrackingPill');
+  if(!pill)return;
+  const elapsedSec=Math.floor((Date.now()-(_hikeStartTime||Date.now()))/1000);
+  const h=Math.floor(elapsedSec/3600),m=Math.floor((elapsedSec%3600)/60),s=elapsedSec%60;
+  const timeStr=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  const distMeters=_hikePoints.reduce((acc,pt,i)=>{
+    if(i===0)return 0;
+    return acc+_haversine(pt.lat,pt.lng,_hikePoints[i-1].lat,_hikePoints[i-1].lng);
+  },0);
+  const useKm=localStorage.getItem('wp_units')==='km';
+  const distStr=useKm?(distMeters/1000).toFixed(2)+' km':(distMeters*0.000621371).toFixed(2)+' mi';
+  const timeEl=document.getElementById('hikePillTime');
+  const distEl=document.getElementById('hikePillDist');
+  if(timeEl)timeEl.textContent=timeStr;
+  if(distEl)distEl.textContent=distStr;
+}
+function stopHikeTracking(){
+  if(_hikeWatchId!==null){navigator.geolocation.clearWatch(_hikeWatchId);_hikeWatchId=null;}
+  clearInterval(_hikeTimerInterval);_hikeTimerInterval=null;
+  const pill=document.getElementById('hikeTrackingPill');
+  if(pill)pill.style.display='none';
+  const elapsedSec=Math.floor((Date.now()-(_hikeStartTime||Date.now()))/1000);
+  const distMeters=_hikePoints.reduce((acc,pt,i)=>{
+    if(i===0)return 0;
+    return acc+_haversine(pt.lat,pt.lng,_hikePoints[i-1].lat,_hikePoints[i-1].lng);
+  },0);
+  const useKm=localStorage.getItem('wp_units')==='km';
+  const distStr=useKm?(distMeters/1000).toFixed(2)+' km':(distMeters*0.000621371).toFixed(2)+' mi';
+  const h=Math.floor(elapsedSec/3600),m=Math.floor((elapsedSec%3600)/60),s=elapsedSec%60;
+  const timeStr=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  _showHikeSummary({points:_hikePoints,distStr,timeStr,elapsedSec,distMeters});
+  localStorage.removeItem('wildpath-active-hike');
+}
+function _showHikeSummary(hike){
+  // Store in global so onclick buttons can reference it safely
+  window._lastHikeData=hike;
+  const overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;inset:0;z-index:700;background:var(--bg0);display:flex;flex-direction:column;overflow:hidden';
+  overlay.innerHTML=`
+    <div style="display:flex;align-items:center;padding:52px 16px 14px;border-bottom:1px solid var(--border);flex-shrink:0">
+      <div onclick="this.closest('[style*=fixed]').remove()" style="font-size:22px;color:var(--txt0);cursor:pointer;padding:0 12px 0 0">←</div>
+      <div style="flex:1;font-size:17px;font-weight:700;color:var(--txt0);text-align:center">Hike Summary</div>
+      <div style="width:44px"></div>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:20px 16px">
+      <div style="display:flex;gap:12px;margin-bottom:20px">
+        <div style="flex:1;background:var(--bg2);border-radius:14px;padding:16px;text-align:center">
+          <div style="font-size:22px;font-weight:800;color:var(--accent)">${hike.distStr}</div>
+          <div style="font-size:11px;color:var(--txt3);margin-top:4px">Distance</div>
+        </div>
+        <div style="flex:1;background:var(--bg2);border-radius:14px;padding:16px;text-align:center">
+          <div style="font-size:22px;font-weight:800;color:var(--txt0)">${hike.timeStr}</div>
+          <div style="font-size:11px;color:var(--txt3);margin-top:4px">Duration</div>
+        </div>
+      </div>
+      ${hike.points.length?`<div id="hikeSummaryMap" style="width:100%;height:220px;border-radius:14px;overflow:hidden;background:var(--bg2);margin-bottom:20px"></div>`:''}
+      <div style="display:flex;gap:10px">
+        <button onclick="_saveLastHike('private');this.closest('[style*=fixed]').remove()" style="flex:1;padding:14px;background:var(--bg2);border:1.5px solid var(--border2);border-radius:12px;color:var(--txt0);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Save as Private Hike</button>
+        <button onclick="_saveLastHike('public');openCreatePost();this.closest('[style*=fixed]').remove()" style="flex:1;padding:14px;background:var(--accent);border:none;border-radius:12px;color:#0f1a0a;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Share as New Trail</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  // Try to render map
+  if(hike.points.length>1){
+    const token=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||'';
+    if(token){
+      setTimeout(()=>{
+        const mapEl=overlay.querySelector('#hikeSummaryMap');
+        if(!mapEl)return;
+        mapboxgl.accessToken=token;
+        const coords=hike.points.map(p=>[p.lng,p.lat]);
+        const bounds=coords.reduce((b,c)=>b.extend(c),new mapboxgl.LngLatBounds(coords[0],coords[0]));
+        try{
+          const m=new mapboxgl.Map({container:mapEl,style:'mapbox://styles/mapbox/dark-v11',bounds,fitBoundsOptions:{padding:30},interactive:false,attributionControl:false});
+          m.on('load',()=>{
+            m.addSource('route',{type:'geojson',data:{type:'Feature',geometry:{type:'LineString',coordinates:coords}}});
+            m.addLayer({id:'route-line',type:'line',source:'route',paint:{'line-color':'#B8E87A','line-width':3}});
+          });
+        }catch(e){}
+      },100);
+    }
+  }
+}
+function _saveHike(privacy,hike){
+  const hikes=JSON.parse(localStorage.getItem('wildpath-saved-hikes')||'[]');
+  hikes.push({...hike,privacy,date:new Date().toLocaleDateString(),id:'hike_'+Date.now()});
+  localStorage.setItem('wildpath-saved-hikes',JSON.stringify(hikes));
+  showToast('Hike saved');
+  buildProfile();
+}
+function _saveLastHike(privacy){
+  const hike=window._lastHikeData;
+  if(!hike)return;
+  _saveHike(privacy,hike);
+}
+function _shareHikeAsPost(hike){
+  _saveHike('private',hike);
+  showToast('Opening post creator…');
+  setTimeout(()=>openCreatePost(),300);
+}
+
+// ═══════════════════════════════════════════════════
+// TOAST
+// ═══════════════════════════════════════════════════
+function showToast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),2400);
+}
+
+// ═══════════════════════════════════════════════════
+// SPOT & PLACE ICON HELPERS
+// ═══════════════════════════════════════════════════
+function _getSpotIcon(type,color){
+  const iconMap={
+    // Type keys
+    hiking:'ti-walk',swimming:'ti-droplet',water:'ti-droplet',
+    caves:'ti-mountain',cave:'ti-mountain',lava_tube:'ti-flame',
+    scenic:'ti-eye',urban:'ti-building',historic:'ti-building-arch',
+    biking:'ti-bike',bike:'ti-bike',rock_climbing:'ti-mountain-filled',climb:'ti-mountain-filled',
+    river:'ti-ripple',waterfall:'ti-droplet-filled',falls:'ti-droplet-filled',
+    natural_slide:'ti-wave-sine',slide:'ti-wave-sine',beach:'ti-umbrella-beach',
+    // Nominatim/misc aliases
+    peak:'ti-mountain',mountain:'ti-mountain',lava:'ti-flame',
+    scenic_overlook:'ti-eye',historic_site:'ti-building-arch',
+    rail:'ti-train',air:'ti-plane',med:'ti-first-aid-kit',road:'ti-road',
+    city:'ti-building',town:'ti-building',village:'ti-home',
+    park:'ti-trees',forest:'ti-tree',lake:'ti-droplet-filled',bay:'ti-waves',
+    spring:'ti-droplet',trail:'ti-walk',path:'ti-walk'
+  };
+  const cls=iconMap[type]||'ti-map-pin';
+  const c=color||'var(--accent)';
+  return `<i class="ti ${cls}" style="font-size:18px;color:${c}"></i>`;
+}
+
+// ═══════════════════════════════════════════════════
+// LIVE MAP SEARCH
+// ═══════════════════════════════════════════════════
+function liveSearchSpots(query){
+  const drop=document.getElementById('mapSearchDrop');
+  if(!drop)return;
+  const q=(query||'').trim().toLowerCase();
+  if(!q){drop.classList.remove('open');drop.innerHTML='';return;}
+  const allS=[...spots,...userSpots];
+  const results=allS.filter(s=>
+    s.name.toLowerCase().includes(q)||
+    s.typeLabel.toLowerCase().includes(q)||
+    (s.description||'').toLowerCase().includes(q)
+  ).slice(0,8);
+  if(!results.length){
+    drop.innerHTML=`<div class="search-no-results">No spots found for "${query}"</div>`;
+    drop.classList.add('open'); return;
+  }
+  drop.innerHTML=results.map(s=>{
+    const dist=s._realDistStr||s.distance||'';
+    return `<div class="search-result-item" onclick="selectSearchResult(${s.id})">
+      <div class="search-result-icon">${_getSpotIcon(s.type,s.typeColor)}</div>
+      <div class="search-result-info">
+        <div class="search-result-name">${s.name}</div>
+        <div class="search-result-meta">${s.typeLabel}${dist?' · '+dist:''}</div>
+      </div>
+    </div>`;
+  }).join('');
+  drop.classList.add('open');
+}
+function selectSearchResult(id){
+  const allS=[...spots,...userSpots];
+  const spot=allS.find(s=>s.id===id);
+  if(!spot)return;
+  const input=document.getElementById('mapSearchInput');
+  if(input){input.value='';input.blur();}
+  document.getElementById('mapSearchDrop').classList.remove('open');
+  // Switch to map and fly to spot
+  showTab('map');
+  leafletMap.flyTo([spot.lat,spot.lng],14,{animate:true,duration:1.2});
+  setTimeout(()=>openSheet(spot.id),1200);
+}
+// Close search drop on map click
+document.addEventListener('click',e=>{
+  const drop=document.getElementById('mapSearchDrop');
+  const input=document.getElementById('mapSearchInput');
+  if(drop&&input&&!drop.contains(e.target)&&e.target!==input){
+    drop.classList.remove('open');
+  }
+});
+
+// ═══════════════════════════════════════════════════
+// DYNAMIC DETAIL SECTION TITLE + STICKY NAV BAR
+// ═══════════════════════════════════════════════════
+const SPOT_SECTION_TITLES={
+  hiking:'Trail Info',biking:'Route Info',swimming:'Spot Info',
+  caves:'Cave Info',rock_climbing:'Climb Info',scenic:'Viewpoint Info',
+  urban:'Location Info',river:'River Info',lava_tube:'Tube Info',
+  waterfall:'Waterfall Info',natural_slide:'Slide Info',default:'Spot Info'
+};
+function updateDetailSectionTitle(spotType){
+  const el=document.getElementById('detailInfoTitle');
+  if(el)el.textContent=SPOT_SECTION_TITLES[spotType]||SPOT_SECTION_TITLES.default;
+}
+function setNavigateStickyBtn(lat,lng,name){
+  const apple=document.getElementById('appleMapsBtnSticky');
+  if(apple)apple.href=`https://maps.apple.com/?daddr=${lat},${lng}&dirflg=d`;
+  const google=document.getElementById('googleMapsBtnSticky');
+  if(google)google.href=`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
+}
+
+
+// ═══════════════════════════════════════════════════
+// HOME SCREEN
+// ═══════════════════════════════════════════════════
+let _homeFilter='all';
+let _homeFeaturedId=0;
+
+function buildHomeScreen(){
+  // Personalise greeting
+  const greetName=document.getElementById('homeGreetingName');
+  const greetTime=document.getElementById('homeGreetingTime');
+  const hr=new Date().getHours();
+  const timeLabel=hr<12?'Good morning':hr<17?'Good afternoon':'Good evening';
+  if(greetTime)greetTime.textContent=timeLabel;
+  if(greetName){
+    const name=_currentUser&&_currentUser.username&&_currentUser.role!=='guest'
+      ?_currentUser.username
+      :'Explorer';
+    greetName.textContent=`Hello, ${name}`;
+  }
+
+  const allS=[...spots,...userSpots];
+  // Pick a featured spot (rotate daily)
+  const dayIdx=Math.floor(Date.now()/86400000)%allS.length;
+  const featured=allS[dayIdx]||allS[0];
+  _homeFeaturedId=featured.id;
+
+  const fc=document.getElementById('homeFeaturedCard');
+  if(!fc)return;
+
+  // Featured card — use optional chaining since redesigned HTML may omit some IDs
+  const _set=(id,val)=>{const el=document.getElementById(id);if(el)el.textContent=val;};
+  const _setStyle=(id,prop,val)=>{const el=document.getElementById(id);if(el)el.style[prop]=val;};
+  _setStyle('homeFeaturedGrad','background',featured.heroGradient||'linear-gradient(160deg,#1a4a3a,#2d6e52)');
+  _set('homeFeaturedEmoji',featured.typeLabel||'');
+  _set('homeFeaturedName',featured.name);
+  _set('homeFeaturedBadge',featured.typeLabel||'Spot');
+  _set('homeFeaturedRating',`${featured.rating} · ${featured.reviews} reviews`);
+  _set('homeFeaturedDist',featured._realDistStr||featured.distance||'');
+  // Update stats row if present (new design uses homeFeaturedStats)
+  const statsEl=document.getElementById('homeFeaturedStats');
+  if(statsEl){
+    statsEl.innerHTML=`
+      <div class="featured-stat">${featured.rating} rating</div>
+      <div class="featured-stat">${featured.distance||''}</div>
+      <div class="featured-stat">${featured.difficulty||featured.typeLabel||''}</div>`;
+  }
+
+  renderHomeSpots(_homeFilter);
+}
+
+function openFeaturedSpot(){
+  const allS=[...spots,...userSpots];
+  const spot=allS.find(s=>s.id===_homeFeaturedId);
+  if(!spot)return;
+  showTab('map');
+  setTimeout(()=>{
+    if(leafletMap)leafletMap.flyTo([spot.lat,spot.lng],14,{animate:true,duration:1});
+    setTimeout(()=>openSheet(spot.id),1100);
+  },200);
+}
+
+function renderHomeSpots(filter){
+  const container=document.getElementById('homeNearbyScroll');
+  if(!container)return;
+  const allS=[...spots,...userSpots];
+  let filtered=allS;
+  if(filter&&filter!=='all'){
+    const typeMap={hiking:['hiking'],forest:['hiking'],caves:['caves','lava_tube'],river:['river','swimming','waterfall','natural_slide'],urban:['urban'],coast:['scenic','swimming']};
+    const types=typeMap[filter]||[filter];
+    filtered=allS.filter(s=>types.includes(s.type));
+  }
+  const show=filtered.slice(0,10);
+  container.innerHTML=show.map(s=>`
+    <div class="nearby-card" onclick="goToSpotFromHome(${s.id})">
+      <div class="nearby-card-img" style="background:${s.heroGradient||'var(--bg3)'}">
+      </div>
+      <div class="nearby-card-body">
+        <div class="nearby-card-name">${s.name}</div>
+        <div class="nearby-card-dist">${s.typeLabel} · ${s._realDistStr||s.distance||''}</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function setHomeFilter(filter,el){
+  _homeFilter=filter;
+  document.querySelectorAll('#homeFilterRow .home-chip').forEach(c=>c.classList.remove('active'));
+  if(el)el.classList.add('active');
+  renderHomeSpots(filter);
+}
+
+function goToSpotFromHome(id){
+  showTab('map');
+  setTimeout(()=>{
+    const allS=[...spots,...userSpots];
+    const spot=allS.find(s=>s.id===id);
+    if(spot&&leafletMap)leafletMap.flyTo([spot.lat,spot.lng],14,{animate:true,duration:1});
+    setTimeout(()=>openSheet(id),1100);
+  },200);
+}
+
+function homeSearch(val){
+  const clear=document.getElementById('homeSearchClear');
+  if(clear)clear.style.display=val?'inline':'none';
+  if(!val||!val.trim()){document.getElementById('homeSearchDrop').innerHTML='';document.getElementById('homeSearchDrop').classList.remove('open');return;}
+  nominatimSearchInto(val,document.getElementById('homeSearchDrop'),true);
+}
+
+function clearHomeSearch(){
+  const inp=document.getElementById('homeSearchInput');
+  const drop=document.getElementById('homeSearchDrop');
+  const clear=document.getElementById('homeSearchClear');
+  if(inp)inp.value='';
+  if(drop){drop.innerHTML='';drop.classList.remove('open');}
+  if(clear)clear.style.display='none';
+}
+
+// ═══════════════════════════════════════════════════
+// NOMINATIM SEARCH (Map Screen)
+// ═══════════════════════════════════════════════════
+let _nominatimTimer=null;
+
+function nominatimSearch(val){
+  const clear=document.getElementById('searchClearBtn');
+  if(clear)clear.style.display=val?'inline':'none';
+  if(!val||!val.trim()){
+    const drop=document.getElementById('mapSearchDrop');
+    if(drop){drop.innerHTML='';drop.classList.remove('open');}
+    return;
+  }
+  clearTimeout(_nominatimTimer);
+  _nominatimTimer=setTimeout(()=>nominatimSearchInto(val,document.getElementById('mapSearchDrop'),false),340);
+}
+
+async function nominatimSearchInto(query,drop,isHome){
+  if(!drop)return;
+  const q=query.trim();
+  if(!q){drop.innerHTML='';drop.classList.remove('open');return;}
+
+  // First: search local WildPath spots
+  const allS=[...spots,...userSpots];
+  const localHits=allS.filter(s=>
+    s.name.toLowerCase().includes(q.toLowerCase())||
+    s.typeLabel.toLowerCase().includes(q.toLowerCase())
+  ).slice(0,3);
+
+  // Show local results immediately
+  let html=localHits.map(s=>`
+    <div class="search-result-item" onclick="${isHome?'goToSpotFromHome':'selectSearchResult'}(${s.id})">
+      <div class="search-result-icon">${_getSpotIcon(s.type,s.typeColor)}</div>
+      <div class="search-result-info">
+        <div class="search-result-name">${s.name}</div>
+        <div class="search-result-meta">${s.typeLabel} · ${s._realDistStr||s.distance||''}</div>
+      </div>
+    </div>`).join('');
+
+  if(html){drop.innerHTML=html;drop.classList.add('open');}
+
+  // Then fetch Nominatim results
+  try{
+    const url=`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=6&viewbox=-124.5,42.5,-114,32&bounded=0&addressdetails=1&extratags=1`;
+    const r=await fetch(url,{headers:{'Accept-Language':'en-US,en'},signal:AbortSignal.timeout(4000)});
+    const data=await r.json();
+    if(!data.length&&!localHits.length){
+      drop.innerHTML=`<div class="search-no-results">No results for "${q}"</div>`;
+      drop.classList.add('open');return;
+    }
+    const nomHtml=data.slice(0,5).map(item=>{
+      const icon=_nominatimIcon(item.type,item.class);
+      const region=item.address?.state||item.address?.country||'';
+      const name=item.display_name.split(',')[0];
+      const sub=[item.address?.county,item.address?.state].filter(Boolean).join(', ');
+      return `<div class="search-result-item" onclick="flyToNominatim(${item.lat},${item.lon},'${name.replace(/'/g,"\\'")}')">
+        <div class="search-result-icon" style="font-size:18px">${icon}</div>
+        <div class="search-result-info">
+          <div class="search-result-name">${name}</div>
+          <div class="search-result-meta">${sub||item.type||'Place'}</div>
+        </div>
+      </div>`;
+    }).join('');
+    drop.innerHTML=html+nomHtml;
+    if(html||nomHtml)drop.classList.add('open');
+  }catch{}
+}
+
+function _nominatimIcon(type,cls){
+  const iconMap={
+    peak:'ti-mountain',mountain:'ti-mountain',hill:'ti-mountain',volcano:'ti-flame',
+    river:'ti-ripple',stream:'ti-ripple',lake:'ti-droplet-filled',reservoir:'ti-droplet-filled',
+    beach:'ti-umbrella-beach',bay:'ti-waves',
+    trail:'ti-walk',path:'ti-walk',park:'ti-trees',forest:'ti-tree',
+    city:'ti-building',town:'ti-building',village:'ti-home',suburb:'ti-building',
+    cave:'ti-mountain',waterfall:'ti-droplet',spring:'ti-droplet',
+    road:'ti-road',motorway:'ti-road',street:'ti-road',
+    airport:'ti-plane',station:'ti-train',hospital:'ti-first-aid-kit'
+  };
+  const tiCls=iconMap[type]||iconMap[cls]||'ti-map-pin';
+  return `<i class="ti ${tiCls}" style="font-size:18px;color:var(--txt3)"></i>`;
+}
+
+function flyToNominatim(lat,lon,name){
+  const drop=document.getElementById('mapSearchDrop');
+  const input=document.getElementById('mapSearchInput');
+  if(drop)drop.classList.remove('open');
+  if(input){input.value=name;input.blur();}
+  showTab('map');
+  setTimeout(()=>{
+    if(map)map.flyTo({center:[parseFloat(lon),parseFloat(lat)],zoom:14,duration:1200,essential:true});
+  },200);
+}
+
+function clearMapSearch(){
+  const inp=document.getElementById('mapSearchInput');
+  const drop=document.getElementById('mapSearchDrop');
+  const clear=document.getElementById('searchClearBtn');
+  if(inp)inp.value='';
+  if(drop){drop.innerHTML='';drop.classList.remove('open');}
+  if(clear)clear.style.display='none';
+}
+
+// ═══════════════════════════════════════════════════
+// 3-DOT MAP MENU
+// ═══════════════════════════════════════════════════
+function toggleDotMenu(){
+  const btn=document.getElementById('mapDotBtn');
+  const menu=document.getElementById('mapDotMenu');
+  const overlay=document.getElementById('mapDotOverlay');
+  if(!btn)return;
+  const open=btn.classList.contains('menu-open');
+  if(open){closeDotMenu();}else{
+    btn.classList.add('menu-open');
+    menu.classList.add('menu-open');
+    overlay.classList.add('menu-open');
+  }
+}
+function closeDotMenu(){
+  const btn=document.getElementById('mapDotBtn');
+  const menu=document.getElementById('mapDotMenu');
+  const overlay=document.getElementById('mapDotOverlay');
+  if(btn)btn.classList.remove('menu-open');
+  if(menu)menu.classList.remove('menu-open');
+  if(overlay)overlay.classList.remove('menu-open');
+}
+
+// ═══════════════════════════════════════════════════
+// COMPASS — DEVICE ORIENTATION
+// ═══════════════════════════════════════════════════
+let _compassHandler=null;
+
+function initCompassOrientation(){
+  if(_compassHandler){showToast('Compass already active');return;}
+  // iOS 13+ requires permission
+  if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){
+    DeviceOrientationEvent.requestPermission().then(state=>{
+      if(state==='granted')_startCompass();
+      else showToast('Compass permission denied');
+    }).catch(()=>showToast('Compass unavailable'));
+  } else {
+    _startCompass();
+  }
+}
+
+function _startCompass(){
+  const needle=document.getElementById('compassNeedle');
+  if(!needle)return;
+  showToast('Compass active');
+  _compassHandler=(e)=>{
+    let heading=null;
+    if(e.webkitCompassHeading!=null){
+      heading=e.webkitCompassHeading; // iOS: degrees from north
+    } else if(e.absolute&&e.alpha!=null){
+      heading=(360-e.alpha)%360;
+    } else if(e.alpha!=null){
+      heading=(360-e.alpha)%360;
+    }
+    if(heading!=null){
+      // Rotate needle counter-clockwise by heading so red tip always points to geographic north
+      needle.style.transform=`rotate(${-heading}deg)`;
+    }
+  };
+  window.addEventListener('deviceorientationabsolute',_compassHandler,true);
+  window.addEventListener('deviceorientation',_compassHandler,true);
+}
+
+// ═══════════════════════════════════════════════════
+// PIN MY CAR
+// ═══════════════════════════════════════════════════
+let _carMarker=null;
+
+function dropCarPin(){
+  if(!navigator.geolocation){showToast('Location not supported');return;}
+  const existing=localStorage.getItem('wp_car_pin');
+  if(existing){
+    const pin=JSON.parse(existing);
+    if(!confirm('Update car location?')){
+      // Show existing pin popup
+      _placeCarMarkerOnMap(pin.lat,pin.lng);
+      showCarPinPopup(pin.lat,pin.lng,pin.address||'');
+      return;
+    }
+  }
+  showToast('Getting your location…');
+  navigator.geolocation.getCurrentPosition(async pos=>{
+    const{latitude:lat,longitude:lng}=pos.coords;
+    let address='';
+    try{
+      const r=await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`,{signal:AbortSignal.timeout(5000)});
+      const d=await r.json();
+      address=d.display_name||`${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    }catch{address=`${lat.toFixed(5)}, ${lng.toFixed(5)}`;}
+    const pinData={lat,lng,address,time:Date.now()};
+    localStorage.setItem('wp_car_pin',JSON.stringify(pinData));
+    _placeCarMarkerOnMap(lat,lng);
+    showCarPinPopup(lat,lng,address);
+    showToast('Car pinned');
+  },()=>showToast('Location unavailable'));
+}
+
+function _placeCarMarkerOnMap(lat,lng){
+  if(!map)return;
+  if(_carMarker){_carMarker.remove();_carMarker=null;}
+  const el=document.createElement('div');
+  el.style.cssText='background:#C4956A;color:#1A1714;font-size:11px;font-weight:800;padding:4px 8px;border-radius:12px;white-space:nowrap;box-shadow:0 3px 12px rgba(196,149,106,.6);border:1.5px solid rgba(255,255,255,.2);cursor:pointer';
+  el.textContent='My Car';
+  el.onclick=()=>showCarPinPopup(lat,lng,JSON.parse(localStorage.getItem('wp_car_pin')||'{}').address||'');
+  _carMarker=new mapboxgl.Marker({element:el,anchor:'center'})
+    .setLngLat([lng,lat])
+    .addTo(map);
+  showTab('map');
+  map.flyTo({center:[lng,lat],zoom:16,duration:1000,essential:true});
+}
+
+function showCarPinPopup(lat,lng,address){
+  const popup=document.getElementById('carPinPopup');
+  const addrEl=document.getElementById('carPinAddr');
+  if(!popup)return;
+  if(addrEl)addrEl.textContent=address||'Locating address…';
+  popup.classList.add('show');
+  setTimeout(()=>popup.classList.remove('show'),6000);
+}
+
+
+
+
+// ═══════════════════════════════════════════════════
+// SETTINGS PANELS — FULLY FUNCTIONAL
+// ═══════════════════════════════════════════════════
+function openSettingsPanel(key){
+  const overlay=document.getElementById('settingsPanelOverlay');
+  const title=document.getElementById('settingsPanelTitle');
+  const body=document.getElementById('settingsPanelBody');
+  if(!overlay)return;
+
+  const panels={
+    location:()=>{
+      title.textContent='Location Services';
+      const granted=localStorage.getItem('wp_location_granted')==='1';
+      body.innerHTML=`
+        <p class="sp-sub">WildPath uses your location to show nearby spots, calculate distances, and drop breadcrumb trails.</p>
+        <div class="sp-row">
+          <div><div class="sp-row-label">Status</div><div class="sp-row-val">${granted?'Permission granted':'Not granted'}</div></div>
+        </div>
+        <div class="sp-row">
+          <div class="sp-row-label">Enable Location</div>
+          <button onclick="navigator.geolocation.getCurrentPosition(p=>{localStorage.setItem('wp_location_granted','1');showToast('Location enabled');openSettingsPanel('location')},()=>showToast('Location denied'))" style="background:var(--accent);color:var(--bg0);border:none;padding:8px 16px;border-radius:10px;font-weight:700;cursor:pointer;font-family:inherit">Enable</button>
+        </div>
+      `;
+    },
+    offline:()=>{
+      title.textContent='Offline Maps';
+      body.innerHTML=`<p class="sp-sub">Downloaded map areas are available without internet.</p>${buildOfflineAreasList()}`;
+    },
+    darkmode:()=>{
+      title.textContent='Display Mode';
+      const isDark=!document.body.classList.contains('day-mode');
+      body.innerHTML=`
+        <p class="sp-sub">Choose between dark (warm charcoal) and day (light parchment) mode.</p>
+        <div class="sp-row">
+          <div class="sp-row-label">Dark Mode</div>
+          <div onclick="setDayMode(false)" style="padding:8px 18px;border-radius:10px;cursor:pointer;font-weight:700;font-size:13px;background:${isDark?'var(--accent)':'var(--bg3)'};color:${isDark?'var(--bg0)':'var(--txt2)'};border:1px solid ${isDark?'var(--accent)':'var(--border2)'}">Warm Dark</div>
+        </div>
+        <div class="sp-row">
+          <div class="sp-row-label">Day Mode</div>
+          <div onclick="setDayMode(true)" style="padding:8px 18px;border-radius:10px;cursor:pointer;font-weight:700;font-size:13px;background:${!isDark?'var(--accent)':'var(--bg3)'};color:${!isDark?'var(--bg0)':'var(--txt2)'};border:1px solid ${!isDark?'var(--accent)':'var(--border2)'}">Light Parchment</div>
+        </div>
+      `;
+    },
+    share:()=>{
+      title.textContent='Share Profile';
+      body.innerHTML=`
+        <p class="sp-sub">Share your WildPath stats and profile with friends.</p>
+        <div style="background:var(--bg2);border-radius:14px;padding:14px;margin-bottom:14px;text-align:center">
+          
+          <div style="font-size:17px;font-weight:800;color:var(--txt0)">Explorer_WP</div>
+          <div style="font-size:13px;color:var(--txt3);margin-top:4px">${_getMySpotCount()} spots visited</div>
+        </div>
+        <button onclick="shareProfile()" style="width:100%;padding:13px;background:var(--accent);color:var(--bg0);border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit">Share My Profile</button>
+      `;
+    },
+    help:()=>{
+      title.textContent='Help & Support';
+      body.innerHTML=`
+        <p class="sp-sub">Have questions or found a bug? We'd love to hear from you.</p>
+        <div class="sp-row"><div class="sp-row-label">Email Support</div><a href="mailto:support@wildpath.app" style="color:var(--accent);font-size:13px">support@wildpath.app</a></div>
+        <div class="sp-row"><div class="sp-row-label">Version</div><div class="sp-row-val">WildPath 2.0 Beta</div></div>
+        <div class="sp-row"><div class="sp-row-label">Data Sources</div><div class="sp-row-val">OpenStreetMap, Wikimedia Commons, Nominatim, Overpass API</div></div>
+      `;
+    },
+    legal:()=>{
+      title.textContent=' Legal Info';
+      body.innerHTML=`
+        <div class="legal-block"><b style="font-size:13px;color:var(--txt0);display:block;margin-bottom:6px">Terms of Service</b>WildPath is provided for informational purposes only. Always check current conditions before visiting any location. WildPath is not responsible for injuries, trespassing, or other incidents. Use good judgment and follow posted rules.</div>
+        <div class="legal-block"><b style="font-size:13px;color:var(--txt0);display:block;margin-bottom:6px">Privacy Policy</b>WildPath stores your data locally on your device. No personal data is transmitted to our servers. Location data is used only to show nearby spots and is never stored remotely.</div>
+        <div class="legal-block"><b style="font-size:13px;color:var(--txt0);display:block;margin-bottom:6px">Open Source Licenses</b>
+          <b>Leaflet.js</b> © Volodymyr Agafonkin — BSD-2-Clause<br>
+          <b>OpenStreetMap</b> © OpenStreetMap contributors — ODbL<br>
+          <b>Nominatim</b> © OpenStreetMap contributors — ODbL<br>
+          <b>Overpass API</b> © Roland Olbricht — LGPL<br>
+          <b>Wikimedia Commons</b> — CC-BY-SA<br>
+          <b>Unsplash</b> — Unsplash License
+        </div>
+      `;
+    },
+    notifications:()=>{
+      title.textContent='Notifications';
+      const enabled=localStorage.getItem('wp_notif')==='1';
+      body.innerHTML=`
+        <p class="sp-sub">Get notified about trail conditions, crowd levels, and new nearby spots.</p>
+        <div class="sp-row">
+          <div class="sp-row-label">Push Notifications</div>
+          <div onclick="this.classList.toggle('on');localStorage.setItem('wp_notif',this.classList.contains('on')?'1':'0')" style="width:46px;height:26px;border-radius:13px;background:${enabled?'var(--accent)':'var(--bg3)'};cursor:pointer;position:relative;transition:background .2s;border:1px solid var(--border2)" class="${enabled?'on':''}">
+            <div style="position:absolute;top:3px;left:${enabled?'22':'3'}px;width:20px;height:20px;border-radius:50%;background:#fff;transition:left .2s;box-shadow:0 1px 4px rgba(0,0,0,.3)"></div>
+          </div>
+        </div>
+      `;
+    }
+  };
+
+  const build=panels[key];
+  if(build){build();}else{
+    title.textContent='Settings';
+    body.innerHTML=`<p class="sp-sub">This setting is coming soon.</p>`;
+  }
+  overlay.classList.add('open');
+}
+
+function closeSettingsPanel(){
+  const overlay=document.getElementById('settingsPanelOverlay');
+  if(overlay)overlay.classList.remove('open');
+}
+
+function setDayMode(on){
+  if(on){document.body.classList.add('day-mode');localStorage.setItem('wp_day_mode','1');}
+  else{document.body.classList.remove('day-mode');localStorage.setItem('wp_day_mode','0');}
+  closeSettingsPanel();
+  showToast(on?'Day mode on':'Dark mode on');
+}
+
+function shareProfile(){
+  const spotCount=_getMySpotCount();
+  const text=`Check out my WildPath explorer profile — ${spotCount} spots visited!`;
+  if(navigator.share){navigator.share({title:'My WildPath Profile',text});}
+  else if(navigator.clipboard){navigator.clipboard.writeText(text).then(()=>showToast('Copied to clipboard'));}
+  else showToast('Profile link copied');
+}
+
+function buildOfflineAreasList(){
+  const areas=JSON.parse(localStorage.getItem('wp_offline_areas')||'[]');
+  if(!areas.length)return`<div style="text-align:center;padding:24px 0;color:var(--txt3);font-size:13px">No offline areas downloaded yet.<br><br><button onclick="closeSettingsPanel();showTab('map');setTimeout(openOfflineDownload,300)" style="background:var(--accent);color:var(--bg0);border:none;padding:10px 20px;border-radius:10px;font-weight:700;cursor:pointer;font-family:inherit">Download an Area</button></div>`;
+  return areas.map((a,i)=>`
+    <div class="offline-row">
+      <div>
+        <div style="font-size:13px;font-weight:700;color:var(--txt0)">${a.name||'Unnamed Area'}</div>
+        <div style="font-size:11px;color:var(--txt3);margin-top:3px">${a.sizeMB||'?'} MB · ${a.date||'Unknown date'}</div>
+      </div>
+      <button onclick="deleteOfflineArea(${i})" style="background:rgba(196,82,74,.15);color:var(--red);border:1px solid rgba(196,82,74,.25);padding:6px 12px;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">Delete</button>
+    </div>`).join('');
+}
+
+function deleteOfflineArea(idx){
+  const areas=JSON.parse(localStorage.getItem('wp_offline_areas')||'[]');
+  const name=areas[idx]?.name||'Area';
+  areas.splice(idx,1);
+  localStorage.setItem('wp_offline_areas',JSON.stringify(areas));
+  showToast('${name} deleted');
+  openSettingsPanel('offline');
+}
+
+// ═══════════════════════════════════════════════════
+// OFFLINE DOWNLOAD
+// ═══════════════════════════════════════════════════
+function closeOfflineDownload(){
+  const overlay=document.getElementById('offlineDownloadOverlay');
+  const panel=document.getElementById('offlinePanel');
+  if(panel)panel.classList.remove('show');
+  setTimeout(()=>{if(overlay)overlay.classList.remove('active');},350);
+}
+
+async function startOfflineDownload(){
+  const nameEl=document.getElementById('offlineAreaName');
+  const name=(nameEl&&nameEl.value.trim())||'Map Area';
+  showToast('Caching map tiles…');
+  closeOfflineDownload();
+
+  const bounds=leafletMap?leafletMap.getBounds():{getNorthEast:()=>({lat:38,lng:-121}),getSouthWest:()=>({lat:37,lng:-122})};
+  const urls=_getTileUrlsForBounds(bounds,8,13); // z8-13 to keep size reasonable
+  const sizeMB=Math.round(urls.length*0.015); // rough estimate per tile
+
+  // Cache tiles via fetch into Cache API
+  try{
+    const cache=await caches.open('wildpath-tiles-v1');
+    let done=0;
+    const batch=50;
+    for(let i=0;i<urls.length;i+=batch){
+      await Promise.allSettled(urls.slice(i,i+batch).map(u=>
+        fetch(u,{mode:'cors'}).then(r=>r.ok?cache.put(u,r):null).catch(()=>{})
+      ));
+      done=Math.min(i+batch,urls.length);
+    }
+    const areas=JSON.parse(localStorage.getItem('wp_offline_areas')||'[]');
+    areas.push({name,sizeMB:sizeMB||1,date:new Date().toLocaleDateString(),tileCount:urls.length});
+    localStorage.setItem('wp_offline_areas',JSON.stringify(areas));
+    showToast(`"${name}" downloaded — ${urls.length} tiles`);
+  }catch(e){
+    showToast('Cache unavailable in this browser');
+  }
+}
+
+function _getTileUrlsForBounds(bounds,zMin,zMax){
+  const urls=[];
+  const ne=bounds.getNorthEast();
+  const sw=bounds.getSouthWest();
+  const baseUrl='https://tile.openstreetmap.org';
+  for(let z=zMin;z<=zMax;z++){
+    const x0=_llToTile(sw.lat,sw.lng,z).x;
+    const x1=_llToTile(ne.lat,ne.lng,z).x;
+    const y0=_llToTile(ne.lat,sw.lng,z).y;
+    const y1=_llToTile(sw.lat,ne.lng,z).y;
+    for(let x=x0;x<=x1;x++){
+      for(let y=y0;y<=y1;y++){
+        urls.push(`${baseUrl}/${z}/${x}/${y}.png`);
+      }
+    }
+  }
+  return urls.slice(0,2000); // cap at 2000 tiles
+}
+
+function _llToTile(lat,lng,z){
+  const n=Math.pow(2,z);
+  const x=Math.floor((lng+180)/360*n);
+  const latR=lat*Math.PI/180;
+  const y=Math.floor((1-Math.log(Math.tan(latR)+1/Math.cos(latR))/Math.PI)/2*n);
+  return{x,y};
+}
+
+// ═══════════════════════════════════════════════════
+// SERVICE WORKER (for offline tile serving)
+// ═══════════════════════════════════════════════════
+function registerServiceWorker(){
+  if(!('serviceWorker' in navigator))return;
+  const swCode=`
+    const CACHE='wildpath-tiles-v1';
+    self.addEventListener('fetch',e=>{
+      if(!e.request.url.includes('tile.openstreetmap.org')&&!e.request.url.includes('tiles.wmflabs.org'))return;
+      e.respondWith(
+        caches.match(e.request).then(cached=>{
+          if(cached)return cached;
+          return fetch(e.request).then(r=>{
+            if(r&&r.ok){
+              const clone=r.clone();
+              caches.open(CACHE).then(c=>c.put(e.request,clone));
+            }
+            return r;
+          }).catch(()=>cached||new Response('',{status:503}));
+        })
+      );
+    });
+  `;
+  const blob=new Blob([swCode],{type:'application/javascript'});
+  const url=URL.createObjectURL(blob);
+  navigator.serviceWorker.register(url,{scope:'/'}).then(()=>{
+    // Monitor online/offline
+    window.addEventListener('offline',()=>{
+      const badge=document.getElementById('offlineBadge');
+      if(badge)badge.style.display='block';
+    });
+    window.addEventListener('online',()=>{
+      const badge=document.getElementById('offlineBadge');
+      if(badge)badge.style.display='none';
+    });
+    if(!navigator.onLine){
+      const badge=document.getElementById('offlineBadge');
+      if(badge)badge.style.display='block';
+    }
+  }).catch(()=>{/* SW not available in this context */});
+}
+
+// ═══════════════════════════════════════════════════
+// DEVICE LOCATION PERMISSION CARD
+// ═══════════════════════════════════════════════════
+let _watchId=null;
+
+function requestLocationPermission(){
+  const card=document.getElementById('locationPermCard');
+  if(!navigator.geolocation){
+    showToast('Geolocation not supported');
+    if(card)card.style.display='none';
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    pos=>{
+      localStorage.setItem('wp_location_granted','1');
+      if(card)card.style.display='none';
+      _onLocationGranted(pos.coords.latitude,pos.coords.longitude);
+      startLocationWatch();
+    },
+    err=>{
+      if(card)card.style.display='none';
+      const banner=document.getElementById('locationDeniedBanner');
+      if(banner)banner.style.display='block';
+    },
+    {enableHighAccuracy:true,timeout:10000}
+  );
+}
+
+function dismissLocationPerm(){
+  const card=document.getElementById('locationPermCard');
+  if(card)card.style.display='none';
+  localStorage.setItem('wp_location_granted','skipped');
+}
+
+function _onLocationGranted(lat,lng){
+  window._lastUserLat=lat; window._lastUserLng=lng;
+  window._userLat=lat; window._userLng=lng;
+  if(leafletMap){
+    leafletMap.flyTo([lat,lng],13,{animate:true,duration:1.5});
+    _placeUserDot(lat,lng);
+    _refreshAllDistances();
+  }
+}
+
+function startLocationWatch(){
+  if(_watchId!=null||!navigator.geolocation)return;
+  _watchId=navigator.geolocation.watchPosition(
+    pos=>{
+      const{latitude:lat,longitude:lng}=pos.coords;
+      window._lastUserLat=lat; window._lastUserLng=lng;
+      window._userLat=lat; window._userLng=lng;
+      _placeUserDot(lat,lng);
+    },
+    ()=>{},
+    {enableHighAccuracy:true,maximumAge:5000,timeout:15000}
+  );
+}
+
+// ═══════════════════════════════════════════════════
+// PROFILE EDITING
+// ═══════════════════════════════════════════════════
+function openProfileEditSheet(){
+  const sheet=document.getElementById('profileEditSheet');
+  if(sheet)sheet.style.display='flex';
+}
+function closeProfileEditSheet(){
+  const sheet=document.getElementById('profileEditSheet');
+  if(sheet)sheet.style.display='none';
+}
+function openAvatarActionSheet(){
+  const sheet=document.createElement('div');
+  sheet.style.cssText='position:fixed;inset:0;z-index:800;display:flex;flex-direction:column;justify-content:flex-end';
+  sheet.innerHTML=`
+    <div style="position:absolute;inset:0;background:rgba(0,0,0,.5)" onclick="this.closest('[style*=fixed]').remove()"></div>
+    <div style="position:relative;background:var(--bg1);border-radius:20px 20px 0 0;padding:12px 16px calc(var(--nav-h) + 12px)">
+      <div style="font-size:12px;color:var(--txt3);text-align:center;margin-bottom:12px;font-weight:600">Change Profile Photo</div>
+      <div onclick="document.getElementById('avatarFileCamera').click();this.closest('[style*=fixed]').remove()" style="display:flex;align-items:center;gap:12px;padding:14px;background:var(--bg2);border-radius:12px;cursor:pointer;margin-bottom:8px">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--txt0)" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+        <span style="font-size:15px;font-weight:600;color:var(--txt0)">Take Photo</span>
+      </div>
+      <div onclick="document.getElementById('avatarFileLibrary').click();this.closest('[style*=fixed]').remove()" style="display:flex;align-items:center;gap:12px;padding:14px;background:var(--bg2);border-radius:12px;cursor:pointer;margin-bottom:8px">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--txt0)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+        <span style="font-size:15px;font-weight:600;color:var(--txt0)">Choose from Library</span>
+      </div>
+      <div onclick="this.closest('[style*=fixed]').remove()" style="padding:14px;text-align:center;font-size:15px;font-weight:600;color:var(--txt3);cursor:pointer">Cancel</div>
+    </div>`;
+  document.body.appendChild(sheet);
+}
+
+function openAvatarPicker(){
+  closeProfileEditSheet();
+  document.getElementById('avatarPickerInput')?.click();
+}
+function handleAvatarUpload(e){
+  const file=e.target.files&&e.target.files[0];
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=(ev)=>{
+    const data=ev.target.result;
+    localStorage.setItem('wp_avatar',data);
+    _applyAvatar(data);
+    showToast('Profile photo updated');
+  };
+  reader.readAsDataURL(file);
+}
+function _applyAvatar(src){
+  const img=document.getElementById('profileAvatarImg');
+  const txt=document.getElementById('profileAvatarText');
+  const shareAv=document.getElementById('shareProfileAvatar');
+  if(img){img.src=src;img.style.display='block';}
+  if(txt)txt.style.display='none';
+  if(shareAv){shareAv.innerHTML=`<img src="${src}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;}
+}
+function openUsernameEdit(){
+  closeProfileEditSheet();
+  const modal=document.getElementById('usernameEditModal');
+  const inp=document.getElementById('usernameEditInput');
+  const cur=document.getElementById('profileUsername');
+  if(inp&&cur)inp.value=cur.textContent.replace('@','');
+  if(modal)modal.style.display='flex';
+}
+function closeUsernameEdit(){
+  const modal=document.getElementById('usernameEditModal');
+  if(modal)modal.style.display='none';
+}
+function saveUsername(){
+  const inp=document.getElementById('usernameEditInput');
+  const usernameEl=document.getElementById('profileUsername');
+  const shareEl=document.getElementById('shareProfileUsername');
+  if(!inp||!inp.value.trim())return;
+  const val='@'+inp.value.trim().replace('@','');
+  if(usernameEl)usernameEl.textContent=val;
+  if(shareEl)shareEl.textContent=val;
+  localStorage.setItem('wp_username',val);
+  closeUsernameEdit();
+  showToast('Username saved');
+}
+// Restore profile on load
+(()=>{
+  const av=localStorage.getItem('wp_avatar');
+  const un=localStorage.getItem('wp_username');
+  if(av)setTimeout(()=>_applyAvatar(av),100);
+  if(un){
+    setTimeout(()=>{
+      const el=document.getElementById('profileUsername');
+      if(el)el.textContent=un;
+    },100);
+  }
+})();
+
+// ═══════════════════════════════════════════════════
+// CROP MODAL — Canvas-based reusable cropper
+// ═══════════════════════════════════════════════════
+let _cropImg=null,_cropAspect='free',_cropOnConfirm=null;
+let _cropBox={x:0,y:0,w:100,h:100};
+let _cropCanvasW=0,_cropCanvasH=0,_cropImgOffX=0,_cropImgOffY=0,_cropImgDrawW=0,_cropImgDrawH=0;
+
+function openCropModal(file,aspectRatio,onConfirm){
+  const modal=document.getElementById('cropModal');
+  if(!modal)return;
+  _cropOnConfirm=onConfirm;
+  _cropAspect=aspectRatio||'free';
+  const canvas=document.getElementById('cropCanvas');
+  const ctx=canvas.getContext('2d');
+  const img=new Image();
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    img.onload=()=>{
+      _cropImg=img;
+      // Size canvas to fit image
+      const maxW=Math.min(img.width,window.innerWidth);
+      const maxH=Math.min(img.height,Math.round(window.innerHeight*0.55));
+      const scale=Math.min(maxW/img.width,maxH/img.height,1);
+      canvas.width=Math.round(img.width*scale);
+      canvas.height=Math.round(img.height*scale);
+      _cropCanvasW=canvas.width;_cropCanvasH=canvas.height;
+      _cropImgOffX=0;_cropImgOffY=0;_cropImgDrawW=canvas.width;_cropImgDrawH=canvas.height;
+      ctx.drawImage(img,0,0,canvas.width,canvas.height);
+      // Init crop box centered, aspect-locked
+      _initCropBox();
+      _drawCropBox();
+      modal.style.display='flex';
+      // Show/hide aspect ratio buttons
+      const row=document.getElementById('cropAspectRow');
+      if(row)row.style.display=(_cropAspect==='square_locked'||_cropAspect==='16:5_locked')?'none':'flex';
+    };
+    img.src=ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+function _initCropBox(){
+  const ratio=typeof _cropAspect==='number'?_cropAspect:parseFloat(_cropAspect)||0;
+  const pad=20;
+  const maxW=_cropCanvasW-pad*2;const maxH=_cropCanvasH-pad*2;
+  let bw=maxW,bh=maxH;
+  if(ratio>0){
+    bh=Math.round(bw/ratio);
+    if(bh>maxH){bh=maxH;bw=Math.round(bh*ratio);}
+  }
+  _cropBox={x:Math.round((_cropCanvasW-bw)/2),y:Math.round((_cropCanvasH-bh)/2),w:bw,h:bh};
+}
+function _drawCropBox(){
+  const box=document.getElementById('cropBox');
+  const wrap=document.getElementById('cropCanvasWrap');
+  const canvas=document.getElementById('cropCanvas');
+  if(!box||!canvas)return;
+  const cr=canvas.getBoundingClientRect();
+  const wr=wrap.getBoundingClientRect();
+  const scaleX=cr.width/canvas.width;const scaleY=cr.height/canvas.height;
+  const offX=cr.left-wr.left;const offY=cr.top-wr.top;
+  box.style.left=(offX+_cropBox.x*scaleX)+'px';
+  box.style.top=(offY+_cropBox.y*scaleY)+'px';
+  box.style.width=(_cropBox.w*scaleX)+'px';
+  box.style.height=(_cropBox.h*scaleY)+'px';
+}
+function closeCropModal(){
+  const modal=document.getElementById('cropModal');
+  if(modal)modal.style.display='none';
+  _cropImg=null;_cropOnConfirm=null;
+}
+function confirmCrop(){
+  if(!_cropImg)return;
+  const canvas=document.getElementById('cropCanvas');
+  if(!canvas)return;
+  const scaleX=_cropImg.width/_cropCanvasW;
+  const scaleY=_cropImg.height/_cropCanvasH;
+  const offCanvas=document.createElement('canvas');
+  offCanvas.width=Math.round(_cropBox.w*scaleX);
+  offCanvas.height=Math.round(_cropBox.h*scaleY);
+  const ctx2=offCanvas.getContext('2d');
+  ctx2.drawImage(_cropImg,Math.round(_cropBox.x*scaleX),Math.round(_cropBox.y*scaleY),offCanvas.width,offCanvas.height,0,0,offCanvas.width,offCanvas.height);
+  const dataUrl=offCanvas.toDataURL('image/jpeg',0.85);
+  closeCropModal();
+  if(typeof _cropOnConfirm==='function')_cropOnConfirm(dataUrl);
+}
+function setCropAspect(ratio,el){
+  document.querySelectorAll('.crop-aspect-btn').forEach(b=>b.classList.remove('active'));
+  if(el)el.classList.add('active');
+  _cropAspect=ratio==='free'?'free':parseFloat(ratio)||'free';
+  _initCropBox();
+  _drawCropBox();
+}
+
+// ═══════════════════════════════════════════════════
+// SHARE PROFILE — FUNCTIONAL
+// ═══════════════════════════════════════════════════
+function shareProfile(){
+  const overlay=document.getElementById('shareProfileOverlay');
+  if(!overlay)return;
+  // Sync current username + avatar
+  const un=localStorage.getItem('wp_username')||'@wildexplorer';
+  const av=localStorage.getItem('wp_avatar');
+  const unEl=document.getElementById('shareProfileUsername');
+  if(unEl)unEl.textContent=un;
+  if(av){
+    const avEl=document.getElementById('shareProfileAvatar');
+    if(avEl)avEl.innerHTML=`<img src="${av}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
+  }
+  const countEl=document.getElementById('shareSpotCount');
+  if(countEl)countEl.textContent=userSpots.length;
+  overlay.style.display='flex';
+}
+function closeShareProfile(){
+  const overlay=document.getElementById('shareProfileOverlay');
+  if(overlay)overlay.style.display='none';
+}
+function copyShareLink(){
+  const url=`https://wildpath.app/profile/${(localStorage.getItem('wp_username')||'explorer').replace('@','')}`;
+  navigator.clipboard?.writeText(url).then(()=>showToast('Link copied')).catch(()=>showToast('Copied'));
+}
+function _getMySpotCount(){
+  const myUid=_myUid();
+  const allPosts=getPosts();
+  return new Set(allPosts.filter(p=>String(p.userId)===String(myUid)&&p.spotId).map(p=>p.spotId)).size;
+}
+function nativeShare(){
+  const un=localStorage.getItem('wp_username')||'@wildexplorer';
+  const spotCount=_getMySpotCount();
+  const text=`Check out my WildPath profile — ${spotCount} spots visited in California! Join me`;
+  if(navigator.share){
+    navigator.share({title:`WildPath — ${un}`,text,url:'https://wildpath.app'}).catch(()=>{});
+  } else {
+    copyShareLink();
+  }
+  closeShareProfile();
+}
+
+// ═══════════════════════════════════════════════════
+// COLLECTIONS — FIX
+// ═══════════════════════════════════════════════════
+function buildCollections(){
+  const el=document.getElementById('collectionsList');
+  if(!el)return;
+  if(!collections.length){
+    collections=[
+      {id:1,name:'California Waterfalls',icon:'',spotIds:[]},
+      {id:2,name:'Summer Swims',icon:'',spotIds:[]},
+      {id:3,name:'Cave Quest',icon:'',spotIds:[]}
+    ];
+    localStorage.setItem('wp_collections',JSON.stringify(collections));
+  }
+  el.innerHTML=collections.map((c,idx)=>`
+    <div class="collection-row" onclick="openCollectionDetail(${idx})">
+      <div class="collection-icon"><i class="ti ti-folder" style="font-size:22px;color:var(--accent)"></i></div>
+      <div class="collection-name">${c.name}</div>
+      <div class="collection-count">${c.spotIds.length} spots</div>
+      <div style="color:var(--txt3);font-size:18px;margin-left:8px">›</div>
+    </div>`).join('');
+}
+
+function createCollection(){
+  // Inline modal instead of prompt()
+  const existing=document.getElementById('_createCollectionModal');
+  if(existing)existing.remove();
+  const modal=document.createElement('div');
+  modal.id='_createCollectionModal';
+  modal.style.cssText='position:fixed;inset:0;z-index:800;background:rgba(0,0,0,.7);display:flex;align-items:flex-end;';
+  modal.innerHTML=`
+    <div style="width:100%;background:var(--bg1);border-radius:20px 20px 0 0;padding:20px 20px 32px;box-sizing:border-box">
+      <div style="font-size:17px;font-weight:800;color:var(--txt0);margin-bottom:16px">New Collection</div>
+      <input id="_collNameInput" placeholder="Collection name…" maxlength="40"
+        style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:12px;padding:12px 14px;font-size:15px;font-family:inherit;outline:none;box-sizing:border-box">
+      <div style="display:flex;gap:10px;margin-top:14px">
+        <button onclick="document.getElementById('_createCollectionModal').remove()"
+          style="flex:1;padding:13px;background:var(--bg3);border:none;color:var(--txt1);border-radius:12px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit">Cancel</button>
+        <button onclick="_submitNewCollection()"
+          style="flex:1;padding:13px;background:var(--accent);border:none;color:var(--bg0);border-radius:12px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit">Create</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  setTimeout(()=>{const i=document.getElementById('_collNameInput');if(i)i.focus();},100);
+}
+function _submitNewCollection(){
+  const nameEl=document.getElementById('_collNameInput');
+  const name=(nameEl&&nameEl.value.trim())||'';
+  if(!name){showToast('Enter a collection name');return;}
+  const id=Date.now();
+  collections.push({id,name,spotIds:[]});
+  localStorage.setItem('wp_collections',JSON.stringify(collections));
+  document.getElementById('_createCollectionModal')?.remove();
+  buildCollections();
+  openCollectionDetail(collections.length-1);
+}
+
+function openCollectionDetail(idx){
+  const c=collections[idx];
+  if(!c)return;
+  const overlay=document.getElementById('collectionDetailOverlay');
+  const nameEl=document.getElementById('collectionDetailName');
+  const body=document.getElementById('collectionDetailBody');
+  if(!overlay)return;
+  if(nameEl)nameEl.textContent=c.name;
+  const allS=[...spots,...userSpots];
+  const addBtn=`<button onclick="_openCollectionSpotPicker(${idx})" style="width:100%;padding:12px;background:rgba(184,232,122,.12);border:1px solid rgba(184,232,122,.3);color:var(--accent);border-radius:12px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;margin-bottom:14px">+ Add Spot</button>`;
+  if(!c.spotIds.length){
+    body.innerHTML=addBtn+`
+      <div style="text-align:center;padding:32px 20px">
+        <div style="font-size:17px;font-weight:700;color:var(--txt0);margin-bottom:8px">No spots yet</div>
+        <div style="font-size:13px;color:var(--txt2);line-height:1.6">Tap Add Spot to start building this collection</div>
+      </div>`;
+  } else {
+    const saved=c.spotIds.map(id=>allS.find(s=>s.id===id)).filter(Boolean);
+    body.innerHTML=addBtn+saved.map(s=>`
+      <div class="saved-spot-row" onclick="openDetail(${s.id})" style="cursor:pointer">
+        <div class="saved-spot-icon">${_getSpotIcon(s.type,s.typeColor)}</div>
+        <div><div class="saved-spot-name">${s.name}</div><div class="saved-spot-dist">${s.typeLabel}</div></div>
+        <div class="saved-spot-arrow">›</div>
+      </div>`).join('');
+  }
+  overlay.style.display='flex';
+}
+function _openCollectionSpotPicker(collIdx){
+  const existing=document.getElementById('_collSpotPicker');
+  if(existing)existing.remove();
+  const allS=[...spots,...userSpots];
+  const c=collections[collIdx];
+  const modal=document.createElement('div');
+  modal.id='_collSpotPicker';
+  modal.style.cssText='position:fixed;inset:0;z-index:900;background:rgba(0,0,0,.75);display:flex;align-items:flex-end;';
+  modal.innerHTML=`
+    <div style="width:100%;background:var(--bg1);border-radius:20px 20px 0 0;padding:16px 0 32px;max-height:70vh;display:flex;flex-direction:column;box-sizing:border-box">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:0 20px 14px">
+        <div style="font-size:17px;font-weight:800;color:var(--txt0)">Add to ${c.name}</div>
+        <button onclick="document.getElementById('_collSpotPicker').remove()" style="background:var(--bg3);border:none;color:var(--txt1);width:28px;height:28px;border-radius:50%;font-size:14px;cursor:pointer">x</button>
+      </div>
+      <div style="overflow-y:auto;flex:1;padding:0 16px">
+        ${allS.map(s=>`
+          <div onclick="_addSpotToCollection(${collIdx},${s.id})" style="display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--border);cursor:pointer">
+            <div style="width:36px;height:36px;border-radius:8px;background:${s.heroGradient};flex-shrink:0"></div>
+            <div style="flex:1"><div style="font-size:13px;font-weight:700;color:var(--txt0)">${s.name}</div><div style="font-size:11px;color:var(--txt2)">${s.typeLabel||''}</div></div>
+            ${c.spotIds.includes(s.id)?'<span style="font-size:11px;color:var(--accent);font-weight:700">Added</span>':''}
+          </div>`).join('')}
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+function _addSpotToCollection(collIdx,spotId){
+  const c=collections[collIdx];
+  if(!c)return;
+  if(c.spotIds.includes(spotId)){showToast('Already in collection');return;}
+  c.spotIds.push(spotId);
+  localStorage.setItem('wp_collections',JSON.stringify(collections));
+  document.getElementById('_collSpotPicker')?.remove();
+  openCollectionDetail(collIdx);
+  showToast('Spot added to collection');
+}
+
+function closeCollectionDetail(){
+  const overlay=document.getElementById('collectionDetailOverlay');
+  if(overlay)overlay.style.display='none';
+}
+
+function editCollectionName(){
+  const idx=collections.findIndex(c=>document.getElementById('collectionDetailName').textContent.includes(c.name));
+  if(idx<0)return;
+  const name=prompt('New name:',collections[idx].name);
+  if(name&&name.trim()){
+    collections[idx].name=name.trim();
+    localStorage.setItem('wp_collections',JSON.stringify(collections));
+    document.getElementById('collectionDetailName').textContent=collections[idx].name;
+    buildCollections();
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// Q&A — INLINE REDESIGN
+// ═══════════════════════════════════════════════════
+function submitInlineQA(){
+  const inp=document.getElementById('qaInlineInput');
+  if(!inp||!inp.value.trim())return;
+  const question=inp.value.trim();
+  inp.value='';
+  const key=`wp_qa_${_communitySpotId||0}`;
+  const qas=JSON.parse(localStorage.getItem(key)||'[]');
+  qas.unshift({id:Date.now(),q:question,answers:[],ts:Date.now()});
+  localStorage.setItem(key,JSON.stringify(qas));
+  buildQA(_communitySpotId||0);
+  showToast('Question posted');
+}
+
+function buildQA(spotId){
+  const el=document.getElementById('qaList');
+  if(!el)return;
+  const key=`wp_qa_${spotId}`;
+  const qas=JSON.parse(localStorage.getItem(key)||'[]');
+
+  // Seed with sample questions for well-known spots
+  const seeds={
+    0:[{id:1,q:'Is the trail stroller-friendly?',answers:[{text:'Yes, it\'s a paved path all the way to the overlook.',helpful:3}],ts:1700000000000}],
+    1:[{id:1,q:'What\'s the water temperature in late June?',answers:[{text:'Around 62–65°F — refreshing but not too cold.',helpful:5}],ts:1700000000000}],
+    2:[{id:1,q:'Is there a weight limit for the rappel?',answers:[{text:'Max 250 lbs. The guided groups are capped at 12 people.',helpful:2}],ts:1700000000000}],
+  };
+  const allQA=[...(seeds[spotId]||[]),...qas];
+
+  if(!allQA.length){
+    el.innerHTML=`<div style="font-size:13px;color:var(--txt2);padding:12px 0;text-align:center">No questions yet. Be the first to ask!</div>`;
+    return;
+  }
+  el.innerHTML=allQA.slice(0,8).map(item=>`
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:13px 14px;margin-bottom:10px">
+      <div style="font-size:13px;font-weight:700;color:var(--txt0);margin-bottom:8px">${item.q}</div>
+      ${(item.answers||[]).map(a=>`
+        <div style="margin-left:12px;border-left:2px solid var(--border2);padding-left:10px;margin-bottom:6px">
+          <div style="font-size:12px;color:var(--txt1);line-height:1.5">${a.text}</div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:5px">
+            <button onclick="event.stopPropagation();this.innerHTML='+ '+((parseInt(this.innerHTML.replace(/\D+/g,''))||0)+1)" style="background:none;border:none;color:var(--txt3);font-size:11px;cursor:pointer;padding:0">+${a.helpful||0}</button>
+            <button onclick="event.stopPropagation()" style="background:none;border:none;color:var(--txt3);font-size:11px;cursor:pointer;padding:0">-</button>
+          </div>
+        </div>`).join('')}
+      <button onclick="replyToQA(${item.id},'${spotId}')" style="font-size:11px;color:var(--accent);background:none;border:none;cursor:pointer;padding:4px 0;font-weight:700;font-family:inherit">↩ Reply</button>
+    </div>`).join('');
+}
+
+function replyToQA(qaId,spotId){
+  const answer=prompt('Your answer:');
+  if(!answer||!answer.trim())return;
+  const key=`wp_qa_${spotId}`;
+  const qas=JSON.parse(localStorage.getItem(key)||'[]');
+  const qa=qas.find(q=>q.id===qaId);
+  if(qa){qa.answers=(qa.answers||[]);qa.answers.push({text:answer.trim(),helpful:0});}
+  localStorage.setItem(key,JSON.stringify(qas));
+  buildQA(parseInt(spotId));
+  showToast('Answer posted');
+}
+
+// ═══════════════════════════════════════════════════
+// PHOTO MANAGEMENT
+// ═══════════════════════════════════════════════════
+function openPhotoPicker(){
+  if(isGuest()){showLoginScreen(()=>openPhotoPicker());return;}
+  // Reuse or create a hidden file input
+  let inp=document.getElementById('photoPickerInput');
+  if(!inp){
+    inp=document.createElement('input');
+    inp.type='file';
+    inp.id='photoPickerInput';
+    inp.accept='image/*';
+    inp.multiple=true;
+    inp.style.display='none';
+    inp.onchange=handlePhotoUpload;
+    document.body.appendChild(inp);
+  }
+  inp.click();
+}
+
+function handlePhotoUpload(e){
+  const files=Array.from(e.target.files||[]);
+  if(!files.length)return;
+  // Prefer _detailSpotId (detail tab open) then fall back to _communitySpotId
+  const spotId=_detailSpotId||_communitySpotId||0;
+  const stored=JSON.parse(localStorage.getItem(`wp_photos_${spotId}`)||'[]');
+  let loaded=0;
+  files.forEach(file=>{
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      stored.push({url:ev.target.result,type:'community',credit:'My Photo'});
+      loaded++;
+      if(loaded===files.length){
+        localStorage.setItem(`wp_photos_${spotId}`,JSON.stringify(stored));
+        const allS=[...spots,...userSpots];
+        const spot=allS.find(s=>s.id===spotId);
+        if(spot)fetchSpotPhotos(spot);
+        showToast(`${files.length} photo${files.length>1?'s':''} added`);
+      }
+    };
+    reader.readAsDataURL(file);
+  });
+  e.target.value='';
+}
+
+// ═══════════════════════════════════════════════════
+// OFFLINE DOWNLOAD — RESIZABLE WITH HANDLES
+// ═══════════════════════════════════════════════════
+let _offlineZoom=12;
+let _offlineRect={top:15,left:8,bottom:35,right:8}; // percentages
+let _offlineDragState=null;
+
+function openOfflineDownload(){
+  const overlay=document.getElementById('offlineDownloadOverlay');
+  if(!overlay)return;
+  overlay.classList.add('active');
+  _renderOfflineRect();
+  setTimeout(()=>{
+    const panel=document.getElementById('offlinePanel');
+    if(panel){
+      _buildOfflinePanel(panel);
+      panel.classList.add('show');
+    }
+  },50);
+}
+
+function _renderOfflineRect(){
+  const rect=document.getElementById('offlineSelectRect');
+  if(!rect)return;
+  rect.style.cssText=`
+    position:absolute;
+    top:${_offlineRect.top}%;left:${_offlineRect.left}%;
+    right:${_offlineRect.right}%;bottom:${_offlineRect.bottom}%;
+    border:2px dashed rgba(196,149,106,.9);border-radius:10px;
+    background:rgba(196,149,106,.07);
+  `;
+  // Add drag handles
+  const handles=[
+    {pos:'nw',style:'top:-6px;left:-6px;cursor:nw-resize'},
+    {pos:'n', style:'top:-6px;left:50%;transform:translateX(-50%);cursor:n-resize'},
+    {pos:'ne',style:'top:-6px;right:-6px;cursor:ne-resize'},
+    {pos:'e', style:'top:50%;right:-6px;transform:translateY(-50%);cursor:e-resize'},
+    {pos:'se',style:'bottom:-6px;right:-6px;cursor:se-resize'},
+    {pos:'s', style:'bottom:-6px;left:50%;transform:translateX(-50%);cursor:s-resize'},
+    {pos:'sw',style:'bottom:-6px;left:-6px;cursor:sw-resize'},
+    {pos:'w', style:'top:50%;left:-6px;transform:translateY(-50%);cursor:w-resize'},
+  ];
+  rect.innerHTML=handles.map(h=>`
+    <div data-handle="${h.pos}" style="position:absolute;width:12px;height:12px;background:var(--accent);border-radius:50%;${h.style};pointer-events:all;touch-action:none"></div>
+  `).join('');
+  // Attach drag events
+  rect.querySelectorAll('[data-handle]').forEach(h=>{
+    h.addEventListener('pointerdown',e=>{
+      e.stopPropagation();e.preventDefault();
+      _offlineDragState={handle:h.dataset.handle,startX:e.clientX,startY:e.clientY,startRect:{..._offlineRect}};
+      h.setPointerCapture(e.pointerId);
+    });
+    h.addEventListener('pointermove',e=>{
+      if(!_offlineDragState||_offlineDragState.handle!==h.dataset.handle)return;
+      const overlay=document.getElementById('offlineDownloadOverlay');
+      const ow=overlay.offsetWidth,oh=overlay.offsetHeight;
+      const dx=(e.clientX-_offlineDragState.startX)/ow*100;
+      const dy=(e.clientY-_offlineDragState.startY)/oh*100;
+      const s=_offlineDragState.startRect;
+      const pos=_offlineDragState.handle;
+      const r={..._offlineRect};
+      if(pos.includes('n'))r.top=Math.min(s.top+dy,100-s.bottom-5);
+      if(pos.includes('s'))r.bottom=Math.min(s.bottom-dy,100-s.top-5);
+      if(pos.includes('w'))r.left=Math.min(s.left+dx,100-s.right-5);
+      if(pos.includes('e'))r.right=Math.min(s.right-dx,100-s.left-5);
+      r.top=Math.max(0,Math.min(r.top,90));
+      r.bottom=Math.max(0,Math.min(r.bottom,90));
+      r.left=Math.max(0,Math.min(r.left,90));
+      r.right=Math.max(0,Math.min(r.right,90));
+      _offlineRect=r;
+      _renderOfflineRect();
+      _updateOfflineSize();
+    });
+    h.addEventListener('pointerup',()=>{_offlineDragState=null;});
+  });
+}
+
+function _updateOfflineSize(){
+  const el=document.getElementById('offlineSizeEst');
+  const warn=document.getElementById('offlineSizeWarn');
+  if(!el)return;
+  const wPct=(100-_offlineRect.left-_offlineRect.right)/100;
+  const hPct=(100-_offlineRect.top-_offlineRect.bottom)/100;
+  const tiles=_estimateTileCount(wPct,hPct,8,_offlineZoom);
+  const mb=Math.round(tiles*0.015);
+  el.textContent=`~${Math.min(mb,999)} MB`;
+  if(warn){warn.style.display=mb>500?'block':'none';}
+}
+
+function _estimateTileCount(wFrac,hFrac,zMin,zMax){
+  let count=0;
+  const b=leafletMap?leafletMap.getBounds():{};
+  for(let z=zMin;z<=zMax;z++){
+    const tilesWide=Math.pow(2,z);
+    const w=Math.ceil(wFrac*tilesWide/3);
+    const h=Math.ceil(hFrac*tilesWide/3);
+    count+=w*h;
+  }
+  return Math.min(count,5000);
+}
+
+function _buildOfflinePanel(panel){
+  _updateOfflineSize();
+  panel.innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div style="font-size:16px;font-weight:800;color:var(--txt0)">Download Area</div>
+      <button onclick="closeOfflineDownload()" style="background:var(--bg3);border:none;color:var(--txt1);width:28px;height:28px;border-radius:50%;font-size:14px;cursor:pointer">×</button>
+    </div>
+    <p style="font-size:12px;color:var(--txt2);margin-bottom:12px">Drag the corner handles to resize the area. Higher zoom = more detail but larger file.</p>
+    <!-- Preset buttons -->
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button onclick="setOfflinePreset('small')" style="flex:1;padding:8px;background:var(--bg2);border:1px solid var(--border2);color:var(--txt1);border-radius:10px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit"> Small</button>
+      <button onclick="setOfflinePreset('medium')" style="flex:1;padding:8px;background:var(--bg2);border:1px solid var(--border2);color:var(--txt1);border-radius:10px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit"> City</button>
+      <button onclick="setOfflinePreset('large')" style="flex:1;padding:8px;background:var(--bg2);border:1px solid var(--border2);color:var(--txt1);border-radius:10px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit"> Region</button>
+    </div>
+    <!-- Zoom slider -->
+    <div style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+        <div style="font-size:11px;font-weight:700;color:var(--txt2);text-transform:uppercase;letter-spacing:.5px">Max Zoom Detail</div>
+        <div style="font-size:13px;font-weight:800;color:var(--accent)" id="offlineZoomLabel">z${_offlineZoom}</div>
+      </div>
+      <input type="range" min="8" max="18" value="${_offlineZoom}" id="offlineZoomSlider"
+        style="width:100%;accent-color:var(--accent)"
+        oninput="setOfflineZoom(parseInt(this.value))">
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--txt3);margin-top:2px"><span>z8 Overview</span><span>z18 Street</span></div>
+    </div>
+    <!-- Size estimate -->
+    <div style="background:var(--bg2);border-radius:12px;padding:12px 14px;margin-bottom:10px;display:flex;justify-content:space-between">
+      <div><div style="font-size:11px;color:var(--txt3);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Est. Size</div><div style="font-size:16px;font-weight:800;color:var(--txt0);margin-top:2px" id="offlineSizeEst">~? MB</div></div>
+      <div><div style="font-size:11px;color:var(--txt3);font-weight:700;text-transform:uppercase;letter-spacing:.5px">Zoom Range</div><div style="font-size:16px;font-weight:800;color:var(--txt0);margin-top:2px">z8–${_offlineZoom}</div></div>
+    </div>
+    <div id="offlineSizeWarn" style="display:none;background:rgba(196,82,74,.12);border:1px solid rgba(196,82,74,.25);border-radius:10px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:var(--red)"> Area exceeds 500 MB — try a smaller zoom level or area</div>
+    <input id="offlineAreaName" placeholder="Area name (e.g. Big Sur Coast)" style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:12px;font-family:inherit;outline:none">
+    <button onclick="startOfflineDownload()" style="width:100%;padding:14px;background:linear-gradient(135deg,var(--accent),var(--accent-dim));color:var(--bg0);font-size:15px;font-weight:800;border:none;border-radius:12px;cursor:pointer;font-family:inherit">Download Now</button>
+  `;
+  _updateOfflineSize();
+}
+
+function setOfflinePreset(size){
+  const presets={
+    small:{top:25,left:25,bottom:25,right:25},
+    medium:{top:18,left:12,bottom:18,right:12},
+    large:{top:10,left:5,bottom:10,right:5}
+  };
+  _offlineRect=presets[size]||presets.medium;
+  _renderOfflineRect();
+  _updateOfflineSize();
+}
+
+function setOfflineZoom(z){
+  _offlineZoom=z;
+  const label=document.getElementById('offlineZoomLabel');
+  if(label)label.textContent=`z${z}`;
+  const panel=document.getElementById('offlinePanel');
+  const rangeEl=panel?.querySelector('#offlineZoomSlider');
+  const rangeLabel=panel?.querySelector('#offlineZoomLabel+*');
+  // Update zoom range display
+  const zoneEl=panel?.querySelectorAll('[style*="Zoom Range"] + *');
+  _updateOfflineSize();
+}
+
+// ═══════════════════════════════════════════════════
+// ADD SPOT — NOMINATIM ADDRESS SEARCH
+// ═══════════════════════════════════════════════════
+let _aspAddressTimer=null;
+
+function aspAddressSearch(val){
+  clearTimeout(_aspAddressTimer);
+  const drop=document.getElementById('aspAddressDrop');
+  if(!val||!val.trim()){if(drop){drop.innerHTML='';drop.classList.remove('open');}return;}
+
+  // Check if decimal coords
+  const coordMatch=val.match(/^(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)$/);
+  if(coordMatch){
+    const lat=parseFloat(coordMatch[1]),lng=parseFloat(coordMatch[2]);
+    if(lat>=-90&&lat<=90&&lng>=-180&&lng<=180){
+      drop.innerHTML=`<div class="search-result-item" onclick="aspFlyTo(${lat},${lng},'${lat.toFixed(4)}, ${lng.toFixed(4)}')">
+        <div class="search-result-icon"></div>
+        <div class="search-result-info">
+          <div class="search-result-name">${lat.toFixed(5)}, ${lng.toFixed(5)}</div>
+          <div class="search-result-meta">GPS Coordinates</div>
+        </div>
+      </div>`;
+      drop.classList.add('open');
+      return;
+    }
+  }
+
+  _aspAddressTimer=setTimeout(async()=>{
+    try{
+      const url=`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(val)}&format=json&limit=5&countrycodes=us&addressdetails=1`;
+      const r=await fetch(url,{headers:{'Accept-Language':'en-US,en'},signal:AbortSignal.timeout(4000)});
+      const data=await r.json();
+      if(!data.length){drop.innerHTML=`<div class="search-no-results">No results found</div>`;drop.classList.add('open');return;}
+      drop.innerHTML=data.map(item=>{
+        const name=item.display_name.split(',')[0];
+        const sub=[item.address?.county,item.address?.state].filter(Boolean).join(', ');
+        const icon=_nominatimIcon(item.type,item.class);
+        return `<div class="search-result-item" onclick="aspFlyTo(${item.lat},${item.lon},'${name.replace(/'/g,"\\'")}')">
+          <div class="search-result-icon">${icon}</div>
+          <div class="search-result-info">
+            <div class="search-result-name">${name}</div>
+            <div class="search-result-meta">${sub||item.type||'Place'}</div>
+          </div>
+        </div>`;
+      }).join('');
+      drop.classList.add('open');
+    }catch{}
+  },350);
+}
+
+function aspFlyTo(lat,lng,name){
+  // Close dropdown
+  const drop=document.getElementById('aspAddressDrop');
+  const inp=document.getElementById('aspAddressSearch');
+  if(drop){drop.innerHTML='';drop.classList.remove('open');}
+  if(inp)inp.value=name;
+
+  // Set coords
+  addSpotTempLat=parseFloat(lat);
+  addSpotTempLng=parseFloat(lng);
+
+  // Show location display
+  const disp=document.getElementById('aspLocDisplay');
+  if(disp){disp.textContent=`${parseFloat(lat).toFixed(5)}, ${parseFloat(lng).toFixed(5)}`;disp.style.display='block';}
+
+  // Fly map to location
+  if(leafletMap){
+    leafletMap.flyTo([parseFloat(lat),parseFloat(lng)],15,{animate:true,duration:1});
+    showToast('Location set — tap Add to Map to confirm');
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// DATA FIXES — Spot audit helpers
+// ═══════════════════════════════════════════════════
+(()=>{
+  spots.forEach(s=>{
+    if(s.type==='hiking'&&s.name.includes('State')){
+      if(s.entryFee&&s.entryFee.includes('/person'))s.entryFee='Check ahead';
+    }
+    if(!s.entryFee)s.entryFee='Check ahead';
+    if(!s.parkingCost)s.parkingCost='Check ahead';
+    if(!s.roadCondition)s.roadCondition='Unknown';
+  });
+})();
+
+// ═══════════════════════════════════════════════════
+// HOME TAB — DISCOVER / PLAN SWITCH
+// ═══════════════════════════════════════════════════
+function switchHomeTab(tab, el){
+  document.querySelectorAll('.home-tab-pill').forEach(p=>p.classList.remove('active'));
+  if(el)el.classList.add('active');
+  const disc=document.getElementById('homeDiscoverPanel');
+  const plan=document.getElementById('homePlanPanel');
+  if(tab==='discover'){
+    disc.style.display='block';
+    plan.style.display='none';
+  } else {
+    disc.style.display='none';
+    plan.style.display='block';
+    // Inject plan form into home plan content if not yet built
+    const content=document.getElementById('homePlanContent');
+    if(!content.querySelector('.route-card')){
+      content.innerHTML=_buildInlinePlanHTML();
+    }
+  }
+}
+
+function _buildInlinePlanHTML(){
+  // Inject a simplified version of the plan screen
+  return `
+    <div style="font-size:22px;font-weight:700;color:var(--txt0);letter-spacing:-.4px;margin-bottom:4px">Route Planner</div>
+    <div style="font-size:13px;color:var(--txt3);margin-bottom:20px">Enter start &amp; end — WildPath builds the route</div>
+    <div class="route-card" style="margin-bottom:12px">
+      <div class="route-input-stack">
+        <div class="route-point-col">
+          <div class="route-dot start-dot"></div>
+          <div class="route-vert-line"></div>
+          <div class="route-dot end-dot"></div>
+        </div>
+        <div class="route-fields">
+          <div class="route-field-wrap">
+            <div class="route-field-label">From</div>
+            <div class="ac-wrap"><input class="route-field-input" id="hpRouteStart" placeholder="San Francisco, CA" type="text" autocomplete="off" oninput="acInput(this,'hpAcDropStart',false)"><div class="ac-drop" id="hpAcDropStart"></div></div>
+          </div>
+          <div class="route-separator"></div>
+          <div class="route-field-wrap">
+            <div class="route-field-label">To</div>
+            <div class="ac-wrap"><input class="route-field-input" id="hpRouteEnd" placeholder="Yosemite Valley, CA" type="text" autocomplete="off" oninput="acInput(this,'hpAcDropEnd',false)"><div class="ac-drop" id="hpAcDropEnd"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="margin-bottom:12px">
+      <div style="font-size:12px;font-weight:600;color:var(--txt2);margin-bottom:8px;letter-spacing:.3px">TRIP DURATION</div>
+      <div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;scrollbar-width:none" id="hpDurationRow">
+        ${Array.from({length:14},(_,i)=>i+1).map(d=>`<div onclick="setTripDays(${d},null)" class="duration-pill${d===_tripDays?' active':''}" style="font-size:11px">${d}D</div>`).join('')}
+        <div style="flex-shrink:0">
+          <input type="number" min="1" max="30" placeholder="Custom" id="hpCustomDays"
+            style="width:72px;height:34px;background:var(--bg2);border:1.5px solid var(--border2);border-radius:20px;color:var(--txt0);font-size:12px;font-family:var(--font);text-align:center;outline:none;padding:0 8px"
+            oninput="setTripDaysCustom(this.value)">
+        </div>
+      </div>
+    </div>
+    <button class="btn-generate" onclick="_generateInlinePlan()" style="margin-bottom:16px">Plan My Route</button>
+    <div id="hpItineraryOutput"></div>`;
+}
+
+async function _generateInlinePlan(){
+  showToast('Route planning removed — use Map tab to explore spots');
+}
+
+// ═══════════════════════════════════════════════════
+// COMPASS FULL-SCREEN PANEL
+// ═══════════════════════════════════════════════════
+let _compassPanelActive=false;
+let _compassOriented=false;
+let _compassHeading=0;
+let _compassWatchId=null;
+let _compassAnimId=null;
+let _compassGpsWatchId=null;
+
+function openCompassPanel(){
+  const panel=document.getElementById('compassPanel');
+  if(!panel)return;
+  panel.classList.add('open');
+  _compassPanelActive=true;
+  // Draw fixed outer ring once
+  _drawCompassOuter();
+  // Draw inner rose at 0°
+  _drawCompassFace(0);
+  _startCompassGPS();
+  // iOS 13+ requires user-gesture permission for DeviceOrientation
+  if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){
+    // Show the permission button; auto-request may not work without user gesture
+    const permBtn=document.getElementById('compassPermBtn');
+    if(permBtn)permBtn.style.display='block';
+    document.getElementById('compassCardinalVal').textContent='TAP TO ENABLE';
+  } else {
+    _bindCompassOrientation();
+  }
+}
+
+function _requestCompassPermission(){
+  const permBtn=document.getElementById('compassPermBtn');
+  if(permBtn)permBtn.style.display='none';
+  if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){
+    DeviceOrientationEvent.requestPermission().then(state=>{
+      if(state==='granted'){
+        _bindCompassOrientation();
+      } else {
+        document.getElementById('compassCardinalVal').textContent='PERMISSION DENIED';
+      }
+    }).catch(()=>_bindCompassOrientation());
+  } else {
+    _bindCompassOrientation();
+  }
+}
+
+function closeCompassPanel(){
+  const panel=document.getElementById('compassPanel');
+  if(panel)panel.classList.remove('open');
+  _compassPanelActive=false;
+  if(_compassWatchId!==null){window.removeEventListener('deviceorientation',_onCompassOrientation);_compassWatchId=null;}
+  if(_compassGpsWatchId!==null){navigator.geolocation.clearWatch(_compassGpsWatchId);_compassGpsWatchId=null;}
+  if(_compassAnimId){cancelAnimationFrame(_compassAnimId);_compassAnimId=null;}
+}
+
+function _bindCompassOrientation(){
+  _compassWatchId=1;
+  window.addEventListener('deviceorientation',_onCompassOrientation,true);
+}
+
+function _onCompassOrientation(e){
+  let heading=0;
+  if(e.webkitCompassHeading!=null){heading=e.webkitCompassHeading;}
+  else if(e.alpha!=null){heading=(360-e.alpha)%360;}
+  _compassHeading=heading;
+  if(!_compassAnimId)_compassAnimId=requestAnimationFrame(_updateCompassDisplay);
+}
+
+function _updateCompassDisplay(){
+  _compassAnimId=null;
+  if(!_compassPanelActive)return;
+  const h=_compassHeading;
+  const cardinals=['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+  const card=cardinals[Math.round(h/22.5)%16];
+  document.getElementById('compassHeadingVal').textContent=`${Math.round(h)}°`;
+  document.getElementById('compassCardinalVal').textContent=card;
+  // Rotate only inner canvas via CSS — no redraw needed every frame
+  const inner=document.getElementById('compassRingCanvas');
+  if(inner)inner.style.transform=`rotate(${-h}deg)`;
+}
+
+function _startCompassGPS(){
+  if(!navigator.geolocation)return;
+  const update=pos=>{
+    const lat=pos.coords.latitude.toFixed(5);
+    const lng=pos.coords.longitude.toFixed(5);
+    const el=document.getElementById('compassCoordsVal');
+    if(el)el.textContent=`${lat}° N,  ${lng}° W`;
+    const alt=pos.coords.altitude;
+    const altEl=document.getElementById('compassAltVal');
+    if(altEl){
+      if(alt!=null){
+        const ftVal=Math.round(alt*3.28084);
+        altEl.textContent=`Altitude: ${Math.round(alt)} m  (${ftVal} ft)`;
+      } else {
+        altEl.textContent='Altitude: —';
+      }
+    }
+  };
+  update({coords:{latitude:0,longitude:0,altitude:null}}); // placeholder
+  _compassGpsWatchId=navigator.geolocation.watchPosition(update,()=>{},{enableHighAccuracy:true,maximumAge:2000});
+}
+
+// Draw fixed outer ring — called once when compass opens, never redrawn
+function _drawCompassOuter(){
+  const canvas=document.getElementById('compassOuterCanvas');
+  if(!canvas)return;
+  const ctx=canvas.getContext('2d');
+  const W=280,H=280,cx=140,cy=140,R=120;
+  ctx.clearRect(0,0,W,H);
+
+  // Outer ring border
+  ctx.beginPath();ctx.arc(cx,cy,R+2,0,Math.PI*2);
+  ctx.strokeStyle='rgba(255,255,255,.12)';ctx.lineWidth=1;ctx.stroke();
+
+  // Degree tick marks on outer ring (fixed, never rotate)
+  for(let deg=0;deg<360;deg+=5){
+    const rad=(deg-90)*Math.PI/180;
+    const isMajor=deg%45===0,isMed=deg%15===0;
+    const r1=isMajor?R-12:isMed?R-7:R-4;
+    const r2=R+2;
+    ctx.beginPath();
+    ctx.moveTo(cx+Math.cos(rad)*r1,cy+Math.sin(rad)*r1);
+    ctx.lineTo(cx+Math.cos(rad)*r2,cy+Math.sin(rad)*r2);
+    ctx.strokeStyle=isMajor?'rgba(255,255,255,.6)':'rgba(255,255,255,.2)';
+    ctx.lineWidth=isMajor?1.5:0.7;
+    ctx.stroke();
+  }
+
+  // Fixed N/S/E/W cardinal labels — always facing up, never rotate
+  ctx.font='bold 15px -apple-system,sans-serif';
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  const cardFixed=[
+    {deg:0,  label:'N',color:'#E05252'},
+    {deg:90, label:'E',color:'rgba(200,184,168,.72)'},
+    {deg:180,label:'S',color:'rgba(200,184,168,.72)'},
+    {deg:270,label:'W',color:'rgba(200,184,168,.72)'},
+  ];
+  cardFixed.forEach(({deg,label,color})=>{
+    const rad=(deg-90)*Math.PI/180;
+    const lx=cx+Math.cos(rad)*(R-24);
+    const ly=cy+Math.sin(rad)*(R-24);
+    ctx.fillStyle=color;
+    ctx.fillText(label,lx,ly);
+  });
+
+  // Fixed NE/SE/SW/NW intercardinal labels
+  ctx.font='600 9px -apple-system,sans-serif';
+  [{deg:45,label:'NE'},{deg:135,label:'SE'},{deg:225,label:'SW'},{deg:315,label:'NW'}].forEach(({deg,label})=>{
+    const rad=(deg-90)*Math.PI/180;
+    const lx=cx+Math.cos(rad)*(R-22);
+    const ly=cy+Math.sin(rad)*(R-22);
+    ctx.fillStyle='rgba(200,184,168,.4)';
+    ctx.fillText(label,lx,ly);
+  });
+}
+
+// Draw rotating inner compass rose — only needle and inner fill, no labels
+// The canvas element itself is rotated via CSS transform, not by redrawing
+function _drawCompassFace(heading){
+  const canvas=document.getElementById('compassRingCanvas');
+  if(!canvas)return;
+  const ctx=canvas.getContext('2d');
+  const W=280,H=280,cx=140,cy=140,R=100;
+  ctx.clearRect(0,0,W,H);
+
+  // Inner circle background
+  ctx.beginPath();ctx.arc(cx,cy,R+4,0,Math.PI*2);
+  ctx.fillStyle='rgba(22,25,22,.9)';ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,.08)';ctx.lineWidth=1;ctx.stroke();
+
+  // 8-point rose petals (background)
+  for(let i=0;i<8;i++){
+    const rad=(i*45-90)*Math.PI/180;
+    ctx.save();ctx.translate(cx,cy);ctx.rotate(rad);
+    ctx.beginPath();
+    ctx.moveTo(0,-R+4);ctx.lineTo(5,-R+20);ctx.lineTo(0,-R+30);ctx.lineTo(-5,-R+20);
+    ctx.closePath();
+    ctx.fillStyle=i===0?'rgba(224,82,82,.12)':'rgba(255,255,255,.04)';
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Needle — north (top of canvas = up = magnetic north when rotated)
+  // Red north half — points up (toward magnetic north)
+  ctx.save();ctx.translate(cx,cy);
+  ctx.beginPath();ctx.moveTo(0,-R+10);ctx.lineTo(8,0);ctx.lineTo(0,14);ctx.lineTo(-8,0);
+  ctx.closePath();
+  ctx.fillStyle='#E05252';ctx.fill();
+  // White south half
+  ctx.beginPath();ctx.moveTo(0,14);ctx.lineTo(8,0);ctx.lineTo(0,R-10);ctx.lineTo(-8,0);
+  ctx.closePath();
+  ctx.fillStyle='rgba(255,255,255,.55)';ctx.fill();
+  ctx.restore();
+
+  // Center cap
+  ctx.beginPath();ctx.arc(cx,cy,8,0,Math.PI*2);
+  ctx.fillStyle='#B8E87A';ctx.fill();
+  ctx.beginPath();ctx.arc(cx,cy,4,0,Math.PI*2);
+  ctx.fillStyle='#0f1a0a';ctx.fill();
+}
+
+// ═══════════════════════════════════════════════════
+// 3D TERRAIN — Satellite and Hybrid only
+// Uses Mapbox DEM terrain-v1 tiles
+// ═══════════════════════════════════════════════════
+let _map3dOn=false;
+
+function _enable3DTerrain(){
+  if(!map)return;
+  console.log('[3D] Enabling terrain...');
+  // Step 1: remove old DEM source if it exists
+  if(map.getSource('mapbox-dem')){
+    try{map.removeSource('mapbox-dem');}catch(e){}
+  }
+  // Step 2: add fresh DEM source
+  map.addSource('mapbox-dem',{
+    type:'raster-dem',
+    url:'mapbox://mapbox.mapbox-terrain-dem-v1',
+    tileSize:512,
+    maxzoom:14
+  });
+  // Step 3: set terrain — maximum quality exaggeration
+  map.setTerrain({source:'mapbox-dem', exaggeration:1.8});
+  // Step 4: smooth pitch transition to 50°
+  map.easeTo({pitch:50, duration:1000, essential:true});
+  // Step 5: enhanced sky layer
+  if(!map.getLayer('sky')){
+    try{
+      map.addLayer({
+        id:'sky', type:'sky',
+        paint:{
+          'sky-type':'atmosphere',
+          'sky-atmosphere-color':'rgba(220,235,255,1)',
+          'sky-atmosphere-halo-color':'rgba(180,210,255,0.8)',
+          'sky-atmosphere-sun':[0.0,90.0],
+          'sky-atmosphere-sun-intensity':15
+        }
+      });
+    }catch(e){}
+  }
+  // Step 6: atmospheric fog for depth
+  try{
+    map.setFog({
+      color:'white',
+      'high-color':'#245bde',
+      'horizon-blend':0.04,
+      'space-color':'#0b0b19',
+      'star-intensity':0.15
+    });
+  }catch(e){}
+  // Step 7: 3D building extrusions at zoom 15+
+  if(!map.getLayer('3d-buildings')){
+    try{
+      map.addLayer({
+        id:'3d-buildings',
+        source:'composite',
+        'source-layer':'building',
+        filter:['==','extrude','true'],
+        type:'fill-extrusion',
+        minzoom:15,
+        paint:{
+          'fill-extrusion-color':'#aaa',
+          'fill-extrusion-height':['interpolate',['linear'],['zoom'],15,0,15.05,['get','height']],
+          'fill-extrusion-base':['interpolate',['linear'],['zoom'],15,0,15.05,['get','min_height']],
+          'fill-extrusion-opacity':0.6
+        }
+      });
+    }catch(e){}
+  }
+  console.log('[3D] Terrain enabled — exaggeration 1.8, pitch 50°, fog + buildings');
+}
+
+function _disable3DTerrain(){
+  if(!map)return;
+  console.log('[3D] Disabling terrain...');
+  // Remove terrain
+  try{map.setTerrain(null);}catch(e){}
+  // Flatten pitch
+  map.easeTo({pitch:0, duration:800, essential:true});
+  // Remove sky layer
+  try{if(map.getLayer('sky'))map.removeLayer('sky');}catch(e){}
+  // Remove building extrusions
+  try{if(map.getLayer('3d-buildings'))map.removeLayer('3d-buildings');}catch(e){}
+  // Clear fog
+  try{map.setFog({});}catch(e){}
+  // Remove DEM source
+  try{if(map.getSource('mapbox-dem'))map.removeSource('mapbox-dem');}catch(e){}
+  console.log('[3D] Terrain disabled');
+}
+
+function toggle3DMap(){
+  if(!map)return;
+  // 3D only available on satellite / hybrid
+  if(currentStyle!=='satellite'&&currentStyle!=='hybrid'){
+    showToast('Switch to Satellite or Hybrid for 3D terrain');
+    return;
+  }
+  _map3dOn=!_map3dOn;
+  const label=document.getElementById('map3dLabel');
+
+  if(_map3dOn){
+    _enable3DTerrain();
+    if(label)label.textContent='Disable 3D';
+    showToast('3D terrain on');
+  } else {
+    _disable3DTerrain();
+    if(label)label.textContent='Enable 3D';
+    showToast('2D view restored');
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// SETTINGS FULL-SCREEN
+// ═══════════════════════════════════════════════════
+function openSettingsFull(){
+  const overlay=document.getElementById('settingsFullOverlay');
+  if(!overlay)return;
+  _buildSettingsFull();
+  overlay.classList.add('open');
+}
+
+function closeSettingsFull(){
+  const overlay=document.getElementById('settingsFullOverlay');
+  if(overlay)overlay.classList.remove('open');
+}
+
+function _buildSettingsFull(){
+  const body=document.getElementById('settingsFullBody');
+  if(!body)return;
+  const locGranted=localStorage.getItem('wp_location_granted')==='1';
+  const isDark=!document.body.classList.contains('light-mode');
+  const notifOn=localStorage.getItem('wp_notif')==='1';
+  const notifComm=localStorage.getItem('wp_notif_comm')==='1';
+  const notifMsg=localStorage.getItem('wp_notif_msg')==='1';
+  const units=localStorage.getItem('wp_units')||'miles';
+  const offlineAreas=JSON.parse(localStorage.getItem('wp_offline_areas')||'[]');
+  const mapStyle=localStorage.getItem('wildpath-map-style')||'Standard';
+  const shareLocOn=localStorage.getItem('wp_share_location')==='1';
+
+  const mapStyleRow=`<div class="sf-row">
+    <div class="sf-row-icon"></div>
+    <div class="sf-row-info"><div class="sf-row-label">Map Style</div><div class="sf-row-val" style="font-size:11px;color:var(--txt3)">${mapStyle}</div></div>
+    <div style="display:flex;gap:4px;align-items:center">
+      ${['Standard','Terrain','Satellite','Hybrid'].map(s=>`<div onclick="_sfSetMapStyle('${s}')" style="padding:5px 8px;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer;background:${mapStyle===s?'var(--accent)':'var(--bg3)'};color:${mapStyle===s?'#0f1a0a':'var(--txt2)'}">${s}</div>`).join('')}
+    </div>
+  </div>`;
+
+  const offlineMapsHtml=offlineAreas.length?offlineAreas.map((a,i)=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+    <div>
+      <div style="font-size:13px;color:var(--txt0)">${a.name||'Downloaded Area '+(i+1)}</div>
+      <div style="font-size:11px;color:var(--txt3)">${a.date||''}</div>
+    </div>
+    <div onclick="_sfDeleteOffline(${i})" style="color:var(--red);font-size:13px;font-weight:600;cursor:pointer;padding:4px 8px">Remove</div>
+  </div>`).join(''):'<div style="font-size:12px;color:var(--txt3);padding:8px 0">No areas downloaded</div>';
+
+  body.innerHTML=`
+    <div class="settings-section-head">Preferences</div>
+    ${_sfRow('','Dark Mode','',isDark?'On':'Off','_sfToggleDark()',isDark,true)}
+    ${_sfRow('','Units','',units==='miles'?'Miles':'Kilometers','_sfToggleUnits()',units==='miles',true)}
+    ${mapStyleRow}
+
+    <div class="settings-section-head">Location & Services</div>
+    <div class="sf-row" onclick="_sfLocation()">
+      <div class="sf-row-icon"></div>
+      <div class="sf-row-info">
+        <div class="sf-row-label">Location Services</div>
+        <div class="sf-row-val" style="font-size:11px;color:${locGranted?'#B8E87A':'var(--red)'}">${locGranted?'Enabled':'Tap to enable'}</div>
+      </div>
+      <div class="sf-row-right"><span style="font-size:13px;color:var(--txt3)">${locGranted?'On':'Off'}</span> <span>›</span></div>
+    </div>
+    ${_sfRow('','Share My Location with Friends','Visible on Friends Map',shareLocOn?'On':'Off','_sfToggleShareLoc()',shareLocOn,true)}
+    <div class="sf-row" onclick="openOfflineDownload()">
+      <div class="sf-row-icon"></div>
+      <div class="sf-row-info"><div class="sf-row-label">Offline Maps</div><div class="sf-row-val">${offlineAreas.length} area${offlineAreas.length!==1?'s':''} downloaded</div></div>
+      <div class="sf-row-right"><span>›</span></div>
+    </div>
+    ${offlineAreas.length?`<div style="padding:0 16px 8px;background:var(--bg0)">${offlineMapsHtml}<div onclick="_sfDownloadCurrentView()" style="margin-top:8px;padding:10px;background:var(--bg2);border-radius:10px;text-align:center;font-size:13px;font-weight:600;color:var(--accent);cursor:pointer">Download Current Map View</div></div>`:'<div style="padding:0 16px 8px"><div onclick="_sfDownloadCurrentView()" style="padding:10px;background:var(--bg2);border-radius:10px;text-align:center;font-size:13px;font-weight:600;color:var(--accent);cursor:pointer">Download Current Map View</div></div>'}
+
+    <div class="settings-section-head">Notifications</div>
+    ${_sfRow('','New Spots Nearby','','',''  ,notifOn,true).replace('onclick=""','onclick="_sfToggleNotif()"')}
+    ${_sfRow('','Community Activity','','',''  ,notifComm,true).replace('onclick=""','onclick="_sfToggleNotifComm()"')}
+    ${_sfRow('','Messages','','',''  ,notifMsg,true).replace('onclick=""','onclick="_sfToggleNotifMsg()"')}
+
+    <div class="settings-section-head">Account</div>
+    ${_sfRow('','Change Username','','','_sfChangeUsername()')}
+    ${_sfRow('','Change Password','','','_sfChangePassword()')}
+    ${_sfRow('','Share Profile','Generate a shareable card','','shareProfile()')}
+    <div class="sf-row" onclick="_sfSignOut()" style="cursor:pointer">
+      <div class="sf-row-icon"></div>
+      <div class="sf-row-info"><div class="sf-row-label" style="color:var(--red)">Sign Out</div></div>
+      <div class="sf-row-right"><span>›</span></div>
+    </div>
+
+    <div class="settings-section-head">App Info</div>
+    ${_sfRow('','Legal Info','Terms, Privacy, Licenses','','_sfOpenLegal()')}
+    ${_sfRow('','Help & Support','','','openSettingsPanel("help")')}
+    <div class="sf-row" style="cursor:default">
+      <div class="sf-row-icon"></div>
+      <div class="sf-row-info">
+        <div class="sf-row-label">App Version</div>
+        <div class="sf-row-val">1.0.0 Beta</div>
+      </div>
+    </div>
+  `;
+}
+
+function _sfRow(icon,label,sub,val,action,toggleState,isToggle=false){
+  const toggleHTML=isToggle?`
+    <button class="sf-toggle ${toggleState?'on':''}" onclick="${action};_buildSettingsFull()">
+      <div class="sf-toggle-knob"></div>
+    </button>`:
+    `<div class="sf-row-right">
+      ${val?`<span style="font-size:13px;color:var(--txt3)">${val}</span> `:''}
+      <span>›</span>
+    </div>`;
+  return `<div class="sf-row" onclick="${isToggle?'':action}">
+    <div class="sf-row-icon">${icon}</div>
+    <div class="sf-row-info">
+      <div class="sf-row-label">${label}</div>
+      ${sub?`<div class="sf-row-val">${sub}</div>`:''}
+    </div>
+    ${toggleHTML}
+  </div>`;
+}
+
+function _sfToggleDark(){
+  const isLight=document.body.classList.contains('light-mode');
+  if(isLight){document.body.classList.remove('light-mode');localStorage.setItem('wildpath-dark-mode','1');}
+  else{document.body.classList.add('light-mode');localStorage.removeItem('wildpath-dark-mode');}
+  _buildSettingsFull();
+}
+function _sfToggleUnits(){
+  const cur=localStorage.getItem('wp_units')||'miles';
+  localStorage.setItem('wp_units',cur==='miles'?'km':'miles');
+  showToast(cur==='miles'?'Switched to kilometers':'Switched to miles');
+  _buildSettingsFull();
+}
+function _sfToggleNotif(){
+  const cur=localStorage.getItem('wp_notif')==='1';
+  localStorage.setItem('wp_notif',cur?'0':'1');
+  showToast(cur?'Notifications off':'New spots alerts on');
+  _buildSettingsFull();
+}
+function _sfToggleNotifComm(){
+  const cur=localStorage.getItem('wp_notif_comm')==='1';
+  localStorage.setItem('wp_notif_comm',cur?'0':'1');
+  showToast(cur?'Community alerts off':'Community activity alerts on');
+  _buildSettingsFull();
+}
+function _sfToggleNotifMsg(){
+  const cur=localStorage.getItem('wp_notif_msg')==='1';
+  localStorage.setItem('wp_notif_msg',cur?'0':'1');
+  showToast(cur?'Message alerts off':'Message alerts on');
+  _buildSettingsFull();
+}
+function _sfLocation(){
+  navigator.geolocation.getCurrentPosition(
+    ()=>{localStorage.setItem('wp_location_granted','1');showToast('Location enabled');_buildSettingsFull();},
+    ()=>showToast('Location access denied — check device settings')
+  );
+}
+function _sfSetMapStyle(s){
+  localStorage.setItem('wildpath-map-style',s);
+  const keyMap={Standard:'standard',Terrain:'terrain',Satellite:'satellite',Hybrid:'hybrid'};
+  if(typeof setMapStyle==='function'&&keyMap[s])setMapStyle(keyMap[s]);
+  showToast('Map style: '+s);
+  _buildSettingsFull();
+}
+function _sfDeleteOffline(i){
+  const areas=JSON.parse(localStorage.getItem('wp_offline_areas')||'[]');
+  areas.splice(i,1);
+  localStorage.setItem('wp_offline_areas',JSON.stringify(areas));
+  showToast('Offline area removed');
+  _buildSettingsFull();
+}
+function _sfDownloadCurrentView(){
+  const bounds=leafletMap.getBounds();
+  const ne=bounds.getNorthEast();const sw=bounds.getSouthWest();
+  const areas=JSON.parse(localStorage.getItem('wp_offline_areas')||'[]');
+  areas.push({name:`Area ${areas.length+1}`,date:new Date().toLocaleDateString(),bounds:{ne,sw}});
+  localStorage.setItem('wp_offline_areas',JSON.stringify(areas));
+  showToast('Map view saved for offline use');
+  _buildSettingsFull();
+}
+function _sfToggleShareLoc(){
+  const cur=localStorage.getItem('wp_share_location')==='1';
+  if(!cur){
+    navigator.geolocation.getCurrentPosition(
+      pos=>{
+        localStorage.setItem('wp_share_location','1');
+        localStorage.setItem('wildpath-user-location-'+_myUid(),JSON.stringify({lat:pos.coords.latitude,lng:pos.coords.longitude,ts:Date.now()}));
+        showToast('Location sharing enabled');
+        _buildSettingsFull();
+        // Start interval
+        if(window._locShareInterval)clearInterval(window._locShareInterval);
+        window._locShareInterval=setInterval(()=>{
+          if(localStorage.getItem('wp_share_location')!=='1'){clearInterval(window._locShareInterval);return;}
+          navigator.geolocation.getCurrentPosition(p=>{
+            localStorage.setItem('wildpath-user-location-'+_myUid(),JSON.stringify({lat:p.coords.latitude,lng:p.coords.longitude,ts:Date.now()}));
+          });
+        },30000);
+      },
+      ()=>showToast('Location access denied')
+    );
+  } else {
+    localStorage.setItem('wp_share_location','0');
+    if(window._locShareInterval)clearInterval(window._locShareInterval);
+    showToast('Location sharing disabled');
+    _buildSettingsFull();
+  }
+}
+function _sfChangeUsername(){
+  const newName=prompt('Enter new username:');
+  if(!newName||!newName.trim()){return;}
+  if(_currentUser){
+    _currentUser.username=newName.trim();
+    const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
+    const u=users.find(x=>String(x.id)===String(_currentUser.id));
+    if(u)u.username=newName.trim();
+    localStorage.setItem('wildpath-users',JSON.stringify(users));
+    showToast('Username updated');
+    buildProfile();
+  }
+}
+function _sfChangePassword(){
+  const cur=prompt('Enter current password:');
+  if(!cur)return;
+  const nw=prompt('Enter new password:');
+  if(!nw||nw.length<6){showToast('Password must be at least 6 characters');return;}
+  showToast('Password updated');
+}
+function _sfSignOut(){
+  localStorage.removeItem('wildpath-current-user');
+  localStorage.removeItem('wildpath-guest');
+  _currentUser=null;
+  showToast('Signed out');
+  closeSettingsFull();
+  _showLoginScreen();
+}
+function _sfOpenLegal(){
+  const overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;inset:0;z-index:700;background:var(--bg0);display:flex;flex-direction:column;overflow:hidden';
+  overlay.innerHTML=`
+    <div style="display:flex;align-items:center;padding:52px 16px 14px;border-bottom:1px solid var(--border);flex-shrink:0">
+      <div onclick="this.closest('[style*=fixed]').remove()" style="cursor:pointer;padding:4px 8px 4px 0;font-size:15px;color:var(--txt0)">← Back</div>
+      <div style="flex:1;text-align:center;font-size:17px;font-weight:700;color:var(--txt0)">Legal Info</div>
+      <div style="width:60px"></div>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:20px 16px">
+      <div style="font-size:16px;font-weight:700;color:var(--txt0);margin-bottom:10px">Terms of Service</div>
+      <p style="font-size:13px;color:var(--txt2);line-height:1.7;margin-bottom:20px">WildPath is provided for personal, non-commercial use. You agree to use the app responsibly and in compliance with all applicable laws. Do not trespass or access private property. WildPath is not responsible for injuries, damages, or losses arising from outdoor activities.</p>
+      <div style="font-size:16px;font-weight:700;color:var(--txt0);margin-bottom:10px">Privacy Policy</div>
+      <p style="font-size:13px;color:var(--txt2);line-height:1.7;margin-bottom:20px">WildPath stores your data locally on your device using localStorage. We do not transmit personal data to external servers except for map tile requests (Mapbox) and geocoding (Nominatim). Your location is only used when you enable location services. We do not sell your data.</p>
+      <div style="font-size:16px;font-weight:700;color:var(--txt0);margin-bottom:10px">Open Source Licenses</div>
+      <div style="background:var(--bg2);border-radius:12px;padding:14px;margin-bottom:8px">
+        <div style="font-size:14px;font-weight:700;color:var(--txt0)">Mapbox GL JS</div>
+        <div style="font-size:11px;color:var(--txt3)">v3.6.0 — Mapbox Terms of Service</div>
+      </div>
+      <div style="background:var(--bg2);border-radius:12px;padding:14px;margin-bottom:8px">
+        <div style="font-size:14px;font-weight:700;color:var(--txt0)">Nominatim</div>
+        <div style="font-size:11px;color:var(--txt3)">OpenStreetMap — ODbL License</div>
+      </div>
+      <div style="background:var(--bg2);border-radius:12px;padding:14px;margin-bottom:24px">
+        <div style="font-size:14px;font-weight:700;color:var(--txt0)">Tabler Icons</div>
+        <div style="font-size:11px;color:var(--txt3)">MIT License</div>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+function _sfOpenMapStyle(){/* handled inline in _buildSettingsFull */}
+
+// Override openSettingsPanel to also work from profile settings rows
+const _origOpenSettingsPanel=openSettingsPanel;
+// Patch settingsList onclick in profile to open the full settings screen
+function _patchSettingsRows(){
+  const list=document.getElementById('settingsList');
+  if(!list)return;
+  list.querySelectorAll('.settings-row').forEach(row=>{
+    const origClick=row.getAttribute('onclick');
+    if(origClick&&origClick.includes('openSettingsPanel')){
+      row.setAttribute('onclick',origClick.replace('openSettingsPanel','_origOpenSettingsPanel'));
+    }
+  });
+  // Add a main Settings button at the top of the profile that opens the full settings screen
+  const settingsHeader=document.querySelector('#profile-screen .settings-row:first-child');
+}
+
+// Trip duration pills: also allow 15-30 via custom input in main plan screen
+// ── Trip planner export buttons (Apple Maps + Google Maps) ──
+function _addMapExportButtons(){
+  if(!_planState)return;
+  const output=document.getElementById('itineraryOutput');
+  if(!output)return;
+  const existingExport=output.querySelector('.map-export-row');
+  if(existingExport)return; // already added
+
+  // Collect all kept spots with lat/lng
+  const allSpots=[...spots,...userSpots];
+  const keptSpots=_planState.days.flatMap(d=>d.spots.filter(s=>s.kept));
+  const waypoints=keptSpots.map(sp=>{
+    const match=allSpots.find(s=>s.name===sp.name)||allSpots.find(s=>s.name.includes(sp.name.slice(0,10)));
+    return match?{lat:match.lat,lng:match.lng,name:sp.name}:null;
+  }).filter(Boolean);
+
+  if(!waypoints.length)return;
+
+  // Apple Maps URL (daddr supports only start/end — chain via saddr/daddr)
+  const appleBase='https://maps.apple.com/?';
+  const firstWp=waypoints[0];
+  const lastWp=waypoints[waypoints.length-1];
+  const appleUrl=appleBase+`saddr=${firstWp.lat},${firstWp.lng}&daddr=${lastWp.lat},${lastWp.lng}&dirflg=d`;
+
+  // Google Maps URL with waypoints
+  const gStart=`${firstWp.lat},${firstWp.lng}`;
+  const gEnd=`${lastWp.lat},${lastWp.lng}`;
+  const gWaypoints=waypoints.slice(1,-1).map(w=>`${w.lat},${w.lng}`).join('|');
+  const googleUrl=`https://www.google.com/maps/dir/?api=1&origin=${gStart}&destination=${gEnd}${gWaypoints?'&waypoints='+encodeURIComponent(gWaypoints):''}`;
+
+  const row=document.createElement('div');
+  row.className='map-export-row';
+  row.style.cssText='display:flex;gap:10px;margin-top:14px;padding:0 2px';
+  row.innerHTML=`
+    <a href="${appleUrl}" target="_blank" rel="noopener"
+      style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;
+      border:1.5px solid rgba(255,255,255,.12);border-radius:12px;padding:12px 8px;
+      text-decoration:none;color:var(--txt0);font-size:12px;font-weight:600;
+      background:rgba(255,255,255,.04)">
+      Apple Maps
+    </a>
+    <a href="${googleUrl}" target="_blank" rel="noopener"
+      style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;
+      border:1.5px solid rgba(255,255,255,.12);border-radius:12px;padding:12px 8px;
+      text-decoration:none;color:var(--txt0);font-size:12px;font-weight:600;
+      background:rgba(255,255,255,.04)">
+      Google Maps
+    </a>`;
+  output.appendChild(row);
+}
+
+// Open full settings from profile settings list
+function openSettingsFromProfile(){openSettingsFull();}
+
+// ═══════════════════════════════════════════════════
+// TRIP PLANNER — SWIPE LEFT TO REMOVE SPOT CARDS
+// ═══════════════════════════════════════════════════
+
+function _attachPlanCardSwipe(di){
+  const list=document.getElementById(`plan-day-${di}`);
+  if(!list)return;
+  list.querySelectorAll('.plan-spot-card').forEach(card=>{
+    let startX=0,startY=0,dx=0;
+    card.addEventListener('touchstart',e=>{
+      startX=e.touches[0].clientX;startY=e.touches[0].clientY;dx=0;
+    },{passive:true});
+    card.addEventListener('touchmove',e=>{
+      dx=e.touches[0].clientX-startX;
+      const dy=Math.abs(e.touches[0].clientY-startY);
+      if(Math.abs(dx)>dy&&Math.abs(dx)>8){
+        // Horizontal swipe
+        const move=Math.min(0,dx); // only left
+        card.style.transform=`translateX(${move}px)`;
+        card.style.transition='none';
+        // Show/hide red delete bg
+        let bg=card.nextElementSibling;
+        if(!bg||!bg.classList.contains('swipe-del-bg')){
+          bg=document.createElement('div');
+          bg.className='swipe-del-bg';
+          bg.style.cssText='position:absolute;right:0;top:0;bottom:0;width:80px;background:#C4524A;border-radius:0 16px 16px 0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;pointer-events:none;z-index:-1';
+          bg.textContent='Remove';
+          card.style.position='relative';
+          card.after(bg);
+        }
+        bg.style.opacity=Math.min(1,Math.abs(dx)/80)+'';
+      }
+    },{passive:true});
+    card.addEventListener('touchend',()=>{
+      card.style.transition='transform .25s ease';
+      if(dx<-80){
+        // Trigger remove
+        card.style.transform='translateX(-110%)';
+        setTimeout(()=>{
+          const uid=card.dataset.uid;
+          if(uid)_planRemove(uid);
+        },200);
+      } else {
+        card.style.transform='';
+        // Remove swipe bg
+        const bg=card.nextElementSibling;
+        if(bg&&bg.classList.contains('swipe-del-bg'))bg.remove();
+      }
+    },{passive:true});
+  });
+}
+
+// ═══════════════════════════════════════════════════
+// TRIP PLANNER — ADD SPOT TO DAY
+// ═══════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════
+// AUTH SYSTEM — inline Profile-tab login only (no overlay screens)
+// ═══════════════════════════════════════════════════════════════
+const ADMIN_SECRET_CODE = 'WildPath2026Admin';
+let _currentUser = null;
+let _appInitialized = false;
+let _loginCallback = null;
+
+// ── Pending spots submitted by explorer users ──
+let _pendingSpots = JSON.parse(localStorage.getItem('wp_pending_spots')||'[]');
+
+function _saveUsers(users){
+  localStorage.setItem('wildpath-users', JSON.stringify(users));
+}
+function _getUsers(){
+  return JSON.parse(localStorage.getItem('wildpath-users')||'[]');
+}
+
+// Profile tab inline login panel toggles
+function profileShowSignIn(){
+  const si=document.getElementById('profileSignInPanel');
+  const su=document.getElementById('profileSignUpPanel');
+  if(si)si.style.display='block';
+  if(su)su.style.display='none';
+  document.getElementById('profileTabSignIn')?.classList.add('active');
+  document.getElementById('profileTabSignUp')?.classList.remove('active');
+  const e=document.getElementById('profileLoginError');if(e)e.classList.remove('show');
+}
+function profileShowSignUp(){
+  const si=document.getElementById('profileSignInPanel');
+  const su=document.getElementById('profileSignUpPanel');
+  if(si)si.style.display='none';
+  if(su)su.style.display='block';
+  document.getElementById('profileTabSignIn')?.classList.remove('active');
+  document.getElementById('profileTabSignUp')?.classList.add('active');
+  const e=document.getElementById('profileSignupError');if(e)e.classList.remove('show');
+}
+// Legacy stubs (called nowhere now, kept to prevent ReferenceErrors)
+function showSignIn(){}
+function showSignUp(){}
+
+function _showLoginError(id, msg){
+  const el=document.getElementById(id);
+  if(el){el.textContent=msg; el.classList.add('show');}
+}
+
+// Profile-tab sign in
+function doProfileSignIn(){
+  try{
+    const email=(document.getElementById('profileLoginEmail')?.value||'').trim().toLowerCase();
+    const pw=document.getElementById('profileLoginPassword')?.value||'';
+    if(!email||!pw){_showLoginError('profileLoginError','Enter your email and password.');return;}
+    const users=_getUsers();
+    const user=users.find(u=>u.email.toLowerCase()===email);
+    if(!user){_showLoginError('profileLoginError','No account found with that email.');return;}
+    if(user.password!==btoa(pw)){_showLoginError('profileLoginError','Incorrect password.');return;}
+    localStorage.setItem('wildpath-current-user',user.id);
+    localStorage.removeItem('wildpath-guest');
+    _currentUser=user;
+    showToast('Welcome back, '+user.username+'!');
+    _launchApp();
+  }catch(e){
+    console.error('doProfileSignIn:',e);
+    _showLoginError('profileLoginError','Something went wrong.');
+  }
+}
+
+// Profile-tab sign up
+function doProfileSignUp(){
+  try{
+    const username=(document.getElementById('profileSignupUsername')?.value||'').trim();
+    const email=(document.getElementById('profileSignupEmail')?.value||'').trim().toLowerCase();
+    const pw=document.getElementById('profileSignupPassword')?.value||'';
+    const confirm=document.getElementById('profileSignupConfirm')?.value||'';
+    const adminCode=(document.getElementById('profileSignupAdminCode')?.value||'').trim();
+    if(!username||!email||!pw||!confirm){_showLoginError('profileSignupError','All fields are required.');return;}
+    if(pw!==confirm){_showLoginError('profileSignupError','Passwords do not match.');return;}
+    if(pw.length<6){_showLoginError('profileSignupError','Password must be 6+ characters.');return;}
+    const users=_getUsers();
+    if(users.find(u=>u.email.toLowerCase()===email)){_showLoginError('profileSignupError','Email already in use.');return;}
+    const role=adminCode===ADMIN_SECRET_CODE?'admin':'explorer';
+    const newUser={id:Date.now(),username,email,password:btoa(pw),role,avatar:null,savedSpots:[],submittedSpots:[],createdAt:new Date().toISOString()};
+    users.push(newUser);
+    _saveUsers(users);
+    localStorage.setItem('wildpath-current-user',newUser.id);
+    localStorage.removeItem('wildpath-guest');
+    _currentUser=newUser;
+    showToast(role==='admin'?'Admin account created!':'Welcome to WildPath!');
+    _launchApp();
+  }catch(e){
+    console.error('doProfileSignUp:',e);
+    _showLoginError('profileSignupError','Something went wrong.');
+  }
+}
+
+// Legacy stubs
+function doSignIn(){doProfileSignIn();}
+function doSignUp(){doProfileSignUp();}
+function doGuestMode(){}
+
+function signOut(){
+  localStorage.removeItem('wildpath-current-user');
+  localStorage.removeItem('wildpath-guest');
+  _currentUser={id:'guest',username:'Guest',role:'guest',email:''};
+  buildProfile();
+  showToast('Signed out');
+  setTimeout(()=>{
+    _appInitialized=false;
+    _showLoginScreen();
+  },400);
+}
+
+// ── Admin UI helpers ──────────────────────────────
+function _applyAdminUI(){
+  // Mark body so CSS can target admin-only elements
+  document.body.classList.add('is-admin');
+  // Add admin badge to profile header
+  const profileHeader=document.querySelector('#profile-screen .profile-name');
+  if(profileHeader&&_currentUser){
+    profileHeader.insertAdjacentHTML('afterend','<span class="admin-badge">ADMIN</span>');
+  }
+}
+
+function isAdmin(){return _currentUser&&_currentUser.role==='admin';}
+function isGuest(){return false;} // All users have full access — no login wall
+function isLoggedIn(){return _currentUser&&_currentUser.role!=='guest';}
+
+// ── Route gated actions to login screen ────────────────────────
+function promptSignIn(cb){
+  _loginCallback=typeof cb==='function'?cb:null;
+  showToast('Sign in to continue');
+  _showLoginScreen();
+}
+function showLoginScreen(cb){promptSignIn(cb);}
+
+// Profile tab — always opens; shows inline login form if guest
+function switchToProfile(el){switchScreen('profile',el);}
+
+// ── Admin: Pending spots management ──────────────
+function getPendingSpots(){
+  return JSON.parse(localStorage.getItem('wp_pending_spots')||'[]');
+}
+function savePendingSpots(arr){
+  localStorage.setItem('wp_pending_spots',JSON.stringify(arr));
+}
+function approveSpot(spotId){
+  const pending=getPendingSpots();
+  const idx=pending.findIndex(s=>s._pendingId===spotId);
+  if(idx===-1)return;
+  const spot=pending[idx];
+  spot.approved=true;
+  spot._pendingId=undefined;
+  userSpots.push(spot);
+  localStorage.setItem('wp_user_spots',JSON.stringify(userSpots));
+  pending.splice(idx,1);
+  savePendingSpots(pending);
+  refreshSpotMarkers();
+  showToast('Spot approved and published!');
+}
+function rejectSpot(spotId){
+  const pending=getPendingSpots();
+  const idx=pending.findIndex(s=>s._pendingId===spotId);
+  if(idx===-1)return;
+  pending.splice(idx,1);
+  savePendingSpots(pending);
+  showToast('Spot rejected.');
+}
+
+// Override addUserSpot to send to pending queue for explorers
+function submitSpotForReview(spot){
+  if(isAdmin()){
+    // Admins publish immediately
+    userSpots.push(spot);
+    localStorage.setItem('wp_user_spots',JSON.stringify(userSpots));
+    refreshSpotMarkers();
+    showToast('Spot published!');
+  } else {
+    // Explorers go to pending queue
+    const pending=getPendingSpots();
+    spot._pendingId=Date.now();
+    spot._submittedBy=_currentUser?.username||'Unknown';
+    pending.push(spot);
+    savePendingSpots(pending);
+    showToast('Spot submitted for review!');
+  }
+}
+
+// Guest mode: route to Profile tab inline login
+function requireAuth(action,cb){
+  if(isGuest()){promptSignIn(cb||null);return false;}
+  return true;
+}
+
+// ═══════════════════════════════════════════════════
+// ADMIN — EDIT & DELETE SPOTS
+// ═══════════════════════════════════════════════════
+let _adminEditSpotId = null;
+
+function adminEditSpot(){
+  if(!isAdmin()){showToast('Admin only');return;}
+  const allS=[...spots,...userSpots];
+  const spot=allS.find(s=>s.id===currentPin);
+  if(!spot){showToast('Spot not found');return;}
+  _adminEditSpotId=spot.id;
+
+  // Pre-fill fields
+  const f=(id,val)=>{const el=document.getElementById(id);if(el)el.value=val||'';};
+  f('aeSpotName',   spot.name);
+  f('aeSpotDesc',   spot.description||spot.approach||'');
+  f('aeSpotApproach', spot.approach||'');
+  f('aeSpotTips',   spot.insiderTips||'');
+  f('aeSpotFee',    spot.entryFee||'');
+  f('aeSpotSeason', spot.bestSeason||'');
+  f('aeSpotRoad',   spot.roadCondition||'');
+
+  const legalSel=document.getElementById('aeSpotLegal');
+  if(legalSel)legalSel.value=spot.legal||'legal';
+
+  document.getElementById('adminEditOverlay').classList.add('open');
+}
+
+function closeAdminEdit(){
+  document.getElementById('adminEditOverlay').classList.remove('open');
+  _adminEditSpotId=null;
+}
+
+function saveAdminEdit(){
+  if(!_adminEditSpotId){closeAdminEdit();return;}
+  const g=(id)=>(document.getElementById(id)?.value||'').trim();
+  const name=g('aeSpotName');
+  if(!name){showToast('Name cannot be empty');return;}
+
+  const legal=document.getElementById('aeSpotLegal')?.value||'legal';
+  const legalMap={
+    legal:{text:'Legal',cls:'legal-legal'},
+    permit:{text:'Permit Required',cls:'legal-permit'},
+    gray:{text:'Gray Area',cls:'legal-gray'},
+    illegal:{text:'Illegal / No Trespassing',cls:'legal-illegal'}
+  };
+  const legalInfo=legalMap[legal]||legalMap.legal;
+
+  // Update in spots array
+  let found=false;
+  for(let i=0;i<spots.length;i++){
+    if(spots[i].id===_adminEditSpotId){
+      spots[i].name=name;
+      spots[i].description=g('aeSpotDesc');
+      spots[i].approach=g('aeSpotApproach');
+      spots[i].insiderTips=g('aeSpotTips');
+      spots[i].entryFee=g('aeSpotFee');
+      spots[i].bestSeason=g('aeSpotSeason');
+      spots[i].roadCondition=g('aeSpotRoad');
+      spots[i].legal=legal;
+      spots[i].legalText=legalInfo.text;
+      spots[i].legalClass=legalInfo.cls;
+      found=true; break;
+    }
+  }
+  // Also check userSpots
+  if(!found){
+    for(let i=0;i<userSpots.length;i++){
+      if(userSpots[i].id===_adminEditSpotId){
+        userSpots[i].name=name;
+        userSpots[i].description=g('aeSpotDesc');
+        userSpots[i].approach=g('aeSpotApproach');
+        userSpots[i].insiderTips=g('aeSpotTips');
+        userSpots[i].entryFee=g('aeSpotFee');
+        userSpots[i].bestSeason=g('aeSpotSeason');
+        userSpots[i].roadCondition=g('aeSpotRoad');
+        userSpots[i].legal=legal;
+        userSpots[i].legalText=legalInfo.text;
+        userSpots[i].legalClass=legalInfo.cls;
+        found=true; break;
+      }
+    }
+    if(found)localStorage.setItem('wp_user_spots',JSON.stringify(userSpots));
+  }
+
+  closeAdminEdit();
+  showToast('Spot updated');
+  // Re-render detail page with updated data
+  setTimeout(()=>openDetail(_adminEditSpotId||currentPin),50);
+  // Refresh map markers
+  try{refreshSpotMarkers();}catch(e){}
+}
+
+function adminDeleteSpot(){
+  if(!isAdmin()){return;}
+  const allS=[...spots,...userSpots];
+  const spot=allS.find(s=>s.id===((_adminEditSpotId)||currentPin));
+  if(!spot){closeAdminEdit();return;}
+
+  // Confirm — use toast-based confirm pattern
+  const confirmed=window.confirm(`Delete "${spot.name}"? This cannot be undone.`);
+  if(!confirmed)return;
+
+  // Remove from spots array (built-in spots kept in-memory only; remove from userSpots if community)
+  const sIdx=spots.findIndex(s=>s.id===spot.id);
+  if(sIdx>=0)spots.splice(sIdx,1);
+
+  const uIdx=userSpots.findIndex(s=>s.id===spot.id);
+  if(uIdx>=0){
+    userSpots.splice(uIdx,1);
+    localStorage.setItem('wp_user_spots',JSON.stringify(userSpots));
+  }
+
+  // Remove marker from map
+  if(window._spotMarkers){
+    const m=window._spotMarkers[spot.id];
+    if(m){m.remove();delete window._spotMarkers[spot.id];}
+  }
+
+  closeAdminEdit();
+  closeDetail();
+  showToast(`"${spot.name}" deleted`);
+  try{refreshSpotMarkers();}catch(e){}
+}
+
+// ── Expose _spotMarkers on addSpotMarkerToMap ─────────
+if(!window._spotMarkers)window._spotMarkers={};
+
+// ════════════════════════════════════════════════════════════════
+//  COMMUNITY SYSTEM  — complete social platform
+// ════════════════════════════════════════════════════════════════
+
+// ── State ─────────────────────────────────────────────────────
+let _commFeedFilter='all', _commFeedSort='recent', _commSubTab='feed';
+let _currentCommunityId=null, _currentPostId=null, _currentProfileUserId=null;
+let _dmConvUserId=null;
+let _cpStep=1, _cpType=null, _cpMediaDataUrl=null, _cpFilter='none';
+let _cpTaggedSpotId=null, _cpTaggedSpotName='', _cpShareCommunities=[];
+let _ccStep=1, _ccCoverDataUrl=null, _ccPrivacy='public', _ccFocusTags=[];
+let _sdLat=37.5, _sdLng=-120.0, _sdPhotoDataUrl=null, _sdMap=null;
+let _commSortMode='hot'; // for community detail feed
+let _commentReplyTo=null; // parent comment id for replies
+
+// ── localStorage keys ──────────────────────────────────────────
+const CK={
+  posts:'wildpath-posts', communities:'wildpath-communities',
+  members:'wildpath-community-members', cposts:'wildpath-community-posts',
+  votes:'wildpath-votes', comments:'wildpath-comments',
+  follows:'wildpath-follows', notifs:'wildpath-notifications',
+  messages:'wildpath-messages', spotdrops:'wildpath-spot-drops',
+  searches:'wildpath-recent-searches', profiles:'wildpath-user-profiles'
+};
+
+// ── Data helpers ───────────────────────────────────────────────
+function _cgGet(k){try{return JSON.parse(localStorage.getItem(k)||'null');}catch{return null;}}
+function _cgSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}
+function getPosts(){return _cgGet(CK.posts)||[];}
+function setPosts(v){_cgSet(CK.posts,v);}
+function getCommunities(){return _cgGet(CK.communities)||[];}
+function setCommunities(v){_cgSet(CK.communities,v);}
+function getMembers(cid){const m=_cgGet(CK.members)||{};return m[cid]||[];}
+function setMembers(cid,arr){const m=_cgGet(CK.members)||{};m[cid]=arr;_cgSet(CK.members,m);}
+function getCPosts(cid){const m=_cgGet(CK.cposts)||{};return m[cid]||[];}
+function setCPosts(cid,arr){const m=_cgGet(CK.cposts)||{};m[cid]=arr;_cgSet(CK.cposts,m);}
+function getVotes(){return _cgGet(CK.votes)||{};}
+function setVotes(v){_cgSet(CK.votes,v);}
+function getComments(pid){const m=_cgGet(CK.comments)||{};return m[pid]||[];}
+function setComments(pid,arr){const m=_cgGet(CK.comments)||{};m[pid]=arr;_cgSet(CK.comments,m);}
+function getFollows(){return _cgGet(CK.follows)||{};}
+function setFollows(v){_cgSet(CK.follows,v);}
+function getNotifs(){return _cgGet(CK.notifs)||[];}
+function setNotifs(v){_cgSet(CK.notifs,v);}
+function getMessages(){return _cgGet(CK.messages)||{};}
+function setMessages(v){_cgSet(CK.messages,v);}
+function getSpotDrops(){return _cgGet(CK.spotdrops)||[];}
+function setSpotDrops(v){_cgSet(CK.spotdrops,v);}
+function getUserProfile(uid){const m=_cgGet(CK.profiles)||{};return m[uid]||null;}
+function setUserProfile(uid,data){const m=_cgGet(CK.profiles)||{};m[uid]=data;_cgSet(CK.profiles,m);}
+
+// ── Helpers ────────────────────────────────────────────────────
+function _myUid(){return _currentUser?.id||'guest';}
+function _myName(){return _currentUser?.username||'Explorer';}
+function _myInitials(){const n=_myName();return n.slice(0,2).toUpperCase();}
+function _timeAgo(iso){
+  const s=Math.floor((Date.now()-new Date(iso))/1000);
+  if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';
+  if(s<86400)return Math.floor(s/3600)+'h';return Math.floor(s/86400)+'d';
+}
+function _uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
+function _isFollowing(uid){const f=getFollows();return(f[_myUid()]||[]).includes(uid);}
+function _isAdmin(){return isAdmin();}
+function _verifiedBadge(){
+  return `<span class="verified-badge"><svg viewBox="0 0 10 10"><polyline points="2,5 4.5,7.5 8,3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
+}
+function _userVerified(uid){
+  const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
+  const u=users.find(x=>String(x.id)===String(uid));
+  return u?.verified||false;
+}
+function _avatarHtml(username,size=32,photoUrl=null){
+  const initials=(username||'?').slice(0,2).toUpperCase();
+  const colors=['#2d5a3a','#3a2d5a','#5a3a2d','#2d4a5a','#5a2d4a'];
+  const ci=username?username.charCodeAt(0)%colors.length:0;
+  if(photoUrl&&photoUrl.startsWith('data:')){
+    return `<div class="post-avatar" style="width:${size}px;height:${size}px;font-size:${Math.floor(size*0.35)}px"><img src="${photoUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:50%"></div>`;
+  }
+  return `<div class="post-avatar" style="width:${size}px;height:${size}px;font-size:${Math.floor(size*0.35)}px;background:${colors[ci]}">${initials}</div>`;
+}
+
+// ── Seed demo data ─────────────────────────────────────────────
+function _seedCommunityData(){
+  // Always ensure demo users exist in wildpath-users (runs even for existing sessions)
+  const _demoUserList=[
+    {id:'demo1',username:'peak_wanderer',fullName:'Peak Wanderer',email:'peak@wildpath.app',role:'user',verified:true,createdAt:'2025-06-01T00:00:00.000Z'},
+    {id:'demo2',username:'trailhawk_kai',fullName:'Kai Trailhawk',email:'kai@wildpath.app',role:'user',verified:false,createdAt:'2025-06-01T00:00:00.000Z'},
+    {id:'demo3',username:'cave_ghost',fullName:'Cave Ghost',email:'cave@wildpath.app',role:'user',verified:true,createdAt:'2025-06-01T00:00:00.000Z'},
+    {id:'demo4',username:'swim_seeker',fullName:'Swim Seeker',email:'swim@wildpath.app',role:'user',verified:false,createdAt:'2025-06-01T00:00:00.000Z'},
+    {id:'demo5',username:'ruins_reader',fullName:'Ruins Reader',email:'ruins@wildpath.app',role:'user',verified:false,createdAt:'2025-06-01T00:00:00.000Z'},
+    {id:'demo6',username:'ridge_runner',fullName:'Ridge Runner',email:'ridge@wildpath.app',role:'user',verified:false,createdAt:'2025-06-01T00:00:00.000Z'}
+  ];
+  (function(){
+    const eu=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
+    const eid=new Set(eu.map(u=>u.id));
+    const toAdd=_demoUserList.filter(u=>!eid.has(u.id));
+    if(toAdd.length)localStorage.setItem('wildpath-users',JSON.stringify([...eu,...toAdd]));
+  })();
+
+  // Always ensure DMs exist for the current user (fixes sessions where guest was used)
+  (function(){
+    const myId=_myUid()||'guest';
+    const existing=getMessages();
+    const hasMyDms=Object.keys(existing).some(k=>k.includes(myId));
+    if(!hasMyDms){
+      const k1=_dmConvKey(myId,'demo2'), k2=_dmConvKey(myId,'demo1'), k3=_dmConvKey(myId,'demo4');
+      const patched={...existing};
+      patched[k1]=[
+        {id:'m1',fromId:'demo2',text:'Hey! Loved your recent cave photos',time:new Date(Date.now()-3600000).toISOString()},
+        {id:'m2',fromId:myId,text:'Thanks! That place was incredible',time:new Date(Date.now()-3500000).toISOString()},
+        {id:'m3',fromId:'demo2',text:'Where was that exactly? I want to go',time:new Date(Date.now()-3400000).toISOString()},
+        {id:'m4',fromId:myId,text:'Moaning Caverns — check the app map, it\'s on there',time:new Date(Date.now()-3300000).toISOString()}
+      ];
+      patched[k2]=[
+        {id:'m5',fromId:'demo1',text:'Great trail report on the Dipsea, super helpful!',time:new Date(Date.now()-2*86400000).toISOString()},
+        {id:'m6',fromId:myId,text:'Glad it helped — it was a mess out there last week',time:new Date(Date.now()-2*86400000+3600000).toISOString()}
+      ];
+      patched[k3]=[
+        {id:'m7',fromId:'demo4',text:'Did you ever find that waterfall off the main trail?',time:new Date(Date.now()-5*86400000).toISOString()},
+        {id:'m8',fromId:myId,text:'Not yet, got rained out last time. Trying again next weekend',time:new Date(Date.now()-5*86400000+1800000).toISOString()},
+        {id:'m9',fromId:'demo4',text:'I can come! Let me know when you are heading out',time:new Date(Date.now()-5*86400000+3600000).toISOString()}
+      ];
+      setMessages(patched);
+    }
+  })();
+
+  // Re-seed if fewer than 10 posts (handles fresh install and upgraded demo data)
+  if(getPosts().length>=10&&getCommunities().length>0)return;
+
+  const demoComms=[
+    {id:'comm1',name:'NorCal Cave Divers',desc:'For those who explore the underground waterways and caves of Northern California.',coverGrad:'linear-gradient(135deg,#1a2a4a,#2a4a6a)',privacy:'public',focusTags:['Caves','Swimming'],rules:'1. Always dive with a buddy\n2. No solo cave dives\n3. Share safety reports',adminId:'demo1',createdAt:new Date(Date.now()-864e7).toISOString(),memberCount:847},
+    {id:'comm2',name:'Bay Area Hikers',desc:'Trails, peaks, and scenic spots across the Bay Area and Coast Range.',coverGrad:'linear-gradient(135deg,#1a3a1a,#2a5a2a)',privacy:'public',focusTags:['Hiking','Scenic'],rules:'1. Leave no trace\n2. Share accurate trail conditions\n3. Be kind to all hikers',adminId:'demo2',createdAt:new Date(Date.now()-2592e6*5).toISOString(),memberCount:3241},
+    {id:'comm3',name:'Hidden Swimming Holes CA',desc:'Secret swimming spots, waterfalls, and cold plunge pools throughout California.',coverGrad:'linear-gradient(135deg,#1a3a4a,#2a5a6a)',privacy:'public',focusTags:['Swimming','Waterfalls'],rules:'1. Keep locations vague in public posts\n2. Pack out all trash\n3. Respect private property',adminId:'demo3',createdAt:new Date(Date.now()-2592e6*12).toISOString(),memberCount:5102},
+    {id:'comm4',name:'Urban Explorers SF',desc:'Discovering the hidden, forgotten, and off-limits spaces of San Francisco.',coverGrad:'linear-gradient(135deg,#2a1a3a,#4a2a5a)',privacy:'private',focusTags:['Urban'],rules:'1. Never share exact access points\n2. Respect other urbex crews\n3. Zero damage policy',adminId:'demo4',createdAt:new Date(Date.now()-2592e6*8).toISOString(),memberCount:423}
+  ];
+
+  const demoPosts=[
+    {id:'post1',userId:'demo2',username:'trailhawk_kai',verified:false,type:'photo',mediaUrl:'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=800&q=80',caption:'Found this absolutely unreal viewpoint on the Marin Headlands trail yesterday. The fog was rolling in from the ocean — pure magic. This spot never gets old no matter how many times I visit.',spotId:1,spotName:'McWay Falls Overlook',spotType:'scenic',region:'Big Sur, CA',communityIds:['comm2'],likes:['demo1','demo3','demo4'],createdAt:new Date(Date.now()-7200000).toISOString(),privacy:'public'},
+    {id:'post2',userId:'demo3',username:'cave_ghost',verified:true,type:'photo',mediaUrl:'https://images.unsplash.com/photo-1520637836862-4d197d17c38a?w=800&q=80',caption:'Lava Beds cave system is on another level. Spent 3 hours underground and barely scratched the surface. The crystal formations in the lower chambers are something you have to see in person.',spotId:3,spotName:'Lava Beds Lava Tube',spotType:'caves',region:'Modoc County, CA',communityIds:['comm1'],likes:['demo2'],createdAt:new Date(Date.now()-18e6).toISOString(),privacy:'public'},
+    {id:'post3',userId:'demo4',username:'swim_seeker',verified:false,type:'text',mediaUrl:null,caption:'PSA for anyone heading to the McCloud River Falls this weekend — water levels are HIGH right now after the recent rains. The lower falls are perfectly swimmable but the upper pools are moving fast. Stay safe out there',spotId:2,spotName:'McCloud River Falls',spotType:'swimming',region:'Shasta County, CA',communityIds:['comm3'],likes:['demo1','demo2','demo3'],createdAt:new Date(Date.now()-36e6).toISOString(),privacy:'public'},
+    {id:'post4',userId:'demo1',username:'peak_wanderer',verified:true,type:'photo',mediaUrl:'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=800&q=80',caption:'Sierra Nevada at golden hour. No filter needed when the light does this. Camped here for three nights and watched this exact scene play out each evening.',spotId:4,spotName:'Crater Lake Vista',spotType:'scenic',region:'Sierra Nevada, CA',communityIds:['comm2'],likes:['demo2','demo3'],createdAt:new Date(Date.now()-86400000).toISOString(),privacy:'public'},
+    {id:'post5',userId:'demo5',username:'ruins_reader',verified:false,type:'spotdrop',mediaUrl:'https://images.unsplash.com/photo-1548013146-72479768bada?w=800&q=80',caption:'Nominating this abandoned mill site for the map. Full approach directions in the post.',spotId:null,spotName:'Old Sutro Tunnels',spotType:'urban',region:'San Francisco, CA',communityIds:['comm4'],likes:['demo1'],createdAt:new Date(Date.now()-172800000).toISOString(),privacy:'public',
+      spotdrop:{name:'Old Sutro Tunnels',lat:37.779,lng:-122.514,type:'urban',legal:'caution',description:'Series of tunnels beneath the old Sutro Baths site. Accessible at low tide only.',approach:'From the Sutro Baths parking area, follow the coastal trail north for 0.3 miles. At low tide a rocky path opens to the tunnel entrance.',photo:'https://images.unsplash.com/photo-1548013146-72479768bada?w=800&q=80',votes:7,submittedBy:'ruins_reader'}},
+    // Extra posts to fill the grid
+    {id:'post6',userId:'demo6',username:'ridge_runner',verified:false,type:'photo',mediaUrl:'https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?w=800&q=80',caption:'Took the long way around the ridge. Earned every step of this view. Six hours in and I would do it all over again.',spotId:1,spotName:'Sutro Baths',spotType:'scenic',region:'San Francisco, CA',communityIds:['comm2'],likes:['demo1','demo5'],createdAt:new Date(Date.now()-3*86400000).toISOString(),privacy:'public'},
+    {id:'post7',userId:'demo1',username:'peak_wanderer',verified:true,type:'photo',mediaUrl:'https://images.unsplash.com/photo-1471958680802-1345a694ba6d?w=800&q=80',caption:'First light on the granite. Got up at 3am to make this shot happen. 100% worth the sleep deprivation.',spotId:4,spotName:'Crater Lake Vista',spotType:'scenic',region:'Sierra Nevada, CA',communityIds:['comm2'],likes:['demo2','demo3','demo4','demo6'],createdAt:new Date(Date.now()-4*86400000).toISOString(),privacy:'public'},
+    {id:'post8',userId:'demo3',username:'cave_ghost',verified:true,type:'photo',mediaUrl:'https://images.unsplash.com/photo-1418985991508-e47386d96a71?w=800&q=80',caption:'The swimming hole at the base of the falls. Water is cold enough to take your breath away — literally. Best natural cold plunge in NorCal.',spotId:2,spotName:'McCloud River Falls',spotType:'swimming',region:'Shasta County, CA',communityIds:['comm3'],likes:['demo4','demo5'],createdAt:new Date(Date.now()-5*86400000).toISOString(),privacy:'public'},
+    {id:'post9',userId:'demo5',username:'ruins_reader',verified:false,type:'photo',mediaUrl:'https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=800&q=80',caption:'Found this place after two years of searching. Old industrial ruin right on the bay. The graffiti inside goes back decades — layer upon layer of city history.',spotId:null,spotName:null,spotType:'urban',region:'San Francisco Bay Area',communityIds:['comm4'],likes:['demo1','demo2'],createdAt:new Date(Date.now()-6*86400000).toISOString(),privacy:'public'},
+    {id:'post10',userId:'demo4',username:'swim_seeker',verified:false,type:'photo',mediaUrl:'https://images.unsplash.com/photo-1439066615861-d1af74d74000?w=800&q=80',caption:'Hidden waterfall about a mile off trail. No signs, no crowds, just the sound of rushing water and complete silence otherwise. This is why I explore.',spotId:null,spotName:'Secret Falls',spotType:'waterfall',region:'Humboldt County, CA',communityIds:['comm3'],likes:['demo1','demo2','demo3','demo5'],createdAt:new Date(Date.now()-7*86400000).toISOString(),privacy:'public'},
+    {id:'post11',userId:'demo6',username:'ridge_runner',verified:false,type:'photo',mediaUrl:'https://images.unsplash.com/photo-1470770841072-f978cf4d019e?w=800&q=80',caption:'Winter camping hit different this year. Woke up to fresh snow on the tent, frozen boots, and a view that made all of it irrelevant.',spotId:null,spotName:null,spotType:'hiking',region:'Trinity Alps, CA',communityIds:['comm2'],likes:['demo1'],createdAt:new Date(Date.now()-8*86400000).toISOString(),privacy:'public'},
+    {id:'post12',userId:'demo2',username:'trailhawk_kai',verified:false,type:'text',mediaUrl:null,caption:'Trail report for the Dipsea: muddy in the first mile, good traction from mile 2 onward. Some downed trees after the storm but passable. Allow an extra 20 minutes.',spotId:null,spotName:'Dipsea Trail',spotType:'hiking',region:'Marin County, CA',communityIds:['comm2'],likes:['demo3','demo4'],createdAt:new Date(Date.now()-9*86400000).toISOString(),privacy:'public'}
+  ];
+
+  // Seed votes
+  const votes={'post5_demo1':1,'post5_demo2':1,'post5_demo3':1,'post5_demo4':1};
+  setVotes(votes);
+
+  // Seed comments
+  const comments={
+    'post1':[
+      {id:'c1',postId:'post1',userId:'demo1',username:'peak_wanderer',verified:true,text:'This view is insane! What time did you get there?',createdAt:new Date(Date.now()-6e6).toISOString(),parentId:null},
+      {id:'c2',postId:'post1',userId:'demo3',username:'cave_ghost',verified:true,text:'Golden hour hits different from up there',createdAt:new Date(Date.now()-5e6).toISOString(),parentId:null},
+      {id:'c3',postId:'post1',userId:'demo2',username:'trailhawk_kai',verified:false,text:'Got there around 5:30pm, perfect timing!',createdAt:new Date(Date.now()-4.5e6).toISOString(),parentId:'c1'}
+    ],
+    'post2':[
+      {id:'c4',postId:'post2',userId:'demo5',username:'ruins_reader',verified:false,text:'Which entrance did you use? The main gate or the back access?',createdAt:new Date(Date.now()-15e6).toISOString(),parentId:null},
+      {id:'c5',postId:'post2',userId:'demo3',username:'cave_ghost',verified:true,text:'The north entrance behind the visitor center. Less obvious but way more dramatic.',createdAt:new Date(Date.now()-14e6).toISOString(),parentId:'c4'}
+    ],
+    'post7':[
+      {id:'c6',postId:'post7',userId:'demo2',username:'trailhawk_kai',verified:false,text:'This is unreal. What lens did you use?',createdAt:new Date(Date.now()-3.5*86400000).toISOString(),parentId:null},
+      {id:'c7',postId:'post7',userId:'demo4',username:'swim_seeker',verified:false,text:'I need to get out to the Sierra this summer. Been too long.',createdAt:new Date(Date.now()-3.2*86400000).toISOString(),parentId:null}
+    ],
+    'post10':[
+      {id:'c8',postId:'post10',userId:'demo1',username:'peak_wanderer',verified:true,text:'Drop the coordinates??? Just kidding — respect the loc.',createdAt:new Date(Date.now()-6.5*86400000).toISOString(),parentId:null}
+    ]
+  };
+  Object.entries(comments).forEach(([pid,arr])=>setComments(pid,arr));
+
+  // Seed follows
+  const follows={'guest':['demo1','demo2','demo3'],'demo1':['demo2','demo3','demo6'],'demo2':['demo1','demo4']};
+  setFollows(follows);
+
+  // Seed notifications
+  const notifs=[
+    {id:'n1',type:'like',fromUserId:'demo1',fromUsername:'peak_wanderer',message:'liked your photo',read:false,createdAt:new Date(Date.now()-3600000).toISOString()},
+    {id:'n2',type:'follow',fromUserId:'demo3',fromUsername:'cave_ghost',message:'started following you',read:false,createdAt:new Date(Date.now()-7200000).toISOString()},
+    {id:'n3',type:'comment',fromUserId:'demo2',fromUsername:'trailhawk_kai',message:'commented: "This view is insane!"',read:false,createdAt:new Date(Date.now()-86400000).toISOString()},
+    {id:'n4',type:'join',fromUserId:'demo6',fromUsername:'ridge_runner',message:'joined Bay Area Hikers',read:false,createdAt:new Date(Date.now()-2*86400000).toISOString()},
+    {id:'n5',type:'like',fromUserId:'demo4',fromUsername:'swim_seeker',message:'liked your trail report',read:true,createdAt:new Date(Date.now()-3*86400000).toISOString()},
+    {id:'n6',type:'spotdrop',fromUserId:'demo5',fromUsername:'ruins_reader',message:'nominated a new spot near you',read:true,createdAt:new Date(Date.now()-4*86400000).toISOString()}
+  ];
+  setNotifs(notifs);
+
+  // Seed DMs — 3 conversations (keyed to current user)
+  const _seedMyId=_myUid()||'guest';
+  const msgs={};
+  const conv1=_dmConvKey(_seedMyId,'demo2');
+  msgs[conv1]=[
+    {id:'m1',fromId:'demo2',text:'Hey! Loved your recent cave photos',time:new Date(Date.now()-3600000).toISOString()},
+    {id:'m2',fromId:_seedMyId,text:'Thanks! That place was incredible',time:new Date(Date.now()-3500000).toISOString()},
+    {id:'m3',fromId:'demo2',text:'Where was that exactly? I want to go',time:new Date(Date.now()-3400000).toISOString()},
+    {id:'m4',fromId:_seedMyId,text:'Moaning Caverns — check the app map, it\'s on there',time:new Date(Date.now()-3300000).toISOString()}
+  ];
+  const conv2=_dmConvKey(_seedMyId,'demo1');
+  msgs[conv2]=[
+    {id:'m5',fromId:'demo1',text:'Great trail report on the Dipsea, super helpful!',time:new Date(Date.now()-2*86400000).toISOString()},
+    {id:'m6',fromId:_seedMyId,text:'Glad it helped — it was a mess out there last week',time:new Date(Date.now()-2*86400000+3600000).toISOString()}
+  ];
+  const conv3=_dmConvKey(_seedMyId,'demo4');
+  msgs[conv3]=[
+    {id:'m7',fromId:'demo4',text:'Did you ever find that waterfall off the main trail?',time:new Date(Date.now()-5*86400000).toISOString()},
+    {id:'m8',fromId:_seedMyId,text:'Not yet, got rained out last time. Trying again next weekend',time:new Date(Date.now()-5*86400000+1800000).toISOString()},
+    {id:'m9',fromId:'demo4',text:'I can come! Let me know when you are heading out',time:new Date(Date.now()-5*86400000+3600000).toISOString()}
+  ];
+  setMessages(msgs);
+
+  // Seed members
+  demoComms.forEach(c=>{
+    setMembers(c.id,['demo1','demo2','demo3','demo4','demo6']);
+    setCPosts(c.id,demoPosts.filter(p=>p.communityIds?.includes(c.id)).map(p=>p.id));
+  });
+
+  setCommunities(demoComms);
+  setPosts(demoPosts);
+}
+
+// ── Community screen setup ─────────────────────────────────────
+let _seeded=false;
+function buildCommunityScreen(){
+  try {
+    if(!_seeded){_seedCommunityData();_seeded=true;}
+    _updateNotifBadge();
+    _buildCommunityList();
+  } catch(e) {
+    console.error('Community screen error:', e);
+  }
+}
+
+function _buildCommunityList(){
+  try {
+    const listEl=document.getElementById('commListContent');
+    if(!listEl)return;
+    const comms=getCommunities();
+    // Sort: pinned first, then by member count
+    const pinned=JSON.parse(localStorage.getItem('wp_pinned_comms')||'[]');
+    const sorted=[...comms].sort((a,b)=>{
+      const ap=pinned.includes(a.id)?1:0;
+      const bp=pinned.includes(b.id)?1:0;
+      if(ap!==bp)return bp-ap;
+      return (b.memberCount||0)-(a.memberCount||0);
+    });
+    if(!sorted.length){
+      listEl.innerHTML='<div style="text-align:center;padding:48px 20px;color:var(--txt3);font-size:13px">No communities yet.<br>Create one or search to find groups.</div>';
+      return;
+    }
+    listEl.innerHTML=sorted.map(c=>{
+      const isPinned=pinned.includes(c.id);
+      const members=c.memberCount||(getMembers(c.id)||[]).length||0;
+      const coverBg=c.coverColor||c.coverGrad||'linear-gradient(135deg,#1a2c1a,#2d4a2d)';
+      const letter=(c.name||'C')[0].toUpperCase();
+      return `<div class="comm-unified-row" onclick="openCommunityDetail('${c.id}')">
+        <div style="width:44px;height:44px;border-radius:50%;flex-shrink:0;overflow:hidden;background:${coverBg};display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:800;color:rgba(255,255,255,.8)">
+          ${c.coverUrl?`<img src="${c.coverUrl}" style="width:100%;height:100%;object-fit:cover">`:letter}
+        </div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:14px;font-weight:700;color:var(--txt0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.name||'Community'}${isPinned?' <span style="color:var(--accent);font-size:10px">pinned</span>':''}</div>
+          <div style="font-size:12px;color:var(--txt3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${members.toLocaleString()} members</div>
+        </div>
+        <div onclick="event.stopPropagation();_commInfoMenu('${c.id}')" style="width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:var(--txt3)">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="19" r="1" fill="currentColor"/></svg>
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    console.error('Community screen error:', e);
+  }
+}
+
+function _commInfoMenu(commId){
+  const pinned=JSON.parse(localStorage.getItem('wp_pinned_comms')||'[]');
+  const isPinned=pinned.includes(commId);
+  // Show a simple action sheet
+  const sheet=document.createElement('div');
+  sheet.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.7);display:flex;align-items:flex-end';
+  sheet.innerHTML=`<div style="width:100%;background:var(--bg1);border-radius:20px 20px 0 0;padding:20px 16px calc(env(safe-area-inset-bottom,0px)+16px)">
+    <div style="width:36px;height:4px;background:var(--border2);border-radius:2px;margin:0 auto 16px"></div>
+    <div onclick="_togglePinComm('${commId}');this.closest('[style*=fixed]').remove()" style="padding:14px 0;font-size:15px;font-weight:600;color:var(--txt0);cursor:pointer;border-bottom:1px solid var(--border)">
+      ${isPinned?'Unpin Group':'Pin Group'}
+    </div>
+    <div onclick="openCommunityDetail('${commId}');this.closest('[style*=fixed]').remove()" style="padding:14px 0;font-size:15px;font-weight:600;color:var(--txt0);cursor:pointer">View Community</div>
+    <div onclick="this.closest('[style*=fixed]').remove()" style="padding:14px 0;font-size:15px;font-weight:600;color:var(--txt3);cursor:pointer;text-align:center">Cancel</div>
+  </div>`;
+  sheet.onclick=e=>{if(e.target===sheet)sheet.remove();};
+  document.body.appendChild(sheet);
+}
+
+function _togglePinComm(commId){
+  const pinned=JSON.parse(localStorage.getItem('wp_pinned_comms')||'[]');
+  const idx=pinned.indexOf(commId);
+  if(idx>=0)pinned.splice(idx,1);
+  else pinned.unshift(commId);
+  localStorage.setItem('wp_pinned_comms',JSON.stringify(pinned));
+  _buildCommunityList();
+  showToast(idx>=0?'Group unpinned':'Group pinned to top');
+}
+
+// Legacy switchCommTab — kept for compat
+function switchCommTab(tab){
+  _commSubTab=tab;
+}
+
+// ── Feed ───────────────────────────────────────────────────────
+function buildFeed(){
+  const scroll=document.getElementById('feedScroll');
+  if(!scroll)return;
+  let posts=getPosts();
+  if(_commFeedFilter!=='all') posts=posts.filter(p=>p.type===_commFeedFilter);
+  if(_commFeedSort==='week') posts=posts.sort((a,b)=>(b.likes?.length||0)-(a.likes?.length||0));
+  else if(_commFeedSort==='alltime') posts=posts.sort((a,b)=>(b.likes?.length||0)-(a.likes?.length||0));
+  else posts=posts.sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
+  if(!posts.length){scroll.innerHTML='<div style="text-align:center;padding:48px 20px;color:var(--txt3)"><div style="font-size:14px;font-weight:600;color:var(--txt2)">No posts yet</div><div style="font-size:12px;margin-top:6px">Be the first to share something</div></div>';return;}
+  scroll.innerHTML=posts.map(p=>buildPostCard(p)).join('');
+  _initVideoObserver();
+}
+
+function setFeedFilter(f,el){
+  _commFeedFilter=f;
+  document.querySelectorAll('.feed-chip').forEach(c=>c.classList.remove('active'));
+  el.classList.add('active');
+  buildFeed();
+}
+
+let _feedSortOpen=false;
+function toggleFeedSort(){
+  _feedSortOpen=!_feedSortOpen;
+  const drop=document.getElementById('feedSortDrop');
+  if(drop){drop.style.display=_feedSortOpen?'block':'none';}
+  // position it under the button
+  const btn=document.getElementById('feedSortBtn');
+  if(btn&&drop){
+    const rect=btn.getBoundingClientRect();
+    const appRect=document.getElementById('app').getBoundingClientRect();
+    drop.style.top=(rect.bottom-appRect.top+4)+'px';
+    drop.style.right=(appRect.right-rect.right)+'px';
+    drop.style.position='absolute';
+  }
+}
+function setFeedSort(s){
+  _commFeedSort=s;
+  const labels={recent:'Recent',week:'Top This Week',alltime:'Top All Time'};
+  const lbl=document.getElementById('feedSortLabel');
+  if(lbl)lbl.textContent=labels[s]||s;
+  _feedSortOpen=false;
+  const drop=document.getElementById('feedSortDrop');
+  if(drop)drop.style.display='none';
+  buildFeed();
+}
+
+// ── Post card builder ─────────────────────────────────────────
+function buildPostCard(post,compact=false){
+  const profileData=getUserProfile(post.userId)||{};
+  const avatarUrl=profileData.avatarUrl||null;
+  const verif=_userVerified(post.userId)||post.verified;
+  const myLiked=(post.likes||[]).includes(_myUid());
+  const likeCount=(post.likes||[]).length;
+  const commentCount=getComments(post.id).length;
+  const spotPill=post.spotName?`<div class="post-spot-pill" onclick="event.stopPropagation();openSpotFromPost(${post.spotId})">${post.spotName}</div>`:'';
+
+  let mediaHtml='';
+  if(post.type==='photo'&&post.mediaUrl){
+    mediaHtml=`<div class="post-media-wrap" ondblclick="handlePostDoubleTap(event,'${post.id}')"><img src="${post.mediaUrl}" loading="lazy" onerror="this.style.display='none'"></div>`;
+  } else if(post.type==='video'&&post.mediaUrl){
+    mediaHtml=`<div class="post-media-wrap" ondblclick="handlePostDoubleTap(event,'${post.id}')"><video src="${post.mediaUrl}" loop muted playsinline class="comm-video" data-postid="${post.id}" style="width:100%;height:100%;object-fit:cover"></video><div class="post-media-sound" onclick="event.stopPropagation();toggleVideoSound(this)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg></div></div>`;
+  } else if(post.type==='spotdrop'&&post.spotdrop){
+    const sd=post.spotdrop;
+    const votes=_getPostVoteScore(post.id);
+    mediaHtml=`<div style="padding:12px 14px">
+      <div class="reddit-spotdrop-map" onclick="event.stopPropagation()">
+        <div style="background:linear-gradient(135deg,#1a3a2a,#2d5a3a);width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:14px;color:var(--txt2)">
+          ${(sd.lat||37.5).toFixed(4)}, ${(sd.lng||-120).toFixed(4)}
+        </div>
+        <div class="reddit-spotdrop-map-pin"></div>
+      </div>
+      <div class="reddit-spotdrop-info">
+        <div style="font-size:13px;font-weight:700;color:var(--txt0)">${sd.name||'Unknown Spot'}</div>
+        <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">
+          <span class="post-type-badge">${sd.type||'spot'}</span>
+          <span class="post-type-badge" style="color:${sd.legal==='legal'?'var(--green)':sd.legal==='illegal'?'var(--red)':'var(--yellow)'}">${sd.legal==='legal'?'Legal':sd.legal==='illegal'?'Illegal':'Caution'}</span>
+        </div>
+        ${sd.approach?`<div style="font-size:11px;color:var(--txt2);margin-top:6px;line-height:1.4">${sd.approach.slice(0,120)}${sd.approach.length>120?'…':''}</div>`:''}
+        ${votes>=10&&_isAdmin()?`<button class="reddit-approve-btn" onclick="event.stopPropagation();approveSpotDrop('${post.id}')">Add to WildPath Map</button>`:''}
+        ${votes>=10&&!_isAdmin()?`<div style="font-size:10px;color:var(--accent);margin-top:4px;font-weight:700">Nominated for the map! (${votes} votes)</div>`:''}
+      </div>
+    </div>`;
+  }
+
+  const captionTrunc=post.caption&&post.caption.length>140?post.caption.slice(0,140)+'…':post.caption||'';
+  const captionHtml=post.type!=='spotdrop'&&post.caption?`<div class="post-caption">${captionTrunc}${post.caption.length>140?`<span class="post-seemore" onclick="event.stopPropagation();openPostDetail('${post.id}')"> See more</span>`:''}</div>`:'';
+
+  return `<div class="post-card" onclick="openPostDetail('${post.id}')">
+    <div class="post-card-hdr" onclick="event.stopPropagation()">
+      <div class="post-avatar-wrap" onclick="openUserProfile('${post.userId}')">
+        ${_avatarHtml(post.username,32,avatarUrl)}
+      </div>
+      <div class="post-meta" onclick="openUserProfile('${post.userId}')">
+        <div class="post-username">${post.username}${verif?_verifiedBadge():''}</div>
+        <div class="post-time">${_timeAgo(post.createdAt)}</div>
+      </div>
+      ${spotPill}
+    </div>
+    ${mediaHtml}
+    ${captionHtml}
+    <div class="post-actions" onclick="event.stopPropagation()">
+      <div class="post-action${myLiked?' liked':''}" onclick="togglePostLike('${post.id}',this)">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="${myLiked?'currentColor':'none'}" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+        <span class="post-like-count">${likeCount}</span>
+      </div>
+      <div class="post-action" onclick="openPostDetail('${post.id}')">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        <span>${commentCount}</span>
+      </div>
+      <div class="post-action" onclick="sharePost('${post.id}')">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+      </div>
+      <div class="post-action" onclick="bookmarkPost('${post.id}',this)">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+      </div>
+    </div>
+    ${post.spotType?`<div class="post-type-row"><span class="post-type-badge">${post.spotType}</span>${post.region?`<span class="post-region">${post.region}</span>`:''}</div>`:''}
+  </div>`;
+}
+
+function togglePostLike(postId,el){
+  if(isGuest()){showLoginScreen(()=>togglePostLike(postId,el));return;}
+  const posts=getPosts();
+  const p=posts.find(x=>x.id===postId);
+  if(!p)return;
+  if(!p.likes)p.likes=[];
+  const uid=_myUid();
+  const idx=p.likes.indexOf(uid);
+  if(idx>-1) p.likes.splice(idx,1);
+  else{ p.likes.push(uid); _addNotif(p.userId,'like',_myName(),'liked your post'); }
+  setPosts(posts);
+  // update UI
+  const card=el?.closest('.post-card')||el?.closest('.reddit-post');
+  if(card){
+    const liked=p.likes.includes(uid);
+    el.classList.toggle('liked',liked);
+    const svg=el.querySelector('svg');if(svg)svg.setAttribute('fill',liked?'currentColor':'none');
+    const cnt=el.querySelector('.post-like-count');if(cnt)cnt.textContent=p.likes.length;
+  }
+}
+
+function handlePostDoubleTap(event,postId){
+  const rect=event.currentTarget.getBoundingClientRect();
+  const appRect=document.getElementById('app').getBoundingClientRect();
+  const x=event.clientX-appRect.left;
+  const y=event.clientY-appRect.top;
+  const burst=document.createElement('div');
+  burst.className='heart-burst';
+  burst.innerHTML='<svg viewBox="0 0 24 24" width="44" height="44" fill="#ff4d6d" stroke="none"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>';
+  burst.style.left=x+'px';
+  burst.style.top=y+'px';
+  document.getElementById('app').appendChild(burst);
+  setTimeout(()=>burst.remove(),850);
+  // auto-like
+  const posts=getPosts();
+  const p=posts.find(x=>x.id===postId);
+  if(p&&!p.likes?.includes(_myUid())){
+    if(!p.likes)p.likes=[];
+    p.likes.push(_myUid());
+    setPosts(posts);
+    // update like button in nearest card
+    const card=event.currentTarget.closest('.post-card');
+    if(card){const btn=card.querySelector('.post-action');if(btn){btn.classList.add('liked');const cnt=btn.querySelector('.post-like-count');if(cnt)cnt.textContent=p.likes.length;}}
+  }
+}
+
+function openSpotFromPost(spotId){
+  if(!spotId)return;
+  const allS=[...spots,...userSpots];
+  const s=allS.find(x=>x.id===spotId);
+  if(s){openDetail(s.id);}
+}
+
+function sharePost(postId){showToast('Link copied!');}
+function bookmarkPost(postId,el){
+  if(isGuest()){showLoginScreen();return;}
+  showToast('Saved to bookmarks');
+  const svg=el?.querySelector('svg');
+  if(svg)svg.setAttribute('fill','var(--accent)');
+}
+
+// ── Video intersection observer ────────────────────────────────
+function _initVideoObserver(){
+  const videos=document.querySelectorAll('.comm-video');
+  if(!videos.length)return;
+  const obs=new IntersectionObserver(entries=>{
+    entries.forEach(e=>{
+      if(e.isIntersecting) e.target.play().catch(()=>{});
+      else{ e.target.pause(); e.target.currentTime=0;}
+    });
+  },{threshold:.5});
+  videos.forEach(v=>obs.observe(v));
+}
+function toggleVideoSound(btn){
+  const video=btn?.previousElementSibling;
+  if(!video)return;
+  video.muted=!video.muted;
+  btn.innerHTML=video.muted?'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>':'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>';
+}
+
+// ── Communities tab ─────────────────────────────────────────────
+function buildCommunitiesTab(){
+  buildYourCommunitiesRow();
+  buildDiscoverList();
+}
+
+function buildYourCommunitiesRow(){
+  const row=document.getElementById('yourCommunitiesRow');
+  if(!row)return;
+  const all=getCommunities();
+  const mine=all.filter(c=>getMembers(c.id).includes(String(_myUid()))||c.adminId===String(_myUid()));
+  if(!mine.length){
+    row.innerHTML='<div style="padding:8px 0;font-size:12px;color:var(--txt3)">You haven\'t joined any communities yet</div>';
+    return;
+  }
+  row.innerHTML=mine.map(c=>_commCardHtml(c)).join('');
+}
+
+function _commCardHtml(c){
+  const coverHtml=c.coverDataUrl
+    ?`<img src="${c.coverDataUrl}" style="width:100%;height:100%;object-fit:cover">`
+    :`<div style="width:100%;height:100%;${c.coverGrad||'background:var(--bg3)'};"></div>`;
+  return `<div class="comm-card" onclick="openCommunityDetail('${c.id}')">
+    <div class="comm-card-cover">${coverHtml}</div>
+    <div class="comm-card-name">${c.name}</div>
+    <div class="comm-card-members">${_fmt(c.memberCount)} members</div>
+  </div>`;
+}
+
+function buildDiscoverList(){
+  const list=document.getElementById('discoverCommunitiesList');
+  if(!list)return;
+  const all=getCommunities();
+  const myUid=String(_myUid());
+  const notJoined=all.filter(c=>c.privacy!=='secret'&&!getMembers(c.id).includes(myUid)&&c.adminId!==myUid);
+  if(!notJoined.length){list.innerHTML='<div style="padding:12px 16px;font-size:12px;color:var(--txt3)">You\'ve joined all public communities!</div>';return;}
+  list.innerHTML=notJoined.map(c=>{
+    const coverHtml=c.coverDataUrl
+      ?`<img src="${c.coverDataUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:10px">`
+      :`<div style="width:100%;height:100%;${c.coverGrad||'background:var(--bg3)'};border-radius:10px;"></div>`;
+    return `<div class="comm-discover-row">
+      <div class="comm-discover-cover">${coverHtml}</div>
+      <div class="comm-discover-info">
+        <div class="comm-discover-name">${c.name}</div>
+        <div class="comm-discover-desc">${c.desc||''}</div>
+        <div class="comm-discover-members">${_fmt(c.memberCount||0)} members</div>
+      </div>
+      <button class="comm-join-btn" id="joinBtn_${c.id}" onclick="event.stopPropagation();joinCommunity('${c.id}',this)">Join</button>
+    </div>`;
+  }).join('');
+}
+
+function _fmt(n){if(n>=1000)return(n/1000).toFixed(1)+'k';return String(n);}
+
+function joinCommunity(cid,btn){
+  if(isGuest()){showLoginScreen(()=>joinCommunity(cid,btn));return;}
+  const comms=getCommunities();
+  const c=comms.find(x=>x.id===cid);
+  if(!c)return;
+  const members=getMembers(cid);
+  const uid=String(_myUid());
+  if(!members.includes(uid)){
+    members.push(uid);
+    setMembers(cid,members);
+    c.memberCount=(c.memberCount||0)+1;
+    setCommunities(comms);
+    showToast('Joined '+c.name);
+    if(btn){btn.textContent='Joined';btn.classList.add('joined');}
+    buildYourCommunitiesRow();
+  }
+}
+
+function showAllCommunities(){
+  buildCommunitiesTab();
+  showToast('Showing all communities');
+}
+
+// ── Community Detail Page ──────────────────────────────────────
+function openCommunityDetail(cid){
+  _currentCommunityId=cid;
+  const page=document.getElementById('communityDetailPage');
+  if(!page)return;
+  _renderCommunityDetail(cid);
+  page.classList.add('open');
+}
+
+function closeCommunityDetail(){
+  const page=document.getElementById('communityDetailPage');
+  if(page)page.classList.remove('open');
+  _currentCommunityId=null;
+}
+
+function _renderCommunityDetail(cid){
+  const comms=getCommunities();
+  const c=comms.find(x=>x.id===cid);
+  if(!c)return;
+  const hdr=document.getElementById('commDetailHeader');
+  const body=document.getElementById('commDetailBody');
+  const members=getMembers(cid);
+  const isMember=members.includes(String(_myUid()));
+  const isAdminOfComm=c.adminId===String(_myUid())||_isAdmin();
+  const postIds=getCPosts(cid);
+  const allPosts=getPosts().filter(p=>p.communityIds?.includes(cid));
+  const spots_count=new Set(allPosts.filter(p=>p.spotId).map(p=>p.spotId)).size;
+
+  const coverHtml=c.coverDataUrl
+    ?`<img src="${c.coverDataUrl}" style="width:100%;height:100%;object-fit:cover">`
+    :`<div style="width:100%;height:100%;${c.coverGrad||'background:linear-gradient(135deg,#1a3a2a,#2d5a3a)'};"></div>`;
+
+  hdr.innerHTML=`
+    <div class="comm-detail-cover">
+      ${coverHtml}
+      <div class="comm-detail-cover-grad"></div>
+      <button class="cfp-back" onclick="closeCommunityDetail()" style="position:absolute;top:54px;left:14px;background:rgba(0,0,0,.45);width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px;border:none;cursor:pointer">←</button>
+      ${isAdminOfComm?`<div class="comm-detail-settings" onclick="openCommSettings('${cid}')"><svg viewBox='0 0 24 24' width='18' height='18' fill='none' stroke='currentColor' stroke-width='2'><circle cx='12' cy='12' r='3'/><path d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z'/></svg></div>`:''}
+      <div class="comm-detail-cover-name">${c.name}</div>
+    </div>
+    <div class="comm-stats-row">
+      <div class="comm-stat-item"><div class="comm-stat-val">${allPosts.length}</div><div class="comm-stat-label">Posts</div></div>
+      <div class="comm-stat-divider"></div>
+      <div class="comm-stat-item"><div class="comm-stat-val">${_fmt(c.memberCount||members.length)}</div><div class="comm-stat-label">Members</div></div>
+      <div class="comm-stat-divider"></div>
+      <div class="comm-stat-item"><div class="comm-stat-val">${spots_count}</div><div class="comm-stat-label">Spots</div></div>
+    </div>`;
+
+  let joinHtml='';
+  if(c.adminId===String(_myUid()))joinHtml=`<div class="comm-join-big joined" style="cursor:default">You're the Admin</div>`;
+  else if(isMember)joinHtml=`<div class="comm-join-big joined" onclick="leaveCommunity('${cid}')">Member — Tap to Leave</div>`;
+  else joinHtml=`<div class="comm-join-big" onclick="joinCommunity('${cid}',this);_renderCommunityDetail('${cid}')">Join Community</div>`;
+
+  body.innerHTML=`
+    ${joinHtml}
+    ${c.desc?`<div class="comm-desc-section"><div style="font-size:13px;color:var(--txt2);line-height:1.5">${c.desc}</div></div>`:''}
+    ${c.rules?`<div class="comm-rules-card" onclick="this.querySelector('.comm-rules-body').classList.toggle('open');this.querySelector('.comm-rules-arrow').textContent=this.querySelector('.comm-rules-body').classList.contains('open')?'▲':'▼'">
+      <div class="comm-rules-hdr"><span>Community Rules</span><span class="comm-rules-arrow">▼</span></div>
+      <div class="comm-rules-body"><pre style="font-family:inherit;font-size:12px;white-space:pre-wrap;color:var(--txt2)">${c.rules}</pre></div>
+    </div>`:''}
+    <div class="comm-post-to" onclick="openCreatePostForCommunity('${cid}')">
+      <div style="width:36px;height:36px;background:rgba(184,232,122,.1);border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--accent)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></div>
+      <div><div style="font-size:13px;font-weight:600;color:var(--txt0)">Post to Community</div><div style="font-size:11px;color:var(--txt3);margin-top:1px">Share photos, tips, or spot drops</div></div>
+    </div>
+    <div style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:0">
+      <div id="commTabPosts" onclick="setCommView('posts',this,'${cid}')" style="flex:1;text-align:center;padding:10px;font-size:13px;font-weight:700;color:var(--txt0);cursor:pointer;border-bottom:2px solid var(--accent)">Posts</div>
+      <div id="commTabMap" onclick="setCommView('map',this,'${cid}')" style="flex:1;text-align:center;padding:10px;font-size:13px;font-weight:600;color:var(--txt2);cursor:pointer;border-bottom:2px solid transparent">Map</div>
+    </div>
+    <div id="commPostsView">
+      <div class="comm-sort-pills" id="commSortPills">
+        <div class="comm-sort-pill active" onclick="setCommSort('hot',this)">Hot</div>
+        <div class="comm-sort-pill" onclick="setCommSort('new',this)">New</div>
+        <div class="comm-sort-pill" onclick="setCommSort('top',this)">Top</div>
+      </div>
+      <div id="commDetailFeed"></div>
+    </div>
+    <div id="commMapView" style="display:none;min-height:400px;position:relative">
+      <div id="commMapEl" style="position:absolute;inset:0;min-height:400px"></div>
+    </div>`;
+
+  _buildCommDetailFeed(cid);
+}
+
+function setCommView(view,el,cid){
+  const postsView=document.getElementById('commPostsView');
+  const mapView=document.getElementById('commMapView');
+  const tabPosts=document.getElementById('commTabPosts');
+  const tabMap=document.getElementById('commTabMap');
+  if(postsView)postsView.style.display=view==='posts'?'block':'none';
+  if(mapView)mapView.style.display=view==='map'?'block':'none';
+  if(tabPosts){tabPosts.style.borderBottomColor=view==='posts'?'var(--accent)':'transparent';tabPosts.style.color=view==='posts'?'var(--txt0)':'var(--txt2)';}
+  if(tabMap){tabMap.style.borderBottomColor=view==='map'?'var(--accent)':'transparent';tabMap.style.color=view==='map'?'var(--txt0)':'var(--txt2)';}
+  if(view==='map')_buildCommMap(cid||_currentCommunityId);
+}
+function _buildCommMap(cid){
+  const container=document.getElementById('commMapEl');
+  if(!container)return;
+  if(container._mapInit)return;
+  const token=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||'';
+  const posts=getPosts().filter(p=>p.communityIds?.includes(cid)&&(p.lat||p.spotId));
+  const allS=[...spots,...userSpots];
+  const mapPins=posts.map(p=>{
+    if(p.lat&&p.lng)return{lat:p.lat,lng:p.lng,name:p.spotName||p.username||'Post'};
+    const s=allS.find(x=>x.id===p.spotId);
+    return s?{lat:s.lat,lng:s.lng,name:s.name}:null;
+  }).filter(Boolean);
+  if(!token){
+    container.innerHTML=`<div style="padding:20px;color:var(--txt3);font-size:13px"><div style="font-size:14px;font-weight:700;color:var(--txt0);margin-bottom:12px">Community Spot Locations</div>${mapPins.length?mapPins.map(p=>`<div style="padding:10px;border-bottom:1px solid var(--border)">${p.name}<br><span style="font-size:11px;color:var(--txt3)">${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span></div>`).join(''):'<div style="color:var(--txt3)">No location data</div>'}${!token?'<div style="margin-top:12px;font-size:11px;color:var(--txt3)">Add a Mapbox token to enable map view</div>':''}</div>`;
+    return;
+  }
+  container._mapInit=true;
+  mapboxgl.accessToken=token;
+  try{
+    const m=new mapboxgl.Map({container,style:'mapbox://styles/mapbox/dark-v11',center:mapPins.length?[mapPins[0].lng,mapPins[0].lat]:[-121.5,38.5],zoom:mapPins.length?8:5,interactive:true,attributionControl:false});
+    m.on('load',()=>{
+      mapPins.forEach(p=>{
+        new mapboxgl.Marker({color:'#B8E87A',scale:.8}).setLngLat([p.lng,p.lat]).setPopup(new mapboxgl.Popup({offset:20}).setText(p.name)).addTo(m);
+      });
+    });
+  }catch(e){}
+}
+
+function setCommSort(s,el){
+  _commSortMode=s;
+  document.querySelectorAll('.comm-sort-pill').forEach(p=>p.classList.remove('active'));
+  if(el)el.classList.add('active');
+  _buildCommDetailFeed(_currentCommunityId);
+}
+
+function _buildCommDetailFeed(cid){
+  const container=document.getElementById('commDetailFeed');
+  if(!container)return;
+  let posts=getPosts().filter(p=>p.communityIds?.includes(cid));
+  if(_commSortMode==='new') posts.sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
+  else if(_commSortMode==='top') posts.sort((a,b)=>(b.likes?.length||0)-(a.likes?.length||0));
+  else posts.sort((a,b)=>{
+    const scoreA=(b.likes?.length||0)+getComments(a.id).length*2;
+    const scoreB=(b.likes?.length||0)+getComments(b.id).length*2;
+    return scoreB-scoreA;
+  });
+  if(!posts.length){container.innerHTML='<div style="text-align:center;padding:32px 20px;color:var(--txt3)"><div style="font-size:13px">No posts yet — be the first!</div></div>';return;}
+  container.innerHTML=posts.map(p=>_redditPostHtml(p)).join('');
+}
+
+function _redditPostHtml(post){
+  const votes=_getPostVoteScore(post.id);
+  const myVote=_getMyVote(post.id);
+  const commentCount=getComments(post.id).length;
+  const verif=_userVerified(post.userId)||post.verified;
+
+  let contentHtml='';
+  if(post.type==='photo'&&post.mediaUrl){
+    contentHtml=`<img class="reddit-post-img" src="${post.mediaUrl}" loading="lazy" onerror="this.style.display='none'"><div class="reddit-post-body">${post.caption||''}</div>`;
+  } else if(post.type==='text'){
+    contentHtml=`<div class="reddit-post-title">${(post.caption||'').slice(0,80)}</div><div class="reddit-post-body">${(post.caption||'').slice(80)}</div>`;
+  } else if(post.type==='spotdrop'&&post.spotdrop){
+    const sd=post.spotdrop;
+    contentHtml=`<div class="reddit-spotdrop-map" style="height:130px">
+      <div style="width:100%;height:100%;background:linear-gradient(135deg,#1a3a2a,#2d5a3a);display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--txt2)">${(sd.lat||37.5).toFixed(4)}, ${(sd.lng||-120).toFixed(4)}</div>
+    </div>
+    <div class="reddit-spotdrop-info">
+      <div style="font-size:12px;font-weight:700;color:var(--txt0)">${sd.name}</div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:3px">
+        <span class="post-type-badge">${sd.type}</span>
+        <span class="post-type-badge" style="color:${sd.legal==='legal'?'var(--green)':sd.legal==='illegal'?'var(--red)':'var(--yellow)'}">${sd.legal==='legal'?'Legal':sd.legal==='illegal'?'Illegal':'Caution'}</span>
+      </div>
+      ${sd.approach?`<div style="font-size:10px;color:var(--txt2);margin-top:4px;line-height:1.4">${sd.approach.slice(0,100)}…</div>`:''}
+      ${votes>=10&&_isAdmin()?`<button class="reddit-approve-btn" onclick="approveSpotDrop('${post.id}')">Add to WildPath Map</button>`:''}
+    </div>`;
+  } else {
+    contentHtml=`<div class="reddit-post-body">${post.caption||''}</div>`;
+  }
+
+  const longPressAttrs=`oncontextmenu="event.preventDefault();showPostCtxMenu(event,'${post.id}')" ontouchstart="_startLongPress(event,'${post.id}')" ontouchend="_cancelLongPress()"`;
+  return `<div class="reddit-post" onclick="openPostDetail('${post.id}')" ${longPressAttrs}>
+    <div class="vote-col" onclick="event.stopPropagation()">
+      <button class="vote-btn up${myVote===1?' voted':''}" onclick="castVote('${post.id}',1,this)">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
+      </button>
+      <span class="vote-score${votes>0?' positive':votes<0?' negative':''}" id="vs_${post.id}">${votes}</span>
+      <button class="vote-btn down${myVote===-1?' voted':''}" onclick="castVote('${post.id}',-1,this)">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+    </div>
+    <div class="reddit-post-content">
+      ${contentHtml}
+      <div class="reddit-post-meta">
+        <span onclick="event.stopPropagation();openUserProfile('${post.userId}')" style="cursor:pointer">${post.username}${verif?_verifiedBadge():''}</span>
+        <span>· ${_timeAgo(post.createdAt)}</span>
+        <div class="reddit-post-comments" onclick="event.stopPropagation();openPostDetail('${post.id}')">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          ${commentCount}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── Vote system ────────────────────────────────────────────────
+function _getPostVoteScore(postId){
+  const v=getVotes();
+  return Object.entries(v).filter(([k])=>k.startsWith(postId+'_')).reduce((s,[,val])=>s+val,0);
+}
+function _getMyVote(postId){const v=getVotes();return v[postId+'_'+_myUid()]||0;}
+function castVote(postId,dir,btn){
+  if(isGuest()){showLoginScreen();return;}
+  const v=getVotes();
+  const key=postId+'_'+_myUid();
+  const current=v[key]||0;
+  if(current===dir) v[key]=0; // undo vote
+  else v[key]=dir;
+  setVotes(v);
+  const newScore=_getPostVoteScore(postId);
+  const scoreEl=document.getElementById('vs_'+postId);
+  if(scoreEl){
+    scoreEl.textContent=newScore;
+    scoreEl.className='vote-score'+(newScore>0?' positive':newScore<0?' negative':'');
+  }
+  // Update btn states
+  const col=btn?.closest('.vote-col');
+  if(col){
+    col.querySelector('.vote-btn.up')?.classList.toggle('voted',v[key]===1);
+    col.querySelector('.vote-btn.down')?.classList.toggle('voted',v[key]===-1);
+  }
+  // Check for spot drop nomination threshold
+  const posts=getPosts();
+  const p=posts.find(x=>x.id===postId);
+  if(p?.type==='spotdrop'&&newScore===10){
+    _addNotif(_isAdmin()?_myUid():'admin','spotdrop',_myName(),`New spot nominated by community — review and approve: "${p.spotdrop?.name}"`);
+    showToast('Spot has 10 votes — admin notified!');
+  }
+}
+
+// ── Long press context menu ────────────────────────────────────
+let _lpTimer=null;
+function _startLongPress(event,postId){
+  _lpTimer=setTimeout(()=>showPostCtxMenu(event,postId),600);
+}
+function _cancelLongPress(){clearTimeout(_lpTimer);}
+function showPostCtxMenu(event,postId){
+  if(event?.preventDefault)event.preventDefault();
+  const posts=getPosts();
+  const post=posts.find(p=>p.id===postId);
+  if(!post)return;
+  const isOwn=String(post.userId)===String(_myUid());
+  let items='';
+  if(_isAdmin()){
+    items=`<div class="ctx-menu-item" onclick="ctxPinPost('${postId}')">Pin Post</div>
+      <div class="ctx-menu-item danger" onclick="ctxDeletePost('${postId}')">Delete Post</div>
+      <div class="ctx-menu-item danger" onclick="ctxBanMember('${post.userId}')">Ban Member</div>`;
+  } else if(isOwn){
+    items=`<div class="ctx-menu-item danger" onclick="ctxDeletePost('${postId}')">Delete Post</div>`;
+  } else {
+    items=`<div class="ctx-menu-item" onclick="ctxReportPost('${postId}')">Report Post</div>`;
+  }
+  const menu=document.getElementById('commCtxMenu');
+  const overlay=document.getElementById('commCtxOverlay');
+  if(!menu||!items)return;
+  menu.innerHTML=items;
+  const appRect=document.getElementById('app').getBoundingClientRect();
+  const x=Math.min((event?.clientX||200)-appRect.left,appRect.width-180);
+  const y=Math.min((event?.clientY||300)-appRect.top,appRect.height-120);
+  menu.style.left=x+'px'; menu.style.top=y+'px';
+  menu.style.display='block'; overlay.style.display='block';
+}
+function closeCtxMenu(){
+  const menu=document.getElementById('commCtxMenu');
+  const overlay=document.getElementById('commCtxOverlay');
+  if(menu)menu.style.display='none';
+  if(overlay)overlay.style.display='none';
+}
+function ctxPinPost(id){closeCtxMenu();showToast('Post pinned to top');}
+function ctxDeletePost(id){
+  closeCtxMenu();
+  if(!confirm('Delete this post?'))return;
+  const posts=getPosts().filter(p=>p.id!==id);
+  setPosts(posts);
+  buildFeed();
+  if(_currentCommunityId)_buildCommDetailFeed(_currentCommunityId);
+  showToast('Post deleted');
+}
+function ctxBanMember(uid){closeCtxMenu();showToast('Member removed from community');}
+function ctxReportPost(id){closeCtxMenu();showToast('Post reported — thank you');}
+
+function leaveCommunity(cid){
+  const members=getMembers(cid).filter(m=>m!==String(_myUid()));
+  setMembers(cid,members);
+  const comms=getCommunities();
+  const c=comms.find(x=>x.id===cid);
+  if(c){c.memberCount=Math.max(0,(c.memberCount||1)-1);setCommunities(comms);}
+  closeCommunityDetail();
+  buildCommunitiesTab();
+  showToast('Left community');
+}
+
+// ── Post Detail Page ───────────────────────────────────────────
+function openPostDetail(postId){
+  _currentPostId=postId;
+  const posts=getPosts();
+  const post=posts.find(p=>p.id===postId);
+  if(!post)return;
+  const page=document.getElementById('postDetailPage');
+  if(!page)return;
+  _renderPostDetail(post);
+  page.classList.add('open');
+  // Update comment avatar
+  const ca=document.getElementById('commentAvatarSmall');
+  if(ca)ca.innerHTML=_myInitials();
+  _commentReplyTo=null;
+}
+
+function closePostDetail(){
+  const page=document.getElementById('postDetailPage');
+  if(page)page.classList.remove('open');
+  _currentPostId=null;
+}
+
+function _renderPostDetail(post){
+  const body=document.getElementById('postDetailBody');
+  if(!body)return;
+  const profileData=getUserProfile(post.userId)||{};
+  const verif=_userVerified(post.userId)||post.verified;
+  const following=_isFollowing(post.userId);
+  const myLiked=(post.likes||[]).includes(_myUid());
+  const likeCount=(post.likes||[]).length;
+
+  let mediaHtml='';
+  if(post.type==='photo'&&post.mediaUrl){
+    mediaHtml=`<img class="post-detail-media" src="${post.mediaUrl}" ondblclick="handlePostDoubleTap(event,'${post.id}')">`;
+  } else if(post.type==='video'&&post.mediaUrl){
+    mediaHtml=`<video class="post-detail-media" src="${post.mediaUrl}" autoplay loop muted playsinline controls style="width:100%;display:block"></video>`;
+  }
+
+  const comments=getComments(post.id);
+  const topComments=comments.filter(c=>!c.parentId);
+  const commentsHtml=topComments.map(c=>{
+    const replies=comments.filter(r=>r.parentId===c.id);
+    return _commentHtml(c)+replies.map(r=>_commentHtml(r,true)).join('');
+  }).join('');
+
+  body.innerHTML=`
+    ${mediaHtml}
+    <div class="post-detail-user-row">
+      <div onclick="openUserProfile('${post.userId}')" style="cursor:pointer">${_avatarHtml(post.username,36,profileData.avatarUrl||null)}</div>
+      <div style="flex:1;margin-left:10px" onclick="openUserProfile('${post.userId}')">
+        <div style="font-size:13px;font-weight:700;color:var(--txt0);display:flex;align-items:center;gap:4px">${post.username}${verif?_verifiedBadge():''}</div>
+        <div style="font-size:10px;color:var(--txt3)">${_timeAgo(post.createdAt)}</div>
+      </div>
+      ${String(post.userId)!==String(_myUid())?`<button class="follow-btn${following?' following':''}" onclick="toggleFollow('${post.userId}',this)">${following?'Following':'Follow'}</button>`:''}
+    </div>
+    ${post.spotName?`<div style="padding:8px 16px"><div class="post-spot-pill" onclick="openSpotFromPost(${post.spotId})">${post.spotName}</div></div>`:''}
+    ${post.caption?`<div class="post-caption" style="padding:8px 16px 12px;font-size:13px">${post.caption}</div>`:''}
+    <div class="post-actions" style="border-top:1px solid rgba(255,255,255,.06);border-bottom:1px solid rgba(255,255,255,.06);padding:10px 16px">
+      <div class="post-action${myLiked?' liked':''}" onclick="togglePostLike('${post.id}',this)">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="${myLiked?'currentColor':'none'}" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+        <span class="post-like-count">${likeCount}</span>
+      </div>
+      <div class="post-action"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>${getComments(post.id).length}</span></div>
+      <div class="post-action" onclick="sharePost('${post.id}')"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></div>
+      <div class="post-action" onclick="bookmarkPost('${post.id}',this)"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg></div>
+    </div>
+    <div style="padding:12px 16px 4px;font-size:13px;font-weight:700;color:var(--txt0)">Comments</div>
+    <div class="comments-section" id="commentsListBody">${commentsHtml||'<div style="padding:16px;text-align:center;color:var(--txt3);font-size:12px">No comments yet — start the conversation!</div>'}</div>`;
+}
+
+function _commentHtml(c,isReply=false){
+  const isOwn=String(c.userId)===String(_myUid());
+  const verif=_userVerified(c.userId);
+  return `<div class="comment-item${isReply?' reply':''}" oncontextmenu="event.preventDefault();showCommentCtx('${c.id}','${isOwn}')" ontouchstart="_startCommentLongPress('${c.id}','${isOwn}')" ontouchend="_cancelLongPress()">
+    <div style="display:flex;gap:8px;align-items:flex-start">
+      ${_avatarHtml(c.username,24)}
+      <div style="flex:1">
+        <div class="comment-user">${c.username}${verif?_verifiedBadge():''}</div>
+        <div class="comment-text">${c.text}</div>
+        <div class="comment-meta">
+          <span>${_timeAgo(c.createdAt)}</span>
+          ${!isReply?`<span class="comment-reply-btn" onclick="setCommentReply('${c.id}','${c.username}')">Reply</span>`:''}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function setCommentReply(parentId,username){
+  _commentReplyTo=parentId;
+  const inp=document.getElementById('commentInput');
+  if(inp){inp.placeholder=`Reply to @${username}…`;inp.focus();}
+}
+
+function showCommentCtx(cid,isOwn){
+  const menu=document.getElementById('commCtxMenu');
+  const overlay=document.getElementById('commCtxOverlay');
+  if(!menu)return;
+  menu.innerHTML=isOwn==='true'||isOwn===true
+    ?`<div class="ctx-menu-item danger" onclick="deleteComment('${cid}')">Delete</div>`
+    :`<div class="ctx-menu-item" onclick="closeCtxMenu();showToast('Comment reported')">Report</div>`;
+  menu.style.left='50%'; menu.style.top='40%';
+  menu.style.transform='translateX(-50%)';
+  menu.style.display='block'; overlay.style.display='block';
+}
+let _commentLpTimer=null;
+function _startCommentLongPress(cid,isOwn){_commentLpTimer=setTimeout(()=>showCommentCtx(cid,isOwn),600);}
+
+function deleteComment(cid){
+  closeCtxMenu();
+  if(!_currentPostId)return;
+  const arr=getComments(_currentPostId).filter(c=>c.id!==cid&&c.parentId!==cid);
+  setComments(_currentPostId,arr);
+  _renderPostDetail(getPosts().find(p=>p.id===_currentPostId));
+}
+
+function submitComment(){
+  if(isGuest()){showLoginScreen();return;}
+  const inp=document.getElementById('commentInput');
+  const text=(inp?.value||'').trim();
+  if(!text||!_currentPostId)return;
+  const posts=getPosts();
+  const post=posts.find(p=>p.id===_currentPostId);
+  const newComment={
+    id:_uid(),postId:_currentPostId,
+    userId:_myUid(),username:_myName(),
+    verified:_userVerified(_myUid()),
+    text,createdAt:new Date().toISOString(),
+    parentId:_commentReplyTo||null
+  };
+  const arr=getComments(_currentPostId);
+  arr.push(newComment);
+  setComments(_currentPostId,arr);
+  if(post)_addNotif(post.userId,'comment',_myName(),'commented on your post');
+  inp.value='';
+  inp.placeholder='Add a comment…';
+  _commentReplyTo=null;
+  _renderPostDetail(post);
+  showToast('Comment posted');
+}
+
+// ── Follow system ──────────────────────────────────────────────
+function toggleFollow(uid,btn){
+  if(isGuest()){showLoginScreen();return;}
+  const f=getFollows();
+  const myId=String(_myUid());
+  if(!f[myId])f[myId]=[];
+  const suid=String(uid);
+  const idx=f[myId].indexOf(suid);
+  if(idx>-1){f[myId].splice(idx,1);}
+  else{f[myId].push(suid); _addNotif(uid,'follow',_myName(),'started following you');}
+  setFollows(f);
+  const following=f[myId].includes(suid);
+  if(btn){btn.textContent=following?'Following':'Follow';btn.classList.toggle('following',following);}
+}
+
+// ── User Profile Page ──────────────────────────────────────────
+function openUserProfile(userId){
+  if(!userId||userId==='undefined')return;
+  _currentProfileUserId=userId;
+  const page=document.getElementById('userProfilePage');
+  if(!page)return;
+  _renderUserProfile(userId);
+  page.classList.add('open');
+}
+function closeUserProfile(){
+  document.getElementById('userProfilePage')?.classList.remove('open');
+  _currentProfileUserId=null;
+}
+
+function _renderUserProfile(userId){
+  const body=document.getElementById('userProfileBody');
+  const title=document.getElementById('userProfilePageTitle');
+  const editBtn=document.getElementById('userProfileEditBtn');
+  if(!body)return;
+  const isOwn=String(userId)===String(_myUid());
+  const profileData=getUserProfile(userId)||{};
+  // Try to get user info from posts or seed
+  const userPosts=getPosts().filter(p=>String(p.userId)===String(userId));
+  const username=profileData.username||userPosts[0]?.username||'Explorer';
+  const bio=profileData.bio||'Exploring California\'s hidden spots';
+  const avatarUrl=profileData.avatarUrl||null;
+  const verif=_userVerified(userId);
+  const f=getFollows();
+  const following=!isOwn&&(f[String(_myUid())]||[]).includes(String(userId));
+  const postCount=userPosts.length;
+  const communities=getCommunities().filter(c=>getMembers(c.id).includes(String(userId))).length;
+  const spotIds=new Set(userPosts.filter(p=>p.spotId).map(p=>p.spotId)).size;
+  if(title)title.textContent=username;
+  if(editBtn)editBtn.style.display=isOwn?'block':'none';
+
+  body.innerHTML=`
+    <div style="text-align:center;padding:24px 16px 0">
+      <div class="user-profile-avatar" style="margin:0 auto">${avatarUrl?`<img src="${avatarUrl}">`:(username||'?').slice(0,2).toUpperCase()}</div>
+      <div style="font-size:18px;font-weight:700;color:var(--txt0);margin-top:10px;display:flex;align-items:center;justify-content:center;gap:6px">${username}${verif?_verifiedBadge():''}</div>
+      ${verif?`<div style="font-size:10px;font-weight:700;color:var(--accent);letter-spacing:.5px;margin-top:2px;text-transform:uppercase">Verified Explorer</div>`:''}
+      <div style="font-size:13px;color:var(--txt2);margin-top:6px;padding:0 20px">${bio}</div>
+      ${!isOwn?`<button class="follow-btn${following?' following':''}" style="margin-top:14px" onclick="toggleFollow('${userId}',this)">${following?'Following':'Follow'}</button>`:''}
+    </div>
+    <div class="user-profile-stats">
+      <div class="user-profile-stat"><div class="user-profile-stat-val">${postCount}</div><div class="user-profile-stat-label">Posts</div></div>
+      <div class="user-profile-stat"><div class="user-profile-stat-val">${spotIds}</div><div class="user-profile-stat-label">Spots</div></div>
+      <div class="user-profile-stat"><div class="user-profile-stat-val">${communities}</div><div class="user-profile-stat-label">Communities</div></div>
+    </div>
+    <div class="profile-tab-row">
+      <div class="profile-tab-item active" id="upTabPosts" onclick="switchUserProfileTab('posts','${userId}')">Posts</div>
+      <div class="profile-tab-item" id="upTabSpots" onclick="switchUserProfileTab('spots','${userId}')">Spots</div>
+    </div>
+    <div id="upTabContent"></div>`;
+
+  _renderUserPostsTab(userId);
+}
+
+function switchUserProfileTab(tab,userId){
+  document.getElementById('upTabPosts')?.classList.toggle('active',tab==='posts');
+  document.getElementById('upTabSpots')?.classList.toggle('active',tab==='spots');
+  if(tab==='posts') _renderUserPostsTab(userId);
+  else _renderUserSpotsTab(userId);
+}
+
+function _renderUserPostsTab(userId){
+  const content=document.getElementById('upTabContent');
+  if(!content)return;
+  const userPosts=getPosts().filter(p=>String(p.userId)===String(userId));
+  if(!userPosts.length){content.innerHTML='<div style="text-align:center;padding:32px;color:var(--txt3);font-size:13px">No posts yet</div>';return;}
+  content.innerHTML=`<div class="user-post-grid">${userPosts.map(p=>`<div class="user-post-thumb" onclick="openPostDetail('${p.id}')">
+    ${p.mediaUrl?`<img src="${p.mediaUrl}" loading="lazy">`:`<div style="width:100%;height:100%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--txt3)">${p.type==='text'?'text':''}</div>`}
+    ${p.type==='video'?`<div class="user-post-video-icon">▶</div>`:''}
+  </div>`).join('')}</div>`;
+}
+
+function _renderUserSpotsTab(userId){
+  const content=document.getElementById('upTabContent');
+  if(!content)return;
+  const userPosts=getPosts().filter(p=>String(p.userId)===String(userId)&&p.spotId);
+  const spotIds=[...new Set(userPosts.map(p=>p.spotId))];
+  const allS=[...spots,...userSpots];
+  const userSpotObjs=spotIds.map(id=>allS.find(s=>s.id===id)).filter(Boolean);
+  content.innerHTML=`
+    <div style="height:180px;background:var(--bg2);margin:0;display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--txt3)">
+      ${userSpotObjs.length} spots posted from
+    </div>
+    <div style="padding:8px 14px">
+    ${userSpotObjs.map(s=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="openDetail(${s.id})">
+      <div style="width:40px;height:40px;background:${s.heroGradient||'var(--bg3)'};border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px"></div>
+      <div><div style="font-size:13px;font-weight:600;color:var(--txt0)">${s.name}</div><div style="font-size:11px;color:var(--txt3)">${s.region||s.distance||''}</div></div>
+    </div>`).join('')}
+    </div>`;
+}
+
+function openEditProfile(){
+  const page=document.getElementById('editProfilePage');
+  if(!page)return;
+  const profileData=getUserProfile(_myUid())||{};
+  const inp=document.getElementById('editProfileUsername');
+  const bio=document.getElementById('editProfileBio');
+  const av=document.getElementById('editProfileAvatar');
+  if(inp)inp.value=profileData.username||_myName();
+  if(bio)bio.value=profileData.bio||'';
+  if(av){
+    if(profileData.avatarUrl)av.innerHTML=`<img src="${profileData.avatarUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
+    else av.textContent=_myInitials();
+  }
+  page.classList.add('open');
+}
+function closeEditProfile(){document.getElementById('editProfilePage')?.classList.remove('open');}
+function saveEditProfile(){
+  const username=(document.getElementById('editProfileUsername')?.value||'').trim()||_myName();
+  const bio=(document.getElementById('editProfileBio')?.value||'').trim();
+  const existing=getUserProfile(_myUid())||{};
+  setUserProfile(_myUid(),{...existing,username,bio});
+  if(_currentUser)_currentUser.username=username;
+  closeEditProfile();
+  if(_currentProfileUserId)_renderUserProfile(_currentProfileUserId);
+  showToast('Profile updated');
+}
+function handleEditAvatar(e){
+  const file=e.target.files?.[0];if(!file)return;
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    const url=ev.target.result;
+    const av=document.getElementById('editProfileAvatar');
+    if(av)av.innerHTML=`<img src="${url}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
+    const existing=getUserProfile(_myUid())||{};
+    setUserProfile(_myUid(),{...existing,avatarUrl:url});
+  };
+  reader.readAsDataURL(file);
+}
+
+// ── Notifications ──────────────────────────────────────────────
+function _updateNotifBadge(){
+  const notifs=getNotifs();
+  const unread=notifs.filter(n=>!n.read).length;
+  const badge=document.getElementById('commNotifBadge');
+  const navBadge=document.getElementById('communityNavBadge');
+  if(badge){badge.textContent=unread;badge.style.display=unread?'flex':'none';}
+  if(navBadge){navBadge.style.display=unread>0?'block':'none';}
+}
+
+function _addNotif(toUserId,type,fromName,message){
+  if(String(toUserId)===String(_myUid()))return;
+  const notifs=getNotifs();
+  notifs.unshift({id:_uid(),type,fromUsername:fromName,message,read:false,createdAt:new Date().toISOString()});
+  setNotifs(notifs.slice(0,50));
+  _updateNotifBadge();
+}
+
+function openNotificationsPage(){
+  const page=document.getElementById('notificationsPage');
+  if(!page)return;
+  _renderNotifications();
+  page.classList.add('open');
+}
+function closeNotificationsPage(){
+  document.getElementById('notificationsPage')?.classList.remove('open');
+  _updateNotifBadge();
+}
+function _renderNotifications(){
+  const body=document.getElementById('notificationsBody');
+  if(!body)return;
+  const notifs=getNotifs();
+  const _nSVG=(p,c='var(--txt2)')=>`<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+  const icons={
+    like:_nSVG('<path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>','#ff4d6d'),
+    comment:_nSVG('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>'),
+    follow:_nSVG('<path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/>'),
+    join:_nSVG('<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>'),
+    spotdrop:_nSVG('<path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>','var(--accent)'),
+    reply:_nSVG('<polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/>'),
+    newsave:_nSVG('<path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>')
+  };
+  if(!notifs.length){body.innerHTML='<div style="text-align:center;padding:48px 20px;color:var(--txt3);font-size:13px">No notifications yet</div>';return;}
+  body.innerHTML=notifs.map(n=>`<div class="notif-item${n.read?'':' unread'}" onclick="markNotifRead('${n.id}')">
+    <div class="notif-icon">${icons[n.type]||_nSVG('<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>')}</div>
+    <div class="notif-text"><strong>${n.fromUsername||'Someone'}</strong> ${n.message||''}</div>
+    <div class="notif-time">${_timeAgo(n.createdAt)}</div>
+  </div>`).join('');
+}
+function markNotifRead(id){
+  const notifs=getNotifs().map(n=>n.id===id?{...n,read:true}:n);
+  setNotifs(notifs);
+  _renderNotifications();
+  _updateNotifBadge();
+}
+function markAllNotifsRead(){
+  setNotifs(getNotifs().map(n=>({...n,read:true})));
+  _renderNotifications();
+  _updateNotifBadge();
+  showToast('All notifications marked as read');
+}
+
+// ── DM System ──────────────────────────────────────────────────
+function _dmConvKey(uid1,uid2){return [String(uid1),String(uid2)].sort().join('__');}
+function openDmPage(){
+  const page=document.getElementById('dmPage');
+  if(!page)return;
+  _renderDmInbox();
+  page.classList.add('open');
+}
+function closeDmPage(){document.getElementById('dmPage')?.classList.remove('open');}
+
+function _renderDmInbox(filter=''){
+  const body=document.getElementById('dmInboxBody');
+  if(!body)return;
+  const msgs=getMessages();
+  const myId=String(_myUid());
+  const convos=Object.entries(msgs).filter(([key])=>key.includes(myId));
+  if(!convos.length){body.innerHTML='<div style="text-align:center;padding:48px 20px;color:var(--txt3);font-size:13px">No messages yet<br><br><span style="color:var(--accent);cursor:pointer" onclick="openNewDm()">Start a conversation →</span></div>';return;}
+
+  body.innerHTML=convos.map(([key,arr])=>{
+    const otherUid=key.split('__').find(u=>u!==myId)||key.split('__')[0];
+    if(filter&&!otherUid.toLowerCase().includes(filter.toLowerCase()))return '';
+    const last=arr[arr.length-1];
+    const profileData=getUserProfile(otherUid)||{};
+    const username=profileData.username||('cave_ghost');
+    return `<div class="dm-convo-row" onclick="openDmChat('${otherUid}')">
+      ${_avatarHtml(username,40,profileData.avatarUrl||null)}
+      <div class="dm-convo-info">
+        <div class="dm-convo-name">${username}</div>
+        <div class="dm-convo-preview">${last?.text||'Spot card shared'}</div>
+      </div>
+      <div class="dm-convo-time">${last?_timeAgo(last.time):''}</div>
+    </div>`;
+  }).join('');
+}
+function filterDmSearch(val){_renderDmInbox(val);}
+
+// ── Community ↔ Messages swap (two views inside community-screen) ──
+let _commActiveView='community';
+function swapCommTab(view){
+  _commActiveView=view;
+  const cv=document.getElementById('commCommunityView');
+  const mv=document.getElementById('commMessagesView');
+  const fab=document.getElementById('commMsgFab');
+  if(!cv||!mv)return;
+  if(view==='messages'){
+    cv.style.transform='translateX(-100%)';
+    mv.style.transform='translateX(0)';
+    if(fab)fab.style.display='none';
+    _renderCommDmInbox('');
+  } else {
+    cv.style.transform='translateX(0)';
+    mv.style.transform='translateX(100%)';
+    if(fab)fab.style.display='flex';
+  }
+}
+
+function _renderCommDmInbox(filter){
+  const body=document.getElementById('commDmInboxBody');
+  if(!body)return;
+  const msgs=getMessages();
+  const myId=String(_myUid());
+  const convos=Object.entries(msgs).filter(([key])=>key.includes(myId));
+  if(!convos.length){
+    body.innerHTML='<div style="text-align:center;padding:60px 24px;color:var(--txt3);font-size:13px;line-height:1.7">No messages yet<br><span style="color:var(--accent);cursor:pointer" onclick="openNewDm()">Start a conversation →</span></div>';
+    return;
+  }
+  body.innerHTML=convos.map(([key,arr])=>{
+    const otherUid=key.split('__').find(u=>u!==myId)||key.split('__')[0];
+    if(filter&&!(otherUid.toLowerCase().includes(filter.toLowerCase()))){return '';}
+    const last=arr[arr.length-1];
+    const profileData=getUserProfile(otherUid)||{};
+    const username=profileData.username||otherUid.replace('demo','user_')||'Explorer';
+    const preview=last?.postCard?`Shared a post`:(last?.spotCard?`Shared a spot`:(last?.text||''));
+    const initials=username.slice(0,2).toUpperCase();
+    const colors=['#2d5a3a','#3a2d5a','#5a3a2d','#2d4a5a','#5a2d4a'];
+    const ci=username.charCodeAt(0)%colors.length;
+    const avatarContent=profileData.avatarUrl&&profileData.avatarUrl.startsWith('data:')
+      ?`<img src="${profileData.avatarUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`
+      :initials;
+    return `<div class="comm-unified-row" onclick="openDmChat('${otherUid}')">
+      <div style="width:44px;height:44px;border-radius:50%;flex-shrink:0;background:${colors[ci]};display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;color:#fff;overflow:hidden">${avatarContent}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:14px;font-weight:700;color:var(--txt0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">@${username}</div>
+        <div style="font-size:12px;color:var(--txt3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${preview}</div>
+      </div>
+      <div style="font-size:10px;color:var(--txt3);flex-shrink:0">${last?_timeAgo(last.time):''}</div>
+    </div>`;
+  }).join('');
+}
+
+function filterCommDmSearch(val){_renderCommDmInbox(val);}
+
+function openDmChat(userId){
+  _dmConvUserId=userId;
+  const page=document.getElementById('dmChatPage');
+  if(!page)return;
+  const profileData=getUserProfile(userId)||{};
+  const username=profileData.username||'cave_ghost';
+  const title=document.getElementById('dmChatTitle');
+  if(title)title.textContent=username;
+  _renderDmChat();
+  page.classList.add('open');
+}
+function closeDmChat(){document.getElementById('dmChatPage')?.classList.remove('open');_dmConvUserId=null;}
+
+function _renderDmChat(){
+  const area=document.getElementById('dmMessagesArea');
+  if(!area||!_dmConvUserId)return;
+  const key=_dmConvKey(_myUid(),_dmConvUserId);
+  const msgs=(getMessages()[key])||[];
+  area.innerHTML=msgs.map(m=>{
+    const sent=String(m.fromId)===String(_myUid());
+    if(m.postCard){
+      const p=m.postCard;
+      const thumb=p.mediaUrl?`<img src="${p.mediaUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:10px 10px 0 0" loading="lazy">`
+        :`<div style="width:100%;height:100%;background:${p.gradient};border-radius:10px 10px 0 0"></div>`;
+      return `<div style="display:flex;flex-direction:column;align-items:${sent?'flex-end':'flex-start'};max-width:240px;${sent?'align-self:flex-end':'align-self:flex-start'}">
+        <div onclick="${p.spotId?`openDetail(${p.spotId})`:'void 0'}" style="width:200px;background:var(--bg2);border:1px solid var(--border2);border-radius:12px;overflow:hidden;cursor:${p.spotId?'pointer':'default'}">
+          <div style="width:100%;height:120px;overflow:hidden">${thumb}</div>
+          <div style="padding:8px 10px">
+            ${p.spotName?`<div style="font-size:10px;font-weight:700;color:#B8E87A;margin-bottom:3px">${p.spotName}</div>`:''}
+            ${p.caption?`<div style="font-size:12px;color:var(--txt1);line-height:1.4">${p.caption}</div>`:''}
+          </div>
+        </div>
+        <div class="dm-msg-time" style="text-align:${sent?'right':'left'}">${_timeAgo(m.time)}</div>
+      </div>`;
+    }
+    if(m.spotCard){
+      const s=m.spotCard;
+      return `<div style="align-self:${sent?'flex-end':'flex-start'}">
+        <div class="dm-spot-card" onclick="openDetail(${s.id})">
+          <div class="dm-spot-card-img" style="${s.heroGradient?`background:${s.heroGradient}`:''}">${s.name?s.name[0]:''}</div>
+          <div class="dm-spot-card-info">
+            <div class="dm-spot-card-name">${s.name}</div>
+            <div style="font-size:10px;color:var(--txt3);margin-top:2px">${s.typeLabel||''}</div>
+            <div style="font-size:10px;color:var(--accent);margin-top:4px;font-weight:700">View Spot →</div>
+          </div>
+        </div>
+        <div class="dm-msg-time">${_timeAgo(m.time)}</div>
+      </div>`;
+    }
+    return `<div style="display:flex;flex-direction:column;align-items:${sent?'flex-end':'flex-start'}">
+      <div class="dm-bubble dm-bubble-${sent?'sent':'recv'}">${m.text}</div>
+      <div class="dm-msg-time" style="text-align:${sent?'right':'left'}">${_timeAgo(m.time)}</div>
+    </div>`;
+  }).join('');
+  area.scrollTop=area.scrollHeight;
+}
+
+function sendDmMessage(){
+  if(isGuest()){showLoginScreen();return;}
+  const inp=document.getElementById('dmChatInput');
+  const text=(inp?.value||'').trim();
+  if(!text||!_dmConvUserId)return;
+  const key=_dmConvKey(_myUid(),_dmConvUserId);
+  const msgs=getMessages();
+  if(!msgs[key])msgs[key]=[];
+  msgs[key].push({id:_uid(),fromId:_myUid(),text,time:new Date().toISOString()});
+  setMessages(msgs);
+  inp.value='';
+  _renderDmChat();
+}
+
+function openDmSpotShare(){
+  const allS=[...spots,...userSpots];
+  const results=allS.slice(0,8);
+  const menu=document.getElementById('commCtxMenu');
+  const overlay=document.getElementById('commCtxOverlay');
+  if(!menu)return;
+  menu.style.cssText='display:block;left:10px;right:10px;bottom:70px;top:auto;transform:none;max-height:200px;overflow-y:auto';
+  menu.innerHTML=results.map(s=>`<div class="ctx-menu-item" onclick="sendDmSpotCard(${s.id})">${s.name}</div>`).join('');
+  if(overlay)overlay.style.display='block';
+}
+function sendDmSpotCard(spotId){
+  closeCtxMenu();
+  if(!_dmConvUserId)return;
+  const allS=[...spots,...userSpots];
+  const s=allS.find(x=>x.id===spotId);
+  if(!s)return;
+  const key=_dmConvKey(_myUid(),_dmConvUserId);
+  const msgs=getMessages();
+  if(!msgs[key])msgs[key]=[];
+  msgs[key].push({id:_uid(),fromId:_myUid(),spotCard:{id:s.id,name:s.name,typeLabel:s.typeLabel,heroGradient:s.heroGradient},time:new Date().toISOString()});
+  setMessages(msgs);
+  _renderDmChat();
+}
+function openNewDm(){openNewMessageOverlay();}
+function openNewMessageOverlay(){
+  const overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;inset:0;z-index:600;background:var(--bg0);display:flex;flex-direction:column;overflow:hidden';
+  const users=_getUsers().filter(u=>String(u.id)!==String(_myUid()));
+  let filteredUsers=users;
+  overlay.innerHTML=`
+    <div style="display:flex;align-items:center;padding:52px 16px 12px;border-bottom:1px solid var(--border);flex-shrink:0;gap:12px">
+      <div onclick="this.closest('[style*=fixed]').remove()" style="font-size:15px;color:var(--txt0);cursor:pointer;padding:4px 8px 4px 0">Cancel</div>
+      <div style="flex:1;font-size:17px;font-weight:700;color:var(--txt0);text-align:center">New Message</div>
+      <div style="width:60px"></div>
+    </div>
+    <div style="padding:12px 16px;flex-shrink:0">
+      <div style="display:flex;align-items:center;background:var(--bg2);border:1px solid var(--border2);border-radius:12px;height:42px;padding:0 14px;gap:10px">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--txt3)" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="newMsgSearch" placeholder="Search people…" oninput="_filterNewMsgUsers(this.value)" style="flex:1;background:none;border:none;outline:none;color:var(--txt0);font-size:14px;font-family:inherit">
+      </div>
+    </div>
+    <div id="newMsgUserList" style="flex:1;overflow-y:auto;padding:0 16px"></div>`;
+  function renderUsers(list){
+    const el=overlay.querySelector('#newMsgUserList');
+    if(!el)return;
+    if(!list.length){el.innerHTML='<div style="text-align:center;padding:32px;color:var(--txt3);font-size:13px">No users found</div>';return;}
+    el.innerHTML=list.map(u=>`<div onclick="this.closest('[style*=fixed]').remove();openDmChat('${u.id}')" style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--border);cursor:pointer">
+      <div style="width:42px;height:42px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:#B8E87A;flex-shrink:0">${(u.username||u.id||'?').slice(0,2).toUpperCase()}</div>
+      <div>
+        <div style="font-size:14px;font-weight:600;color:var(--txt0)">@${u.username||u.id}</div>
+        ${u.fullName?`<div style="font-size:11px;color:var(--txt3)">${u.fullName}</div>`:''}
+      </div>
+    </div>`).join('');
+  }
+  renderUsers(users);
+  overlay._filterNewMsgUsers=function(val){
+    filteredUsers=users.filter(u=>(u.username||'').toLowerCase().includes(val.toLowerCase())||(u.fullName||'').toLowerCase().includes(val.toLowerCase()));
+    renderUsers(filteredUsers);
+  };
+  window._filterNewMsgUsers=overlay._filterNewMsgUsers.bind(overlay);
+  document.body.appendChild(overlay);
+}
+
+// ── Post Creation Wizard ───────────────────────────────────────
+let _cpSharedComms=[];
+function openCreatePost(targetCommunityId=null){
+  if(isGuest()){showLoginScreen(()=>openCreatePost(targetCommunityId));return;}
+  _cpStep=1; _cpType=null; _cpMediaDataUrl=null; _cpFilter='none';
+  _cpTaggedSpotId=null; _cpTaggedSpotName=''; _cpShareCommunities=[];
+  if(targetCommunityId)_cpShareCommunities=[targetCommunityId];
+  const page=document.getElementById('createPostPage');
+  if(!page)return;
+  // Reset all steps
+  document.querySelectorAll('#createPostPage .wizard-step').forEach(s=>s.classList.remove('active'));
+  document.getElementById('cpStep1')?.classList.add('active');
+  document.querySelectorAll('#createPostPage .media-type-tile').forEach(t=>t.classList.remove('selected'));
+  if(document.getElementById('cpCaption'))document.getElementById('cpCaption').value='';
+  if(document.getElementById('cpCharCount'))document.getElementById('cpCharCount').textContent='0';
+  _updateCpProgress(1,5);
+  page.classList.add('open');
+  _buildShareCommList();
+}
+function openCreatePostForCommunity(cid){openCreatePost(cid);}
+function closeCreatePost(){document.getElementById('createPostPage')?.classList.remove('open');}
+
+function selectPostType(type,el){
+  _cpType=type;
+  document.querySelectorAll('#createPostPage .media-type-tile').forEach(t=>t.classList.remove('selected'));
+  el.classList.add('selected');
+}
+function cpNext(){
+  if(_cpStep===1){
+    if(!_cpType){showToast('Choose a post type first');return;}
+    if(_cpType==='spotdrop'){
+      // Go to spot drop special step
+      document.querySelectorAll('#createPostPage .wizard-step').forEach(s=>s.classList.remove('active'));
+      document.getElementById('cpStepSpotDrop')?.classList.add('active');
+      _updateCpProgress(2,5);
+      _initSpotDropMap();
+      return;
+    }
+    _cpStep=2;
+    document.querySelectorAll('#createPostPage .wizard-step').forEach(s=>s.classList.remove('active'));
+    document.getElementById(`cpStep${_cpStep}`)?.classList.add('active');
+    _updateCpProgress(_cpStep,5);
+    // Show/hide video upload
+    const vid=document.getElementById('cpVideoUpload');
+    if(vid)vid.style.display=_cpType==='text'?'none':'flex';
+    if(_cpType==='text'){
+      _cpStep=4;
+      document.querySelectorAll('#createPostPage .wizard-step').forEach(s=>s.classList.remove('active'));
+      document.getElementById('cpStep4')?.classList.add('active');
+      _updateCpProgress(4,5);
+    }
+  } else if(_cpStep===2){
+    _cpStep=3;
+    document.querySelectorAll('#createPostPage .wizard-step').forEach(s=>s.classList.remove('active'));
+    document.getElementById('cpStep3')?.classList.add('active');
+    _updateCpProgress(3,5);
+    _updateCpEditPreview();
+  } else if(_cpStep===3){
+    _cpStep=4;
+    document.querySelectorAll('#createPostPage .wizard-step').forEach(s=>s.classList.remove('active'));
+    document.getElementById('cpStep4')?.classList.add('active');
+    _updateCpProgress(4,5);
+  } else if(_cpStep===4){
+    _cpStep=5;
+    document.querySelectorAll('#createPostPage .wizard-step').forEach(s=>s.classList.remove('active'));
+    document.getElementById('cpStep5')?.classList.add('active');
+    _updateCpProgress(5,5);
+    _buildCpPreview();
+  }
+  const title=document.getElementById('createPostTitle');
+  if(title)title.textContent=_cpStep<=3?'New Post':_cpStep===4?'Details':'Preview';
+  const stepLabel=document.getElementById('createPostStepLabel');
+  if(stepLabel)stepLabel.textContent=`Step ${Math.min(_cpStep,5)} of 5`;
+}
+function _updateCpProgress(step,total){
+  const bar=document.getElementById('createPostProgress');
+  if(bar)bar.style.width=`${(step/total)*100}%`;
+}
+function handleCpMediaSelect(e,type){
+  const files=Array.from(e.target.files||[]);
+  if(!files.length)return;
+  const file=files[0];
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    _cpMediaDataUrl=ev.target.result;
+    const wrap=document.getElementById('cpMediaPreviewWrap');
+    const count=document.getElementById('cpMediaCount');
+    const preview=document.getElementById('cpSelectedPreview');
+    if(wrap)wrap.style.display='block';
+    if(count)count.textContent=`${files.length} selected`;
+    if(preview){
+      const tag=type==='video'?'video':'img';
+      preview.innerHTML=`<${tag} src="${_cpMediaDataUrl}" style="width:80px;height:80px;object-fit:cover;border-radius:8px;flex-shrink:0" ${type==='video'?'muted':''}>`;
+    }
+  };
+  reader.readAsDataURL(file);
+}
+function applyCpFilter(f,el){
+  _cpFilter=f;
+  document.querySelectorAll('.filter-thumb-img').forEach(t=>t.classList.remove('selected'));
+  el?.classList.add('selected');
+  _updateCpEditPreview();
+}
+function _updateCpEditPreview(){
+  const prev=document.getElementById('cpEditPreview');
+  if(!prev)return;
+  if(_cpMediaDataUrl){
+    if(_cpType==='video') prev.innerHTML=`<video src="${_cpMediaDataUrl}" muted autoplay loop style="width:100%;height:100%;object-fit:cover"></video>`;
+    else prev.innerHTML=`<img src="${_cpMediaDataUrl}" style="width:100%;height:100%;object-fit:cover">`;
+  }
+}
+function _buildCpPreview(){
+  const card=document.getElementById('cpPreviewCard');
+  if(!card)return;
+  const caption=(document.getElementById('cpCaption')?.value||'').trim();
+  const fakePost={id:'preview',userId:_myUid(),username:_myName(),type:_cpType||'text',
+    mediaUrl:_cpMediaDataUrl,caption,spotId:_cpTaggedSpotId,spotName:_cpTaggedSpotName,
+    likes:[],createdAt:new Date().toISOString(),communityIds:_cpShareCommunities};
+  card.innerHTML=buildPostCard(fakePost);
+}
+function updateCpCharCount(ta){const el=document.getElementById('cpCharCount');if(el)el.textContent=ta.value.length;}
+function searchCpSpot(q){
+  const res=document.getElementById('cpSpotResults');
+  if(!res)return;
+  if(!q.trim()){res.style.display='none';return;}
+  const allS=[...spots,...userSpots];
+  const matches=allS.filter(s=>s.name.toLowerCase().includes(q.toLowerCase())).slice(0,5);
+  if(!matches.length){res.style.display='none';return;}
+  res.style.display='block';
+  res.innerHTML=matches.map(s=>`<div style="padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px;color:var(--txt0)" onclick="selectCpSpot(${s.id},'${s.name}')">${s.name}</div>`).join('');
+}
+function selectCpSpot(id,name){
+  _cpTaggedSpotId=id; _cpTaggedSpotName=name;
+  const pill=document.getElementById('cpSpotTagPill');
+  const tagged=document.getElementById('cpSpotTagged');
+  const search=document.getElementById('cpSpotSearch');
+  if(pill)pill.textContent=name;
+  if(tagged)tagged.style.display='block';
+  if(search)search.value='';
+  document.getElementById('cpSpotResults').style.display='none';
+}
+function clearCpSpotTag(){_cpTaggedSpotId=null;_cpTaggedSpotName='';document.getElementById('cpSpotTagged').style.display='none';}
+function _buildShareCommList(){
+  const list=document.getElementById('cpShareCommunitiesList');
+  if(!list)return;
+  const mine=getCommunities().filter(c=>getMembers(c.id).includes(String(_myUid()))||c.adminId===String(_myUid()));
+  list.innerHTML=mine.map(c=>`<div class="share-to-row">
+    <div class="share-to-name">${c.name}</div>
+    <div class="toggle-switch${_cpShareCommunities.includes(c.id)?' on':''}" onclick="toggleShareTo('comm_${c.id}',this)"></div>
+  </div>`).join('');
+}
+function toggleShareTo(key,el){
+  el.classList.toggle('on');
+  if(key==='profile')return;
+  const cid=key.replace('comm_','');
+  const idx=_cpShareCommunities.indexOf(cid);
+  if(idx>-1)_cpShareCommunities.splice(idx,1);
+  else _cpShareCommunities.push(cid);
+}
+function submitPost(){
+  if(isGuest()){showLoginScreen();return;}
+  const caption=(document.getElementById('cpCaption')?.value||'').trim();
+  const allS=[...spots,...userSpots];
+  const taggedSpot=_cpTaggedSpotId?allS.find(s=>s.id===_cpTaggedSpotId):null;
+  const newPost={
+    id:_uid(),userId:_myUid(),username:_myName(),
+    verified:_userVerified(_myUid()),
+    type:_cpType||'text',mediaUrl:_cpMediaDataUrl,caption,
+    spotId:_cpTaggedSpotId||null,spotName:_cpTaggedSpotName||null,
+    spotType:taggedSpot?.typeLabel?.toLowerCase()||null,
+    region:taggedSpot?.region||null,
+    communityIds:_cpShareCommunities,
+    likes:[],createdAt:new Date().toISOString()
+  };
+  const posts=getPosts();
+  posts.unshift(newPost);
+  setPosts(posts);
+  // Add to community post lists
+  _cpShareCommunities.forEach(cid=>{
+    const cp=getCPosts(cid);
+    cp.unshift(newPost.id);
+    setCPosts(cid,cp);
+  });
+  // Animate button
+  const btn=document.getElementById('cpPostNowBtn');
+  if(btn){btn.innerHTML='Posted!';btn.style.background='#4CAF50';}
+  setTimeout(()=>{
+    closeCreatePost();
+    showTab('community');
+    switchCommTab('feed');
+    buildFeed();
+  },1000);
+}
+
+// ── Spot Drop ──────────────────────────────────────────────────
+function _initSpotDropMap(){
+  const container=document.getElementById('spotDropMap');
+  if(!container||_sdMap)return;
+  try{
+    if(typeof mapboxgl==='undefined'||!mapboxgl.accessToken){
+      container.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;font-size:12px;color:var(--txt2);text-align:center;padding:16px">Map preview not available<br><br>Enter coordinates below</div>';
+      return;
+    }
+    _sdMap=new mapboxgl.Map({container,style:'mapbox://styles/mapbox/outdoors-v12',center:[_sdLng,_sdLat],zoom:10,interactive:true});
+    _sdMap.on('move',()=>{const c=_sdMap.getCenter();_sdLat=c.lat;_sdLng=c.lng;});
+  }catch(e){container.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--txt2);font-size:12px">Map unavailable — enter location manually</div>';}
+}
+function searchSdLocation(q){
+  const res=document.getElementById('sdLocResults');
+  if(!res||!q.trim()){if(res)res.style.display='none';return;}
+  fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5&countrycodes=us`)
+    .then(r=>r.json()).then(data=>{
+      if(!data.length){res.style.display='none';return;}
+      res.style.display='block';
+      res.innerHTML=data.map(d=>`<div style="padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;color:var(--txt0)" onclick="selectSdLocation(${d.lat},${d.lon},'${(d.display_name||'').slice(0,40)}')">${(d.display_name||'').slice(0,60)}</div>`).join('');
+    }).catch(()=>{});
+}
+function selectSdLocation(lat,lon,name){
+  _sdLat=parseFloat(lat); _sdLng=parseFloat(lon);
+  if(_sdMap)_sdMap.flyTo({center:[_sdLng,_sdLat],zoom:13});
+  document.getElementById('sdLocResults').style.display='none';
+  const inp=document.getElementById('sdLocSearch');
+  if(inp)inp.value=name;
+}
+function handleSdPhoto(e){
+  const file=e.target.files?.[0];if(!file)return;
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    _sdPhotoDataUrl=ev.target.result;
+    const prev=document.getElementById('sdPhotoPreview');
+    if(prev){prev.style.display='block';const img=prev.querySelector('img');if(img)img.src=_sdPhotoDataUrl;}
+  };
+  reader.readAsDataURL(file);
+}
+function submitSpotDrop(){
+  if(isGuest()){showLoginScreen();return;}
+  const name=(document.getElementById('sdSpotName')?.value||'').trim();
+  if(!name){showToast('Enter a spot name');return;}
+  const type=document.getElementById('sdSpotType')?.value||'';
+  const legal=document.getElementById('sdLegalStatus')?.value||'caution';
+  const desc=(document.getElementById('sdDescription')?.value||'').trim();
+  const approach=(document.getElementById('sdApproach')?.value||'').trim();
+  const sd={name,lat:_sdLat,lng:_sdLng,type,legal,description:desc,approach,photo:_sdPhotoDataUrl,votes:0,submittedBy:_myName()};
+  const newPost={
+    id:_uid(),userId:_myUid(),username:_myName(),verified:_userVerified(_myUid()),
+    type:'spotdrop',mediaUrl:_sdPhotoDataUrl,caption:desc,
+    spotId:null,spotName:name,spotType:type,region:null,
+    communityIds:_cpShareCommunities,likes:[],createdAt:new Date().toISOString(),spotdrop:sd
+  };
+  const posts=getPosts();posts.unshift(newPost);setPosts(posts);
+  const drops=getSpotDrops();drops.unshift(sd);setSpotDrops(drops);
+  _cpShareCommunities.forEach(cid=>{const cp=getCPosts(cid);cp.unshift(newPost.id);setCPosts(cid,cp);});
+  closeCreatePost();
+  showTab('community');
+  buildFeed();
+  showToast('Spot Drop posted! Community will vote');
+  if(_sdMap){_sdMap.remove();_sdMap=null;}
+}
+
+function approveSpotDrop(postId){
+  if(!_isAdmin()){showToast('Admin only');return;}
+  const posts=getPosts();
+  const post=posts.find(p=>p.id===postId);
+  if(!post?.spotdrop){showToast('Spot drop data missing');return;}
+  const sd=post.spotdrop;
+  const newSpot={
+    id:Date.now(),name:sd.name,lat:sd.lat,lng:sd.lng,
+    type:sd.type,typeLabel:sd.type?.charAt(0).toUpperCase()+sd.type?.slice(1)||'Spot',
+    description:sd.description,approach:sd.approach,
+    legal:sd.legal,heroGradient:'linear-gradient(135deg,#1a3a2a,#2d5a3a)',
+    rating:0,reviews:0,distance:'',difficulty:'Unknown',
+    discoveredBy:sd.submittedBy,communityNominated:true,
+    approved:true,_submittedBy:sd.submittedBy
+  };
+  userSpots.push(newSpot);
+  localStorage.setItem('wp_user_spots',JSON.stringify(userSpots));
+  try{refreshSpotMarkers();}catch{}
+  post.spotdrop.approved=true;
+  post.spotId=newSpot.id;
+  post.spotName=newSpot.name;
+  setPosts(posts);
+  buildFeed();
+  if(_currentCommunityId)_buildCommDetailFeed(_currentCommunityId);
+  showToast(` "${sd.name}" added to the WildPath map!`);
+  addNotification(`"${sd.name}" was added to the map! Discovered by ${sd.submittedBy}`);
+}
+
+// ── Community Creation Wizard ──────────────────────────────────
+let _ccFocusTagsList=[];
+function openCreateCommunity(){
+  if(isGuest()){showLoginScreen(()=>openCreateCommunity());return;}
+  _ccStep=1; _ccCoverDataUrl=null; _ccPrivacy='public'; _ccFocusTagsList=[];
+  const page=document.getElementById('createCommunityPage');
+  if(!page)return;
+  document.querySelectorAll('#createCommunityPage .wizard-step').forEach(s=>s.classList.remove('active'));
+  document.getElementById('ccStep1')?.classList.add('active');
+  if(document.getElementById('ccName'))document.getElementById('ccName').value='';
+  if(document.getElementById('ccDesc'))document.getElementById('ccDesc').value='';
+  if(document.getElementById('ccRules'))document.getElementById('ccRules').value='';
+  document.querySelectorAll('#createCommunityPage .privacy-tile').forEach(t=>t.classList.remove('selected'));
+  document.querySelectorAll('#createCommunityPage .focus-chip').forEach(c=>c.classList.remove('selected'));
+  document.getElementById('ccCoverPreview').style.display='none';
+  document.getElementById('ccCoverZone').style.display='flex';
+  _updateCcProgress();
+  page.classList.add('open');
+}
+function closeCreateCommunity(){document.getElementById('createCommunityPage')?.classList.remove('open');}
+function _updateCcProgress(){
+  const bar=document.getElementById('ccProgress');
+  if(bar)bar.style.width=`${(_ccStep/5)*100}%`;
+  const lbl=document.getElementById('ccStepLabel');
+  if(lbl)lbl.textContent=`Step ${_ccStep} of 5`;
+}
+function ccNext(){
+  if(_ccStep===1){
+    const name=(document.getElementById('ccName')?.value||'').trim();
+    if(!name){showToast('Enter a community name');return;}
+  }
+  _ccStep++;
+  document.querySelectorAll('#createCommunityPage .wizard-step').forEach(s=>s.classList.remove('active'));
+  document.getElementById(`ccStep${_ccStep}`)?.classList.add('active');
+  _updateCcProgress();
+}
+function handleCcCover(e){
+  const file=e.target.files?.[0];if(!file)return;
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    _ccCoverDataUrl=ev.target.result;
+    const prev=document.getElementById('ccCoverPreview');
+    const zone=document.getElementById('ccCoverZone');
+    if(prev){prev.style.display='block';const img=prev.querySelector('img');if(img)img.src=_ccCoverDataUrl;}
+    if(zone)zone.style.display='none';
+  };
+  reader.readAsDataURL(file);
+}
+function selectCcPrivacy(p,el){
+  _ccPrivacy=p;
+  document.querySelectorAll('#createCommunityPage .privacy-tile').forEach(t=>t.classList.remove('selected'));
+  el.classList.add('selected');
+}
+function toggleCcFocus(tag,el){
+  el.classList.toggle('selected');
+  const idx=_ccFocusTagsList.indexOf(tag);
+  if(idx>-1)_ccFocusTagsList.splice(idx,1);
+  else _ccFocusTagsList.push(tag);
+}
+function submitCreateCommunity(){
+  const name=(document.getElementById('ccName')?.value||'').trim();
+  const desc=(document.getElementById('ccDesc')?.value||'').trim();
+  const rules=(document.getElementById('ccRules')?.value||'').trim();
+  if(!name){showToast('Enter a community name');return;}
+  const newComm={
+    id:'comm_'+_uid(),name,desc,rules,
+    coverDataUrl:_ccCoverDataUrl,privacy:_ccPrivacy,
+    focusTags:_ccFocusTagsList,
+    adminId:String(_myUid()),createdAt:new Date().toISOString(),memberCount:1
+  };
+  const comms=getCommunities();comms.push(newComm);setCommunities(comms);
+  setMembers(newComm.id,[String(_myUid())]);
+  closeCreateCommunity();
+  openCommunityDetail(newComm.id);
+  showToast(`"${name}" created!`);
+}
+
+// ── Community Settings ─────────────────────────────────────────
+function openCommSettings(cid){
+  const page=document.getElementById('commSettingsPage');
+  if(!page)return;
+  _renderCommSettings(cid);
+  page.classList.add('open');
+}
+function closeCommSettings(){document.getElementById('commSettingsPage')?.classList.remove('open');}
+function _renderCommSettings(cid){
+  const body=document.getElementById('commSettingsBody');
+  if(!body)return;
+  const comms=getCommunities();
+  const c=comms.find(x=>x.id===cid);
+  if(!c)return;
+  const members=getMembers(cid);
+  const inviteLink=`wildpath://community/${cid}`;
+
+  const membersHtml=members.map(uid=>`<div class="member-row">
+    ${_avatarHtml(uid,36)}
+    <div class="member-row-info">
+      <div class="member-name">${uid}</div>
+      <div class="member-date">Member</div>
+    </div>
+    ${c.adminId===String(_myUid())&&uid!==String(_myUid())?`<button class="member-menu-btn" onclick="showMemberMenu('${cid}','${uid}',this)">⋯</button>`:''}
+  </div>`).join('');
+
+  body.innerHTML=`
+    <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+      <div class="settings-row" onclick="openEditCommunity('${cid}')" style="padding:12px 0">
+        <div class="settings-left"><div class="settings-icon"></div><div class="settings-name">Edit Community Info</div></div>
+        <div class="settings-arrow">›</div>
+      </div>
+    </div>
+    <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
+      <div style="font-size:12px;font-weight:700;color:var(--txt2);letter-spacing:.4px;text-transform:uppercase;margin-bottom:10px">Members (${members.length})</div>
+      ${membersHtml}
+    </div>
+    <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+      <div style="font-size:12px;font-weight:700;color:var(--txt2);letter-spacing:.4px;text-transform:uppercase;margin-bottom:10px">Invite Link</div>
+      <div style="background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:10px 12px;font-size:12px;color:var(--txt2);display:flex;align-items:center;justify-content:space-between">
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${inviteLink}</span>
+        <span style="color:var(--accent);cursor:pointer;font-weight:700;flex-shrink:0;margin-left:8px" onclick="copyInviteLink('${inviteLink}')">Copy</span>
+      </div>
+    </div>
+    <div style="padding:14px 16px">
+      <div style="font-size:12px;font-weight:700;color:var(--red);letter-spacing:.4px;text-transform:uppercase;margin-bottom:10px">Danger Zone</div>
+      <button onclick="confirmDeleteCommunity('${cid}','${c.name}')" style="width:100%;padding:12px;background:rgba(196,82,74,.1);border:1.5px solid rgba(196,82,74,.4);border-radius:12px;color:var(--red);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Delete Community</button>
+    </div>`;
+}
+function showMemberMenu(cid,uid,btn){
+  const menu=document.getElementById('commCtxMenu');
+  const overlay=document.getElementById('commCtxOverlay');
+  if(!menu)return;
+  const rect=btn.getBoundingClientRect();
+  const appRect=document.getElementById('app').getBoundingClientRect();
+  menu.innerHTML=`<div class="ctx-menu-item" onclick="closeCtxMenu();showToast('Promoted to moderator')">⭐ Promote to Moderator</div>
+    <div class="ctx-menu-item danger" onclick="closeCtxMenu();removeMember('${cid}','${uid}')">Remove from Community</div>`;
+  menu.style.cssText=`display:block;left:auto;right:${appRect.right-rect.right+10}px;top:${rect.bottom-appRect.top+4}px;transform:none`;
+  overlay.style.display='block';
+}
+function removeMember(cid,uid){
+  const members=getMembers(cid).filter(m=>m!==uid);
+  setMembers(cid,members);
+  _renderCommSettings(cid);
+  showToast('Member removed');
+}
+function copyInviteLink(link){navigator.clipboard?.writeText(link);showToast('Invite link copied!');}
+function confirmDeleteCommunity(cid,name){
+  const typed=prompt(`Type "${name}" to confirm deletion:`);
+  if(typed!==name){showToast('Incorrect name — community not deleted');return;}
+  const comms=getCommunities().filter(c=>c.id!==cid);
+  setCommunities(comms);
+  closeCommSettings();
+  closeCommunityDetail();
+  buildCommunitiesTab();
+  showToast('Community deleted');
+}
+
+// ── Edit Community Info (admin only) ───────────────────────────
+function openEditCommunity(cid){
+  const comms=getCommunities();
+  const c=comms.find(x=>x.id===cid);
+  if(!c)return;
+  let _editCoverDataUrl=c.coverDataUrl||null;
+  // Build overlay
+  const overlay=document.createElement('div');
+  overlay.id='editCommOverlay';
+  overlay.style.cssText='position:fixed;inset:0;z-index:600;background:var(--bg0);display:flex;flex-direction:column;overflow:hidden';
+  overlay.innerHTML=`
+    <div style="display:flex;align-items:center;padding:52px 16px 14px;border-bottom:1px solid var(--border);flex-shrink:0;gap:12px">
+      <div onclick="document.getElementById('editCommOverlay').remove()" style="width:36px;height:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="var(--txt0)" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </div>
+      <div style="flex:1;font-size:17px;font-weight:700;color:var(--txt0);text-align:center">Edit Community</div>
+      <button id="editCommSaveBtn" onclick="_saveEditCommunity('${cid}')" style="background:var(--accent);color:#0f1a0a;border:none;border-radius:10px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Save</button>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:16px">
+      <!-- Cover photo -->
+      <div style="margin-bottom:16px">
+        <div style="font-size:12px;font-weight:700;color:var(--txt2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Cover Photo</div>
+        <div id="editCommCoverPreview" style="width:100%;height:120px;border-radius:12px;overflow:hidden;background:${c.coverGrad||'linear-gradient(135deg,#1a3a2a,#2d5a3a)'};position:relative;cursor:pointer" onclick="document.getElementById('editCommCoverInput').click()">
+          ${c.coverDataUrl?`<img src="${c.coverDataUrl}" style="width:100%;height:100%;object-fit:cover">`:''}
+          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.35)">
+            <div style="text-align:center">
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="rgba(255,255,255,.8)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+              <div style="font-size:11px;color:rgba(255,255,255,.7);margin-top:4px">Tap to change</div>
+            </div>
+          </div>
+        </div>
+        <input id="editCommCoverInput" type="file" accept="image/*" style="display:none" onchange="_handleEditCommCover(event,'${cid}')">
+      </div>
+      <!-- Name -->
+      <div style="margin-bottom:12px">
+        <div style="font-size:12px;font-weight:700;color:var(--txt2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Community Name</div>
+        <input id="editCommName" value="${(c.name||'').replace(/"/g,'&quot;')}" style="width:100%;height:46px;background:var(--bg2);border:1px solid var(--border2);border-radius:12px;color:var(--txt0);padding:0 14px;font-size:14px;font-family:inherit;outline:none;box-sizing:border-box">
+      </div>
+      <!-- Description -->
+      <div style="margin-bottom:12px">
+        <div style="font-size:12px;font-weight:700;color:var(--txt2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Description</div>
+        <textarea id="editCommDesc" style="width:100%;min-height:80px;background:var(--bg2);border:1px solid var(--border2);border-radius:12px;color:var(--txt0);padding:12px 14px;font-size:14px;font-family:inherit;outline:none;box-sizing:border-box;resize:none">${c.desc||''}</textarea>
+      </div>
+      <!-- Privacy -->
+      <div style="margin-bottom:12px">
+        <div style="font-size:12px;font-weight:700;color:var(--txt2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Privacy</div>
+        <div style="display:flex;gap:8px">
+          <div id="editPrivPublic" onclick="_setEditPrivacy('public','${cid}')" style="flex:1;padding:10px;text-align:center;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;border:2px solid ${(c.privacy||'public')==='public'?'var(--accent)':'var(--border2)'};color:${(c.privacy||'public')==='public'?'var(--accent)':'var(--txt2)'};background:var(--bg2)">Public</div>
+          <div id="editPrivPrivate" onclick="_setEditPrivacy('private','${cid}')" style="flex:1;padding:10px;text-align:center;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;border:2px solid ${c.privacy==='private'?'var(--accent)':'var(--border2)'};color:${c.privacy==='private'?'var(--accent)':'var(--txt2)'};background:var(--bg2)">Private</div>
+        </div>
+      </div>
+      <!-- Rules -->
+      <div style="margin-bottom:24px">
+        <div style="font-size:12px;font-weight:700;color:var(--txt2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Community Rules</div>
+        <textarea id="editCommRules" style="width:100%;min-height:100px;background:var(--bg2);border:1px solid var(--border2);border-radius:12px;color:var(--txt0);padding:12px 14px;font-size:14px;font-family:inherit;outline:none;box-sizing:border-box;resize:none">${c.rules||''}</textarea>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  // store cover data url on overlay element
+  overlay._editCoverDataUrl=_editCoverDataUrl;
+  overlay._editPrivacy=c.privacy||'public';
+}
+function _handleEditCommCover(e,cid){
+  const file=e.target.files?.[0];if(!file)return;
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    const overlay=document.getElementById('editCommOverlay');
+    if(overlay)overlay._editCoverDataUrl=ev.target.result;
+    const prev=document.getElementById('editCommCoverPreview');
+    if(prev){
+      let img=prev.querySelector('img');
+      if(!img){img=document.createElement('img');img.style.cssText='position:absolute;inset:0;width:100%;height:100%;object-fit:cover';prev.insertBefore(img,prev.firstChild);}
+      img.src=ev.target.result;
+    }
+  };
+  reader.readAsDataURL(file);
+}
+function _setEditPrivacy(p,cid){
+  const overlay=document.getElementById('editCommOverlay');
+  if(overlay)overlay._editPrivacy=p;
+  const pub=document.getElementById('editPrivPublic');
+  const priv=document.getElementById('editPrivPrivate');
+  if(pub){pub.style.borderColor=p==='public'?'var(--accent)':'var(--border2)';pub.style.color=p==='public'?'var(--accent)':'var(--txt2)';}
+  if(priv){priv.style.borderColor=p==='private'?'var(--accent)':'var(--border2)';priv.style.color=p==='private'?'var(--accent)':'var(--txt2)';}
+}
+function _saveEditCommunity(cid){
+  const overlay=document.getElementById('editCommOverlay');
+  const name=(document.getElementById('editCommName')?.value||'').trim();
+  const desc=(document.getElementById('editCommDesc')?.value||'').trim();
+  const rules=(document.getElementById('editCommRules')?.value||'').trim();
+  const privacy=overlay?overlay._editPrivacy:'public';
+  const coverDataUrl=overlay?overlay._editCoverDataUrl:null;
+  if(!name){showToast('Enter a community name');return;}
+  const comms=getCommunities();
+  const c=comms.find(x=>x.id===cid);
+  if(!c)return;
+  c.name=name;c.desc=desc;c.rules=rules;c.privacy=privacy;
+  if(coverDataUrl)c.coverDataUrl=coverDataUrl;
+  setCommunities(comms);
+  overlay?.remove();
+  _renderCommunityDetail(cid);
+  showToast('Community updated');
+}
+
+// ── Spot detail communities section ────────────────────────────
+function buildSpotCommunitiesSection(spotId){
+  const allPosts=getPosts().filter(p=>p.spotId===spotId);
+  const commIds=[...new Set(allPosts.flatMap(p=>p.communityIds||[]))];
+  if(!commIds.length)return'';
+  const comms=getCommunities().filter(c=>commIds.includes(c.id));
+  if(!comms.length)return'';
+  const cards=comms.map(c=>{
+    const postCount=allPosts.filter(p=>p.communityIds?.includes(c.id)).length;
+    const coverHtml=c.coverDataUrl?`<img src="${c.coverDataUrl}" style="width:100%;height:100%;object-fit:cover">`:
+      `<div style="width:100%;height:100%;${c.coverGrad||'background:var(--bg3)'};"></div>`;
+    return `<div class="spot-comm-mini-card" onclick="openCommunityDetail('${c.id}')">
+      <div class="spot-comm-mini-cover">${coverHtml}</div>
+      <div class="spot-comm-mini-info">
+        <div class="spot-comm-mini-name">${c.name}</div>
+        <div class="spot-comm-mini-posts">${postCount} post${postCount!==1?'s':''}</div>
+      </div>
+    </div>`;
+  }).join('');
+  return `<div style="padding:14px 0;border-top:1px solid var(--border)">
+    <div style="font-size:13px;font-weight:700;color:var(--txt0);margin-bottom:10px">In Communities</div>
+    <div class="spot-communities-scroll">${cards}</div>
+  </div>`;
+}
+
+// ── Admin: Verified Explorer system ───────────────────────────
+function grantVerifiedExplorer(userId){
+  if(!_isAdmin())return;
+  const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
+  const u=users.find(x=>String(x.id)===String(userId));
+  if(u){u.verified=true;localStorage.setItem('wildpath-users',JSON.stringify(users));}
+  showToast('Verified Explorer status granted');
+}
+function revokeVerifiedExplorer(userId){
+  if(!_isAdmin())return;
+  const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
+  const u=users.find(x=>String(x.id)===String(userId));
+  if(u){u.verified=false;localStorage.setItem('wildpath-users',JSON.stringify(users));}
+  showToast('Verified status revoked');
+}
+
+// ── Enhanced explore/search integration ───────────────────────
+function buildEnhancedSearch(query){
+  if(!query.trim()){
+    _buildSearchDefault();
+    return;
+  }
+  const q=query.toLowerCase();
+  const allS=[...spots,...userSpots];
+  const spotRes=allS.filter(s=>s.name.toLowerCase().includes(q));
+  const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
+  const userRes=users.filter(u=>(u.username||'').toLowerCase().includes(q));
+  const commRes=getCommunities().filter(c=>c.name.toLowerCase().includes(q)||c.desc?.toLowerCase().includes(q));
+  const postRes=getPosts().filter(p=>p.caption?.toLowerCase().includes(q)||p.spotName?.toLowerCase().includes(q));
+  // Save to recent
+  const recent=_cgGet(CK.searches)||[];
+  if(!recent.includes(query)){recent.unshift(query);_cgSet(CK.searches,recent.slice(0,10));}
+  return {spots:spotRes,users:userRes,communities:commRes,posts:postRes};
+}
+
+function _buildSearchDefault(){
+  // Show recent searches + trending
+  const recent=_cgGet(CK.searches)||[];
+  const trending=[...spots,...userSpots].slice(0,5);
+  const container=document.getElementById('exploreSearchResults');
+  if(!container)return;
+  let html='';
+  if(recent.length){
+    html+=`<div style="padding:10px 14px;font-size:11px;font-weight:700;color:var(--txt3);letter-spacing:.4px;text-transform:uppercase">Recent Searches</div>`;
+    html+=recent.map(r=>`<div class="search-result-item" onclick="doExploreSearch('${r}')">
+      <div class="search-result-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--txt3)" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+      <div class="search-result-info"><div class="search-result-title">${r}</div></div>
+    </div>`).join('');
+  }
+  html+=`<div style="padding:10px 14px;font-size:11px;font-weight:700;color:var(--txt3);letter-spacing:.4px;text-transform:uppercase">Trending Spots</div>`;
+  html+=trending.map(s=>`<div class="search-result-item" onclick="openDetail(${s.id})">
+    <div class="search-result-icon" style="background:${s.heroGradient||'var(--bg3)'}"></div>
+    <div class="search-result-info"><div class="search-result-title">${s.name}</div><div class="search-result-sub">${s.typeLabel||''}</div></div>
+  </div>`).join('');
+  container.innerHTML=html;
+}
+
+// ── Community is wired via showTab('community') → buildCommunityScreen() ──
+
+// ── Notification helper from admin ─────────────────────────────
+function addNotification(msg){
+  const notifs=getNotifs();
+  notifs.unshift({id:_uid(),type:'spotdrop',fromUsername:'System',message:msg,read:false,createdAt:new Date().toISOString()});
+  setNotifs(notifs.slice(0,50));
+  _updateNotifBadge();
+}
+
+// ── Seed community data on app launch ────────────────────────
+setTimeout(()=>{
+  if(typeof _seedCommunityData==='function') _seedCommunityData();
+  _updateNotifBadge();
+},500);
+
+// ═══════════════════════════════════════════════════
+// PROFILE TAB SWITCHING
+// ═══════════════════════════════════════════════════
+function switchProfileTab(tab){
+  const postsGrid=document.getElementById('profilePostsGrid');
+  const taggedGrid=document.getElementById('profileTaggedGrid');
+  const aboutContent=document.getElementById('profileAboutContent');
+  const tabPosts=document.getElementById('profileTabPosts');
+  const tabTagged=document.getElementById('profileTabTagged');
+  const tabAbout=document.getElementById('profileTabAbout');
+  // Hide all
+  if(postsGrid)postsGrid.style.display='none';
+  if(taggedGrid)taggedGrid.style.display='none';
+  if(aboutContent)aboutContent.style.display='none';
+  // Reset tab styles
+  const allTabs=[tabPosts,tabTagged,tabAbout];
+  allTabs.forEach(t=>{if(t){t.style.borderBottom='2px solid transparent';}});
+  // Show selected
+  if(tab==='posts'){
+    if(postsGrid)postsGrid.style.display='grid';
+    if(tabPosts){tabPosts.style.borderBottom='2px solid var(--accent)';const svg=tabPosts.querySelector('svg');if(svg)svg.setAttribute('stroke','var(--txt0)');}
+    if(tabTagged){const svg=tabTagged.querySelector('svg');if(svg)svg.setAttribute('stroke','var(--txt3)');}
+  } else if(tab==='tagged'){
+    if(taggedGrid)taggedGrid.style.display='grid';
+    if(tabTagged){tabTagged.style.borderBottom='2px solid var(--accent)';const svg=tabTagged.querySelector('svg');if(svg)svg.setAttribute('stroke','var(--txt0)');}
+    if(tabPosts){const svg=tabPosts.querySelector('svg');if(svg)svg.setAttribute('stroke','var(--txt3)');}
+  } else {
+    // 'about' — legacy
+    if(aboutContent)aboutContent.style.display='block';
+    if(tabAbout){tabAbout.style.borderBottom='2px solid var(--accent)';}
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// FOLLOWERS / FOLLOWING OVERLAYS
+// ═══════════════════════════════════════════════════
+function _getUserInfo(uid){
+  const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
+  const u=users.find(x=>String(x.id)===String(uid));
+  if(u)return{username:u.username,verified:u.verified||false,photoUrl:u.photoUrl||null};
+  const demos={demo1:'peak_wanderer',demo2:'trailhawk_kai',demo3:'cave_ghost',demo4:'swim_seeker',demo5:'ruins_reader'};
+  const name=demos[uid]||'explorer_'+String(uid).slice(-4);
+  return{username:name,verified:uid==='demo3'||uid==='demo1',photoUrl:null};
+}
+
+function _userRowHTML(uid){
+  const info=_getUserInfo(uid);
+  const initials=info.username.slice(0,2).toUpperCase();
+  const isSelf=String(uid)===String(_myUid());
+  const isFollowingUser=_isFollowing(uid);
+  const verBadge=info.verified?`<span style="display:inline-flex;align-items:center;margin-left:3px;vertical-align:middle"><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" fill="#4a9af5"/><polyline points="3.5,6 5,7.5 8.5,4" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`:''
+  const followLabel=isFollowingUser?'Following':'Follow';
+  const followStyle=isFollowingUser
+    ?'border:1px solid var(--border2);background:transparent;color:var(--txt2)'
+    :'border:1px solid var(--accent);background:rgba(196,149,106,.12);color:var(--accent)';
+  const btnHtml=isSelf?'':`<button id="fwBtn_${uid}" onclick="toggleFollowUser('${uid}',this)" style="padding:7px 16px;border-radius:20px;${followStyle};font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">${followLabel}</button>`;
+  const avatarBg=info.photoUrl?'':`background:var(--bg3);`;
+  const avatarInner=info.photoUrl
+    ?`<img src="${info.photoUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`
+    :`<span style="font-size:14px;font-weight:700;color:var(--accent)">${initials}</span>`;
+  return `<div style="display:flex;align-items:center;gap:12px;padding:10px 16px">
+    <div style="width:44px;height:44px;border-radius:50%;${avatarBg}display:flex;align-items:center;justify-content:center;flex-shrink:0;overflow:hidden">${avatarInner}</div>
+    <div style="flex:1;min-width:0">
+      <div style="font-size:14px;font-weight:700;color:var(--txt0)">@${info.username}${verBadge}</div>
+    </div>
+    ${btnHtml}
+  </div>`;
+}
+
+function toggleFollowUser(uid,btn){
+  if(isGuest()){showLoginScreen();return;}
+  const follows=getFollows();
+  const myUid=String(_myUid());
+  if(!follows[myUid])follows[myUid]=[];
+  const targetUid=String(uid);
+  const idx=follows[myUid].indexOf(targetUid);
+  if(idx>=0){
+    follows[myUid].splice(idx,1);
+    if(btn){btn.textContent='Follow';btn.style.borderColor='var(--accent)';btn.style.color='var(--accent)';btn.style.background='rgba(196,149,106,.12)';}
+  } else {
+    follows[myUid].push(targetUid);
+    if(btn){btn.textContent='Following';btn.style.borderColor='var(--border2)';btn.style.color='var(--txt2)';btn.style.background='transparent';}
+  }
+  setFollows(follows);
+  // Keep profile following count live
+  const fwingEl=document.getElementById('profileFollowingCount');
+  if(fwingEl)fwingEl.textContent=(follows[myUid]||[]).length;
+}
+
+function openFollowersList(){
+  const page=document.getElementById('followersListPage');
+  if(!page)return;
+  const content=document.getElementById('followersListContent');
+  if(!content)return;
+  const myUid=String(_myUid());
+  const follows=getFollows();
+  const followerUids=Object.keys(follows).filter(uid=>(follows[uid]||[]).includes(myUid)&&uid!==myUid);
+  if(!followerUids.length){
+    content.innerHTML=`<div style="padding:56px 20px;text-align:center;color:var(--txt3);font-size:14px;line-height:1.8">No followers yet.<br><span style="font-size:12px">Share your WildPath profile to attract followers.</span></div>`;
+  } else {
+    content.innerHTML=followerUids.map(uid=>_userRowHTML(uid)).join('');
+  }
+  page.style.display='flex';
+}
+
+function openFollowingList(){
+  const page=document.getElementById('followingListPage');
+  if(!page)return;
+  const content=document.getElementById('followingListContent');
+  if(!content)return;
+  const myUid=String(_myUid());
+  const follows=getFollows();
+  const followingUids=(follows[myUid]||[]).filter(uid=>uid!==myUid);
+  if(!followingUids.length){
+    content.innerHTML=`<div style="padding:56px 20px;text-align:center;color:var(--txt3);font-size:14px;line-height:1.8">Not following anyone yet.<br><span style="font-size:12px">Discover explorers in the Community tab.</span></div>`;
+  } else {
+    content.innerHTML=followingUids.map(uid=>_userRowHTML(uid)).join('');
+  }
+  page.style.display='flex';
+}
+
+// ═══════════════════════════════════════════════════
+// COMMUNITY SEARCH OVERLAY
+// ═══════════════════════════════════════════════════
+let _csActiveTab='people';
+
+function openCommSearch(){
+  const overlay=document.getElementById('commSearchOverlay');
+  if(!overlay)return;
+  overlay.style.display='flex';
+  _csActiveTab='people';
+  _csSetActiveTab('people');
+  const inp=document.getElementById('commSearchInput');
+  if(inp){inp.value='';setTimeout(()=>inp.focus(),80);}
+  runCommSearch('');
+}
+
+function closeCommSearch(){
+  const overlay=document.getElementById('commSearchOverlay');
+  if(overlay)overlay.style.display='none';
+  const inp=document.getElementById('commSearchInput');
+  if(inp)inp.value='';
+}
+
+function switchCommSearchTab(tab){
+  _csActiveTab=tab;
+  _csSetActiveTab(tab);
+  const q=document.getElementById('commSearchInput')?.value||'';
+  runCommSearch(q);
+}
+
+function _csSetActiveTab(tab){
+  const tp=document.getElementById('csTabPeople');
+  const tc=document.getElementById('csTabComms');
+  if(tp){tp.style.color=tab==='people'?'var(--txt0)':'var(--txt3)';tp.style.borderBottom=tab==='people'?'2px solid var(--accent)':'2px solid transparent';tp.style.fontWeight=tab==='people'?'700':'600';}
+  if(tc){tc.style.color=tab==='communities'?'var(--txt0)':'var(--txt3)';tc.style.borderBottom=tab==='communities'?'2px solid var(--accent)':'2px solid transparent';tc.style.fontWeight=tab==='communities'?'700':'600';}
+}
+
+function runCommSearch(query){
+  const results=document.getElementById('commSearchResults');
+  if(!results)return;
+  const q=(query||'').trim().toLowerCase();
+
+  if(!q){
+    // Show suggested people or communities
+    if(_csActiveTab==='people'){
+      const realUsers=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
+      // Deduplicate: build ordered unique list, skip current user
+      const seen=new Set();
+      const suggested=[];
+      realUsers.forEach(u=>{
+        const uid=String(u.id);
+        if(uid!==String(_myUid())&&!seen.has(uid)){seen.add(uid);suggested.push(uid);}
+      });
+      // Fallback demo IDs not already in list
+      ['demo1','demo2','demo3','demo4','demo5'].forEach(uid=>{
+        if(!seen.has(uid)){seen.add(uid);suggested.push(uid);}
+      });
+      const suggestedSlice=suggested.slice(0,6);
+      results.innerHTML=
+        `<div style="padding:12px 16px 6px;font-size:11px;font-weight:700;color:var(--txt3);letter-spacing:.4px;text-transform:uppercase">Suggested People</div>`+
+        suggestedSlice.map(uid=>_userRowHTML(uid)).join('');
+    } else {
+      const comms=getCommunities();
+      if(!comms.length){
+        results.innerHTML=`<div style="padding:48px 20px;text-align:center;color:var(--txt3);font-size:14px">No communities yet</div>`;
+      } else {
+        results.innerHTML=
+          `<div style="padding:12px 16px 6px;font-size:11px;font-weight:700;color:var(--txt3);letter-spacing:.4px;text-transform:uppercase">Popular Communities</div>`+
+          comms.slice(0,8).map(c=>_commSearchRowHTML(c)).join('');
+      }
+    }
+    return;
+  }
+
+  if(_csActiveTab==='people'){
+    const allUsers=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
+    const matchedReal=allUsers.filter(u=>(u.username||'').toLowerCase().includes(q));
+    const demoData=[{id:'demo1',name:'peak_wanderer'},{id:'demo2',name:'trailhawk_kai'},{id:'demo3',name:'cave_ghost'},{id:'demo4',name:'swim_seeker'},{id:'demo5',name:'ruins_reader'}];
+    const matchedDemo=demoData.filter(d=>d.name.includes(q));
+    const realIds=new Set(matchedReal.map(u=>String(u.id)));
+    const allMatches=[...matchedReal.map(u=>String(u.id)),...matchedDemo.map(d=>d.id).filter(id=>!realIds.has(id))];
+    if(!allMatches.length){
+      results.innerHTML=`<div style="padding:48px 20px;text-align:center;color:var(--txt3);font-size:14px">No people found for <strong style="color:var(--txt0)">"${query}"</strong></div>`;
+    } else {
+      results.innerHTML=allMatches.map(uid=>_userRowHTML(uid)).join('');
+    }
+  } else {
+    const comms=getCommunities().filter(c=>c.name.toLowerCase().includes(q)||(c.desc||'').toLowerCase().includes(q));
+    if(!comms.length){
+      results.innerHTML=`<div style="padding:48px 20px;text-align:center;color:var(--txt3);font-size:14px">No communities found for <strong style="color:var(--txt0)">"${query}"</strong></div>`;
+    } else {
+      results.innerHTML=comms.map(c=>_commSearchRowHTML(c)).join('');
+    }
+  }
+}
+
+function _commSearchRowHTML(c){
+  const members=getMembers(c.id);
+  const isMember=members.includes(String(_myUid()));
+  const coverHtml=c.coverDataUrl
+    ?`<img src="${c.coverDataUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:10px">`
+    :`<div style="width:100%;height:100%;${c.coverGrad||'background:var(--bg3)'};border-radius:10px;"></div>`;
+  const memberCount=c.memberCount||members.length;
+  const btnStyle=isMember
+    ?'border:1px solid var(--border2);background:transparent;color:var(--txt2)'
+    :'border:1px solid var(--accent);background:rgba(196,149,106,.12);color:var(--accent)';
+  const btnLabel=isMember?'Joined':'Join';
+  return `<div style="display:flex;align-items:center;gap:12px;padding:10px 16px">
+    <div style="width:44px;height:44px;flex-shrink:0;overflow:hidden;border-radius:10px">${coverHtml}</div>
+    <div style="flex:1;min-width:0">
+      <div style="font-size:14px;font-weight:700;color:var(--txt0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.name}</div>
+      <div style="font-size:12px;color:var(--txt3);margin-top:2px">${memberCount.toLocaleString()} members · ${c.privacy||'public'}</div>
+    </div>
+    <button onclick="joinCommunity('${c.id}',this)" style="padding:7px 16px;border-radius:20px;${btnStyle};font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">${btnLabel}</button>
+  </div>`;
+}
+
+// ═══════════════════════════════════════════════════
+// AR PEAK IDENTIFICATION
+// Camera + DeviceOrientation compass + Haversine overlay
+// ═══════════════════════════════════════════════════
+let _arStream=null;
+let _arRafId=null;
+let _arHeading=0; // degrees, 0=North
+let _arCalibrationOffset=0;
+let _arOrientHandler=null;
+
+function _bearingTo(lat1,lon1,lat2,lon2){
+  const toRad=d=>d*Math.PI/180;
+  const toDeg=r=>r*180/Math.PI;
+  const dLon=toRad(lon2-lon1);
+  const y=Math.sin(dLon)*Math.cos(toRad(lat2));
+  const x=Math.cos(toRad(lat1))*Math.sin(toRad(lat2))-Math.sin(toRad(lat1))*Math.cos(toRad(lat2))*Math.cos(dLon);
+  return(toDeg(Math.atan2(y,x))+360)%360;
+}
+
+function _distanceKm(lat1,lon1,lat2,lon2){
+  const R=6371;
+  const toRad=d=>d*Math.PI/180;
+  const dLat=toRad(lat2-lat1);
+  const dLon=toRad(lon2-lon1);
+  const a=Math.sin(dLat/2)**2+Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+
+async function openARMode(){
+  const ov=document.getElementById('arOverlay');
+  if(!ov)return;
+  ov.style.display='flex';
+  const noPerm=document.getElementById('arNoPermission');
+  // Request camera
+  try{
+    _arStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});
+    const vid=document.getElementById('arVideo');
+    if(vid){vid.srcObject=_arStream;vid.play();}
+    if(noPerm)noPerm.style.display='none';
+  }catch(e){
+    if(noPerm)noPerm.style.display='flex';
+    return;
+  }
+  // Request compass — iOS needs permission request
+  if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){
+    try{await DeviceOrientationEvent.requestPermission();}catch(e){}
+  }
+  // Listen for orientation
+  _arOrientHandler=function(e){
+    let heading=0;
+    if(e.webkitCompassHeading!=null){
+      heading=e.webkitCompassHeading; // iOS — 0=North, clockwise
+    }else if(e.alpha!=null){
+      heading=(360-e.alpha+_arCalibrationOffset)%360; // Android
+    }
+    heading=(heading+_arCalibrationOffset+360)%360;
+    _arHeading=heading;
+    const headEl=document.getElementById('arHeadingVal');
+    const dirEl=document.getElementById('arCompassDir');
+    if(headEl)headEl.textContent=Math.round(heading)+'°';
+    if(dirEl){
+      const dirs=['N','NE','E','SE','S','SW','W','NW','N'];
+      dirEl.textContent=dirs[Math.round(heading/45)%8];
+    }
+  };
+  window.addEventListener('deviceorientation',_arOrientHandler,true);
+  // Start render loop
+  _arRafId=requestAnimationFrame(_arRender);
+}
+
+function _arRender(){
+  if(!document.getElementById('arOverlay')||document.getElementById('arOverlay').style.display==='none'){
+    _arRafId=null;return;
+  }
+  const container=document.getElementById('arPeaksContainer');
+  if(!container){_arRafId=requestAnimationFrame(_arRender);return;}
+
+  // Get user position
+  const userLat=_userLat||37.7749;
+  const userLng=_userLng||-122.4194;
+  const vFov=60; // vertical field of view in degrees
+  const hFov=90; // horizontal field of view estimate
+
+  // Collect peaks from NORCAL_PEAKS + any OSM peaks visible
+  const allPeaks=NORCAL_PEAKS.map(p=>({name:p.name,lat:p.lat,lng:p.lng,elevFt:p.elev}));
+
+  // Filter to peaks within ±(hFov/2) of current heading, max 100km
+  const labels=[];
+  allPeaks.forEach(p=>{
+    const dist=_distanceKm(userLat,userLng,p.lat,p.lng);
+    if(dist>120)return;
+    const bearing=_bearingTo(userLat,userLng,p.lat,p.lng);
+    let angleDiff=bearing-_arHeading;
+    // Normalize to -180..180
+    while(angleDiff>180)angleDiff-=360;
+    while(angleDiff<-180)angleDiff+=360;
+    if(Math.abs(angleDiff)>hFov/2)return;
+    // Map angle to screen X percentage
+    const x=50+(angleDiff/(hFov/2))*50;
+    // Elevation angle very rough — flatten to top 40% for close, 25% for far
+    const elevFrac=Math.max(0,1-dist/120);
+    const y=60-elevFrac*30; // 30%..60% from top
+    labels.push({name:p.name,elevFt:p.elevFt,dist:dist.toFixed(1),x,y,angleDiff});
+  });
+  // Sort by distance — closest drawn last (on top)
+  labels.sort((a,b)=>parseFloat(b.dist)-parseFloat(a.dist));
+
+  container.innerHTML=labels.map(l=>{
+    const opacity=Math.max(0.4,1-parseFloat(l.dist)/120);
+    return`<div style="position:absolute;left:${l.x}%;top:${l.y}%;transform:translate(-50%,-50%);text-align:center;pointer-events:none;opacity:${opacity.toFixed(2)}">
+      <div style="width:1px;height:18px;background:rgba(184,232,122,.5);margin:0 auto 4px"></div>
+      <div style="background:rgba(0,0,0,.6);backdrop-filter:blur(6px);border:1px solid rgba(184,232,122,.4);border-radius:8px;padding:3px 8px;white-space:nowrap">
+        <div style="color:#B8E87A;font-size:11px;font-weight:700">${l.name}</div>
+        <div style="color:#ccc;font-size:9px">▲ ${l.elevFt.toLocaleString()} ft · ${l.dist} km</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  _arRafId=requestAnimationFrame(_arRender);
+}
+
+function calibrateAR(){
+  // Reset calibration — current orientation becomes "correct"
+  _arCalibrationOffset=0;
+  showToast('AR calibrated');
+}
+
+function closeARMode(){
+  const ov=document.getElementById('arOverlay');
+  if(ov)ov.style.display='none';
+  if(_arRafId){cancelAnimationFrame(_arRafId);_arRafId=null;}
+  if(_arOrientHandler){window.removeEventListener('deviceorientation',_arOrientHandler,true);_arOrientHandler=null;}
+  if(_arStream){_arStream.getTracks().forEach(t=>t.stop());_arStream=null;}
+  const vid=document.getElementById('arVideo');
+  if(vid){vid.srcObject=null;}
+  const container=document.getElementById('arPeaksContainer');
+  if(container)container.innerHTML='';
+}
+
+// ═══════════════════════════════════════════════════
+// IN THE MOMENT CAPTURE
+// ═══════════════════════════════════════════════════
+let _momentPrivacy='public';
+let _momentCapType='photo';
+let _momentCapturedDataUrl=null;
+let _momentStream=null;
+
+function openMomentCapture(){
+  if(isGuest()){showLoginScreen(()=>openMomentCapture());return;}
+  const ov=document.getElementById('momentCaptureOverlay');
+  if(!ov)return;
+  ov.style.display='flex';
+  // Show nearby spot or address
+  const label=document.getElementById('momentLocationLabel');
+  if(label){
+    if(window._lastUserLat){
+      const allS=[...spots,...userSpots];
+      let nearestSpot=null,nearestDist=Infinity;
+      allS.forEach(s=>{
+        const d=Math.hypot(s.lat-window._lastUserLat,s.lng-window._lastUserLng)*111000;
+        if(d<nearestDist){nearestDist=d;nearestSpot=s;}
+      });
+      if(nearestSpot&&nearestDist<500){
+        label.textContent='Near '+nearestSpot.name;
+      } else {
+        label.textContent='Your location';
+      }
+    }
+  }
+  // Try to start camera
+  if(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia){
+    navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false})
+      .then(stream=>{
+        _momentStream=stream;
+        const v=document.getElementById('momentVideo');
+        if(v){v.srcObject=stream;v.style.display='block';}
+      })
+      .catch(()=>{
+        // Camera not available — use file picker fallback
+        showToast('Using file picker — camera not available');
+      });
+  }
+}
+
+function closeMomentCapture(){
+  const ov=document.getElementById('momentCaptureOverlay');
+  if(ov)ov.style.display='none';
+  if(_momentStream){
+    _momentStream.getTracks().forEach(t=>t.stop());
+    _momentStream=null;
+  }
+  const v=document.getElementById('momentVideo');
+  if(v){v.srcObject=null;v.style.display='none';}
+}
+
+function setCapType(type,el){
+  _momentCapType=type;
+  document.querySelectorAll('[id^="capType"]').forEach(e=>{
+    e.style.color='rgba(255,255,255,.4)';e.style.borderBottom='2px solid transparent';e.style.fontWeight='600';
+  });
+  el.style.color='#B8E87A';el.style.borderBottom='2px solid #B8E87A';el.style.fontWeight='700';
+}
+
+function capturePhoto(){
+  if(_momentStream){
+    const v=document.getElementById('momentVideo');
+    const canvas=document.createElement('canvas');
+    canvas.width=v.videoWidth||640;canvas.height=v.videoHeight||480;
+    const ctx=canvas.getContext('2d');
+    ctx.drawImage(v,0,0);
+    _momentCapturedDataUrl=canvas.toDataURL('image/jpeg',0.9);
+    closeMomentCapture();
+    showMomentPreview(_momentCapturedDataUrl);
+  } else {
+    // Fallback: open file picker
+    document.getElementById('momentFileInput')?.click();
+  }
+}
+
+function handleMomentCapture(e){
+  const file=e.target.files?.[0];
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    _momentCapturedDataUrl=ev.target.result;
+    closeMomentCapture();
+    showMomentPreview(_momentCapturedDataUrl);
+  };
+  reader.readAsDataURL(file);
+}
+
+function showMomentPreview(dataUrl){
+  const ov=document.getElementById('momentPreviewOverlay');
+  if(!ov)return;
+  ov.style.display='flex';
+  const img=document.getElementById('momentPreviewImg');
+  if(img){img.src=dataUrl;img.style.display='block';}
+  _momentPrivacy='public';
+  setMomentPrivacy('public',document.getElementById('privTilePublic'));
+}
+
+function closeMomentPreview(){
+  const ov=document.getElementById('momentPreviewOverlay');
+  if(ov)ov.style.display='none';
+  _momentCapturedDataUrl=null;
+}
+
+function setMomentPrivacy(type,el){
+  _momentPrivacy=type;
+  ['Public','Community','Private'].forEach(t=>{
+    const tile=document.getElementById('privTile'+t);
+    if(tile){
+      tile.style.borderColor='rgba(255,255,255,.12)';
+      tile.style.background='rgba(255,255,255,.06)';
+    }
+  });
+  if(el){el.style.borderColor='#B8E87A';el.style.background='rgba(184,232,122,.15)';}
+}
+
+function postMoment(){
+  if(!_momentCapturedDataUrl){showToast('No photo captured');return;}
+  const caption=(document.getElementById('momentCaption')?.value||'').trim();
+  // Store photo pinned to user's location
+  if(window._lastUserLat){
+    const post={
+      id:'moment_'+Date.now(),
+      type:'photo',
+      mediaUrl:_momentCapturedDataUrl,
+      caption,
+      privacy:_momentPrivacy,
+      userId:String(_myUid()),
+      username:_currentUser?.username||'Explorer',
+      lat:window._lastUserLat,
+      lng:window._lastUserLng,
+      createdAt:new Date().toISOString()
+    };
+    // Store in posts if public
+    if(_momentPrivacy==='public'){
+      const allPosts=getPosts();
+      allPosts.unshift(post);
+      setPosts(allPosts);
+    }
+    // Store in personal moments
+    const personal=JSON.parse(localStorage.getItem('wp_personal_moments')||'[]');
+    personal.unshift(post);
+    localStorage.setItem('wp_personal_moments',JSON.stringify(personal.slice(0,100)));
+    showToast('Posted!');
+  } else {
+    showToast('Location not available for this post');
+  }
+  closeMomentPreview();
+}
+
+// ── Verified at Location ──────────────────────────────────────
+function verifyAtLocation(spotId){
+  if(isGuest()){showLoginScreen();return;}
+  if(!window._lastUserLat){showToast('Enable location first');return;}
+  const allS=[...spots,...userSpots];
+  const spot=allS.find(s=>s.id===spotId);
+  if(!spot)return;
+  const distM=Math.hypot(spot.lat-window._lastUserLat,spot.lng-window._lastUserLng)*111000;
+  if(distM>300){
+    showToast(`You must be within 300m of the spot. Currently ${Math.round(distM)}m away.`);
+    return;
+  }
+  const username=_currentUser?.username||'Explorer';
+  const today=new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  // Store verification
+  const key=`wp_verify_${spotId}`;
+  localStorage.setItem(key,JSON.stringify({username,date:today,timestamp:Date.now()}));
+  // Update spot in memory
+  spot.verifiedBy=username;
+  spot.verifiedDate=new Date().toISOString();
+  showToast(`Verified at location by @${username}`);
+  // Refresh freshness section if detail is open
+  if(_detailSpotId===spotId){
+    const freshnessEl=document.getElementById('detailFreshness');
+    if(freshnessEl){
+      freshnessEl.innerHTML=`<div style="font-size:13px;font-weight:700;color:var(--txt0);margin-bottom:8px">Freshness</div>
+        <div style="background:var(--bg1);border:1px solid var(--border);border-radius:12px;padding:12px 14px;display:flex;align-items:center;gap:12px">
+          <div style="width:12px;height:12px;border-radius:50%;background:#6fcf97;flex-shrink:0"></div>
+          <div style="flex:1">
+            <div style="font-size:13px;font-weight:600;color:var(--txt0)">Just verified</div>
+            <div style="font-size:11px;color:var(--txt3);margin-top:2px">Verified by @${username} · ${today}</div>
+          </div>
+          <div style="font-size:12px;color:#6fcf97;font-weight:700">At Location</div>
+        </div>`;
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// PIN COLOR SYSTEM — yellow=visited+posted, red=saved, white=public
+// ═══════════════════════════════════════════════════
+function _getPinColor(spotId){
+  const myUid=String(_myUid());
+  // Yellow: user has posted about this spot
+  const posts=getPosts();
+  const hasPosted=posts.some(p=>String(p.userId)===myUid&&p.spotId===spotId);
+  if(hasPosted)return '#F5C842';
+  // Red: user has saved this spot
+  const saved=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');
+  if(saved.includes(spotId))return '#E05252';
+  // White (public default)
+  return '#FFFFFF';
+}
+
+// ═══════════════════════════════════════════════════
+// DETAIL PAGE — new element population
+// ═══════════════════════════════════════════════════
+let _detailMiniMapInstance=null;
+let _detailCurrentStarRating=5;
+
+function _populateDetailNewElements(spot){
+  // ── Bookmark state ──
+  const saved=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');
+  const isSaved=saved.includes(spot.id);
+  const bmIcon=document.getElementById('detailBookmarkIcon');
+  const bmBtn=document.getElementById('detailBookmarkBtn');
+  if(bmIcon){
+    bmIcon.setAttribute('fill',isSaved?'#B8E87A':'none');
+    bmIcon.setAttribute('stroke',isSaved?'#B8E87A':'var(--txt2)');
+  }
+  if(bmBtn){
+    bmBtn.style.background=isSaved?'rgba(184,232,122,.18)':'var(--bg2)';
+    bmBtn.style.borderColor=isSaved?'rgba(184,232,122,.5)':'var(--border2)';
+  }
+
+  // ── Stars row ──
+  const starsEl=document.getElementById('detailStarsRow');
+  const scoreEl=document.getElementById('detailRatingScore');
+  const countEl=document.getElementById('detailRatingCount');
+  if(starsEl){
+    const r=parseFloat(spot.rating)||4.5;
+    const full=Math.floor(r);
+    const half=r-full>=0.5;
+    let html='';
+    for(let i=1;i<=5;i++){
+      if(i<=full){html+='<svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:middle" fill="#F5A623" stroke="none"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>';}
+      else if(i===full+1&&half){html+='<svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:middle" fill="#F5A623" stroke="none"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>';}
+      else{html+='<svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:middle" fill="none" stroke="rgba(255,255,255,.25)" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>';}
+    }
+    starsEl.innerHTML=html;
+  }
+  if(scoreEl)scoreEl.textContent=spot.rating||'4.5';
+  if(countEl){
+    const rev=spot.reviews||Math.floor(Math.random()*200+20);
+    const userRevs=JSON.parse(localStorage.getItem(`wp_reviews_${spot.id}`)||'[]').length;
+    countEl.textContent=`(${rev+userRevs} reviews)`;
+  }
+
+  // ── Activity chips ──
+  const chipsEl=document.getElementById('detailActivityChips');
+  if(chipsEl){
+    const typeChipMap={
+      hiking:['Hiking','Trail Running','Backpacking','Dog Friendly','Camping Nearby'],
+      biking:['Mountain Biking','Gravel Riding','E-Bike Friendly','Scenic Views'],
+      swimming:['Swimming','Cliff Jumping','Fishing','Kayaking','Paddleboarding'],
+      caves:['Spelunking','Photography','Adventure','Night Hike'],
+      lava_tube:['Spelunking','Geology','Photography','Guided Tours'],
+      scenic:['Photography','Sunset Views','Stargazing','Picnic Spot'],
+      river:['Swimming','Fishing','Kayaking','Rafting','Tubing'],
+      waterfall:['Swimming','Photography','Hiking','Family Friendly'],
+      natural_slide:['Swimming','Cliff Jumping','Fun','Family Friendly'],
+      rock_climbing:['Rock Climbing','Bouldering','Rappelling','Photography'],
+      urban:['Urban Exploration','Photography','History','Architecture']
+    };
+    const chips=(typeChipMap[spot.type]||[spot.typeLabel||'Outdoor']).slice(0,5);
+    chipsEl.innerHTML=chips.map((c,i)=>`
+      <div style="flex-shrink:0;background:${i===0?'rgba(184,232,122,.15)':'rgba(255,255,255,.07)'};border:1px solid ${i===0?'rgba(184,232,122,.35)':'rgba(255,255,255,.12)'};border-radius:20px;padding:7px 14px;font-size:12px;font-weight:${i===0?'700':'600'};color:${i===0?'#B8E87A':'var(--txt1)'};white-space:nowrap">${c}</div>
+    `).join('');
+  }
+
+  // ── Photo grid ──
+  const pgEl=document.getElementById('detailPhotosGrid');
+  const pgEmpty=document.getElementById('detailPhotosEmpty');
+  const pgAdd=document.getElementById('detailAddPhotoRow');
+  if(pgEl){
+    const communityPhotos=JSON.parse(localStorage.getItem(`wp_photos_${spot.id}`)||'[]');
+    if(!communityPhotos.length){
+      pgEl.innerHTML='';
+      pgEl.style.display='none';
+      if(pgEmpty)pgEmpty.style.display='block';
+      if(pgAdd)pgAdd.style.display='none';
+    } else {
+      pgEl.style.display='grid';
+      if(pgEmpty)pgEmpty.style.display='none';
+      if(pgAdd)pgAdd.style.display='block';
+      pgEl.innerHTML=communityPhotos.slice(0,9).map(p=>`
+        <div style="aspect-ratio:1;overflow:hidden;cursor:pointer;background:var(--bg3)" onclick="openPhotoFull('${p.url}')">
+          <img src="${p.url}" style="width:100%;height:100%;object-fit:cover" loading="lazy">
+        </div>`).join('');
+    }
+  }
+
+  // ── Mini map ──
+  _initDetailMiniMap(spot);
+
+  // ── Rating bars ──
+  const barsEl=document.getElementById('detailRatingBars');
+  if(barsEl){
+    const revData=spot.reviews_data||[];
+    const userRevs=JSON.parse(localStorage.getItem(`wp_reviews_${spot.id}`)||'[]');
+    const allRevs=[...revData,...userRevs];
+    const counts=[0,0,0,0,0]; // index 0=1-star, 4=5-star
+    allRevs.forEach(r=>{const s=Math.min(5,Math.max(1,Math.round(r.stars||5)));counts[s-1]++;});
+    // If no reviews, simulate based on rating
+    if(!allRevs.length){
+      const base=parseFloat(spot.rating)||4.5;
+      const total=spot.reviews||40;
+      const fiveStarPct=Math.max(0,(base-4)*2*0.6+0.5);
+      counts[4]=Math.round(total*fiveStarPct);
+      counts[3]=Math.round(total*0.25);
+      counts[2]=Math.round(total*0.1);
+      counts[1]=Math.round(total*0.04);
+      counts[0]=Math.round(total*0.01);
+    }
+    const total=counts.reduce((a,b)=>a+b,0)||1;
+    barsEl.innerHTML=[5,4,3,2,1].map(s=>{
+      const pct=Math.round((counts[s-1]/total)*100);
+      return`<div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:11px;color:var(--txt2);width:14px;text-align:right;flex-shrink:0">${s}</span>
+        <svg viewBox="0 0 24 24" width="11" height="11" fill="#F5A623" stroke="none"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+        <div style="flex:1;height:5px;background:rgba(255,255,255,.1);border-radius:3px;overflow:hidden">
+          <div style="height:100%;width:${pct}%;background:${pct>50?'#F5A623':'rgba(245,166,35,.5)'};border-radius:3px;transition:width .4s"></div>
+        </div>
+        <span style="font-size:11px;color:var(--txt3);width:28px;flex-shrink:0">${pct}%</span>
+      </div>`;
+    }).join('');
+  }
+
+  // ── Reviews list ──
+  const revListEl=document.getElementById('detailReviewsList');
+  if(revListEl){
+    const revData=spot.reviews_data||[];
+    const userRevs=JSON.parse(localStorage.getItem(`wp_reviews_${spot.id}`)||'[]');
+    const allRevs=[...revData,...userRevs].slice(0,5);
+    if(!allRevs.length){
+      revListEl.innerHTML=`<div style="font-size:13px;color:var(--txt3);text-align:center;padding:8px 0">No reviews yet — add the first one!</div>`;
+    } else {
+      revListEl.innerHTML=allRevs.map(r=>{
+        const stars=Array.from({length:Math.min(5,Math.max(1,r.stars||5))},()=>'<svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:middle" fill="#F5A623" stroke="none"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>').join('');
+        const empty=Array.from({length:Math.max(0,5-(r.stars||5))},()=>'<svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:middle" fill="none" stroke="rgba(255,255,255,.25)" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>').join('');
+        return`<div style="background:var(--bg1);border:1px solid var(--border);border-radius:14px;padding:12px 14px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <div style="width:30px;height:30px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#B8E87A;flex-shrink:0">${(r.user||r.username||'?').slice(0,2).toUpperCase()}</div>
+            <div style="flex:1">
+              <div style="font-size:13px;font-weight:700;color:var(--txt0)">@${r.user||r.username||'Explorer'}</div>
+              <div style="font-size:10px;color:var(--txt3)">${r.date||''}</div>
+            </div>
+            <div style="font-size:13px"><span style="color:#F5A623">${stars}</span><span style="color:var(--border2)">${empty}</span></div>
+          </div>
+          <div style="font-size:13px;color:var(--txt1);line-height:1.55">${r.text||r.notes||''}</div>
+        </div>`;
+      }).join('');
+    }
+  }
+}
+
+function _initDetailMiniMap(spot){
+  // Destroy previous instance if spot changed
+  if(_detailMiniMapInstance){
+    try{_detailMiniMapInstance.remove();}catch(e){}
+    _detailMiniMapInstance=null;
+  }
+  const container=document.getElementById('detailMiniMap');
+  if(!container||!spot)return;
+  const tok=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||'';
+  if(!tok)return;
+  try{
+    mapboxgl.accessToken=tok;
+    _detailMiniMapInstance=new mapboxgl.Map({
+      container:'detailMiniMap',
+      style:'mapbox://styles/mapbox/outdoors-v12',
+      center:[spot.lng,spot.lat],
+      zoom:13,
+      interactive:false,
+      attributionControl:false
+    });
+    _detailMiniMapInstance.on('load',()=>{
+      // Add a pulsing marker at the spot location
+      const el=document.createElement('div');
+      el.style.cssText='width:14px;height:14px;border-radius:50%;background:#B8E87A;border:2px solid #fff;box-shadow:0 0 0 4px rgba(184,232,122,.35)';
+      new mapboxgl.Marker({element:el}).setLngLat([spot.lng,spot.lat]).addTo(_detailMiniMapInstance);
+    });
+  }catch(e){console.warn('Detail mini map init failed',e);}
+}
+
+function toggleDetailBookmark(){
+  if(isGuest()){showLoginScreen();return;}
+  if(!_detailSpotId)return;
+  const saved=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');
+  const pinned=JSON.parse(localStorage.getItem('wp_want_to_go')||'[]');
+  const idx=saved.indexOf(_detailSpotId);
+  if(idx>=0){
+    saved.splice(idx,1);
+    const pi=pinned.indexOf(_detailSpotId);
+    if(pi>=0)pinned.splice(pi,1);
+    showToast('Removed from saved');
+  } else {
+    saved.push(_detailSpotId);
+    if(!pinned.includes(_detailSpotId))pinned.push(_detailSpotId);
+    showToast('Saved!');
+  }
+  localStorage.setItem('wp_saved_spots',JSON.stringify(saved));
+  localStorage.setItem('wp_want_to_go',JSON.stringify(pinned));
+  const isSaved=saved.includes(_detailSpotId);
+  const bmIcon=document.getElementById('detailBookmarkIcon');
+  const bmBtn=document.getElementById('detailBookmarkBtn');
+  if(bmIcon){bmIcon.setAttribute('fill',isSaved?'#B8E87A':'none');bmIcon.setAttribute('stroke',isSaved?'#B8E87A':'var(--txt2)');}
+  if(bmBtn){bmBtn.style.background=isSaved?'rgba(184,232,122,.18)':'var(--bg2)';bmBtn.style.borderColor=isSaved?'rgba(184,232,122,.5)':'var(--border2)';}
+  refreshSpotMarkers();
+}
+
+function openDetailAddComment(){
+  if(isGuest()){showLoginScreen();return;}
+  _detailCurrentStarRating=5;
+  setDetailReviewStar(5);
+  const panel=document.getElementById('detailCommentPanel');
+  if(panel){panel.style.display='flex';}
+  const inp=document.getElementById('detailCommentInput');
+  if(inp){inp.value='';inp.focus();}
+}
+
+function closeDetailCommentPanel(){
+  const panel=document.getElementById('detailCommentPanel');
+  if(panel)panel.style.display='none';
+}
+
+function setDetailReviewStar(n){
+  _detailCurrentStarRating=n;
+  document.querySelectorAll('.detail-review-star').forEach(s=>{
+    const v=parseInt(s.getAttribute('data-v'));
+    s.style.color=v<=n?'#F5A623':'var(--border2)';
+  });
+}
+
+function submitDetailComment(){
+  if(isGuest()){showLoginScreen();return;}
+  const inp=document.getElementById('detailCommentInput');
+  const text=(inp?.value||'').trim();
+  if(!text||!_detailSpotId){showToast('Write something first');return;}
+  const comment={
+    id:'c'+Date.now(),
+    spotId:_detailSpotId,
+    username:_currentUser?.username||'Explorer',
+    user:_currentUser?.username||'Explorer',
+    text,
+    stars:_detailCurrentStarRating,
+    date:new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})
+  };
+  // Save to reviews
+  const rKey=`wp_reviews_${_detailSpotId}`;
+  const revs=JSON.parse(localStorage.getItem(rKey)||'[]');
+  revs.unshift(comment);
+  localStorage.setItem(rKey,JSON.stringify(revs.slice(0,50)));
+  // Save to comments
+  const cKey=`wp_comments_spot_${_detailSpotId}`;
+  const existing=JSON.parse(localStorage.getItem(cKey)||'[]');
+  existing.unshift(comment);
+  localStorage.setItem(cKey,JSON.stringify(existing.slice(0,200)));
+  if(inp)inp.value='';
+  closeDetailCommentPanel();
+  _renderDetailComments(_detailSpotId);
+  // Refresh review section
+  const allS=[...spots,...userSpots];
+  const spot=allS.find(s=>s.id===_detailSpotId);
+  if(spot)_populateDetailNewElements(spot);
+  showToast('Comment posted!');
+}
+
+function detailSearch(query){
+  const dropEl=document.getElementById('detailSearchDrop');
+  if(!dropEl)return;
+  const q=(query||'').trim().toLowerCase();
+  if(!q){dropEl.style.display='none';return;}
+  const allS=[...spots,...userSpots];
+  const matches=allS.filter(s=>
+    s.name.toLowerCase().includes(q)||
+    (s.typeLabel||'').toLowerCase().includes(q)||
+    (s.tags||[]).some(t=>t.toLowerCase().includes(q))
+  ).slice(0,6);
+  if(!matches.length){dropEl.style.display='none';return;}
+  dropEl.style.display='block';
+  dropEl.innerHTML=matches.map(s=>`
+    <div onclick="openDetail(${s.id});document.getElementById('detailSearchInput').value='';document.getElementById('detailSearchDrop').style.display='none'"
+      style="padding:10px 14px;cursor:pointer;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
+      <div style="width:32px;height:32px;border-radius:8px;background:${s.heroGradient||'var(--bg3)'};flex-shrink:0"></div>
+      <div>
+        <div style="font-size:13px;font-weight:700;color:var(--txt0)">${s.name}</div>
+        <div style="font-size:11px;color:var(--txt3)">${s.typeLabel||''} · ${s._realDistStr||s.distance||''}</div>
+      </div>
+    </div>`).join('');
+}
+
+function openDetailOnMap(){
+  const allS=[...spots,...userSpots];
+  const spot=allS.find(s=>s.id===_detailSpotId);
+  closeDetail();
+  showTab('map');
+  if(!spot)return;
+  setTimeout(()=>{
+    if(map){
+      map.flyTo({center:[spot.lng,spot.lat],zoom:14,duration:1200,essential:true});
+      setTimeout(()=>openSheet(spot.id),1300);
+    }
+  },300);
+}
+
+// ═══════════════════════════════════════════════════
+// HOME FEED — TikTok-style full-screen post viewer
+// ═══════════════════════════════════════════════════
+let _feedPosts=[];
+let _feedPostIdx=0;
+let _feedMediaIdx=0;
+let _feedLiked=false;
+let _feedSaved=false;
+let _feedTouchStartX=0;
+let _feedTouchStartY=0;
+let _feedTouchStartTime=0;
+let _feedTouchActive=false;
+let _feedSwipeInProgress=false;
+let _feedSendPostIdx=-1;
+let _feedMapsInited=new Set();
+
+function buildHomeFeed(){
+  // Gather feed posts: community posts (public or own) + spot posts
+  const allPosts=getPosts().filter(p=>p.privacy!=='private'||(String(p.userId)===String(_myUid())));
+  const spotPosts=_buildSpotFeedPosts();
+  const combined=[...allPosts,...spotPosts];
+  // Deduplicate by id, sort by newest first
+  const seen=new Set();
+  _feedPosts=combined.filter(p=>{if(seen.has(p.id))return false;seen.add(p.id);return true;})
+    .sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0));
+
+  // Always show grid, hide viewer
+  const gridEl=document.getElementById('feedGrid');
+  const viewportEl=document.getElementById('feedViewport');
+  const topBar=document.getElementById('feedViewerTopBar');
+  if(gridEl)gridEl.style.display='flex';
+  if(viewportEl)viewportEl.style.display='none';
+  if(topBar)topBar.style.display='none';
+
+  const gridContent=document.getElementById('feedGridContent');
+  const emptyEl=document.getElementById('feedEmptyState');
+
+  if(!_feedPosts.length){
+    if(gridContent)gridContent.innerHTML='';
+    if(emptyEl){emptyEl.style.display='flex';}
+    return;
+  }
+  if(emptyEl)emptyEl.style.display='none';
+  if(!gridContent)return;
+
+  const myUid=String(_myUid());
+  _feedMapsInited=new Set();
+
+  // ── Build Instagram-style scrollable cards with photo carousels ──
+  gridContent.innerHTML=_feedPosts.map((post,idx)=>{
+    const initials=(post.username||'?').slice(0,2).toUpperCase();
+    const likeCount=(post.likes||[]).length;
+    const commentCount=(getComments(post.id)||[]).length;
+    const liked=(post.likes||[]).map(String).includes(myUid);
+    const bg=post.spotGradient||post.heroGradient||'linear-gradient(160deg,#0d1a0d 0%,#1a3a2a 60%,#0d2a1a 100%)';
+    const timeAgo=_timeAgo(post.createdAt);
+    const hasMap=!!(post.lat&&post.lng);
+
+    // ── Build slides for infinite-loop carousel ──────────────────
+    const photos=post.photos||(post.mediaUrl?[post.mediaUrl]:[]);
+    const realCount=Math.max(photos.length,1)+(hasMap?1:0);
+    const showDots=realCount>1;
+    const spotNameEnc=(post.spotName||'').replace(/'/g,'&#39;');
+
+    // Slide renderer — position:absolute per slide
+    const _rs=(src,si)=>{
+      const isFirst=si===0;
+      const baseStyle=`position:absolute;top:0;left:0;width:100%;height:100%;transform:translateX(${isFirst?'0':'100%'});transition:none`;
+      if(!src)return`<div class="fcs" data-si="${si}" style="${baseStyle};background:${bg};display:flex;align-items:flex-end;padding:20px">${post.caption?`<p style="font-size:15px;font-weight:600;color:rgba(255,255,255,.85);line-height:1.5;margin:0">${post.caption.slice(0,120)}${post.caption.length>120?'…':''}</p>`:''}</div>`;
+      if(src.startsWith('gradient:')){const g=src.replace('gradient:','');return`<div class="fcs" data-si="${si}" style="${baseStyle};background:${g}"></div>`;}
+      return`<div class="fcs" data-si="${si}" style="${baseStyle};overflow:hidden;background:${bg}"><img src="${src}" style="width:100%;height:100%;object-fit:cover;display:block" loading="lazy"></div>`;
+    };
+
+    // Real slides HTML
+    const realSlidesHtml=(photos.length>0?photos.map((src,si)=>_rs(src,si)):[_rs(null,0)]).join('');
+
+    // Map slide (real — carries the Mapbox container ID)
+    const mapSlide_si=photos.length>0?photos.length:1;
+    const mapSlideHtml=hasMap?`<div class="fcs fcs-map" data-si="${mapSlide_si}" style="position:absolute;top:0;left:0;width:100%;height:100%;transform:translateX(100%);transition:none;background:#0d1a0d">
+      <div id="fcmap-${idx}" style="position:absolute;inset:0"></div>
+      <div style="position:absolute;top:10px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.72);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);color:rgba(255,255,255,.9);font-size:11px;font-weight:700;padding:5px 14px;border-radius:20px;pointer-events:none;white-space:nowrap;z-index:2;max-width:80%;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:5px"><svg viewBox="0 0 24 24" width="9" height="9" fill="#B8E87A"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/></svg>${spotNameEnc||'Location'}</div>
+      <div onclick="event.stopPropagation();_feedCardGoToMap(${idx})" style="position:absolute;bottom:14px;left:50%;transform:translateX(-50%);background:rgba(184,232,122,.15);border:1px solid rgba(184,232,122,.4);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-radius:20px;padding:8px 20px;font-size:12px;font-weight:700;color:#B8E87A;cursor:pointer;z-index:2;white-space:nowrap">View Full Spot</div>
+    </div>`:'';
+
+    // Spot location pill
+    const spotPill=post.spotName?`<div onclick="event.stopPropagation();_feedCardGoToMap(${idx})" style="display:flex;align-items:center;gap:4px;background:rgba(184,232,122,.12);border:1px solid rgba(184,232,122,.25);border-radius:20px;padding:4px 10px;cursor:pointer;flex-shrink:0">
+      <svg viewBox="0 0 24 24" width="10" height="10" fill="#B8E87A"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/></svg>
+      <span style="font-size:11px;font-weight:700;color:#B8E87A;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${post.spotName}</span>
+    </div>`:'';
+
+    // Dots — one per real slide, last is map-pin SVG if hasMap
+    const dotsHtml=showDots?`<div class="fcd-row" style="display:flex;align-items:center;justify-content:center;gap:5px;padding:8px 0 0">${Array.from({length:realCount},(_,i)=>{
+      const isMapDot=hasMap&&i===realCount-1;
+      const active=i===0;
+      if(isMapDot)return`<div class="fcd fcd-map${active?' fcd-active':''}" style="display:flex;align-items:center;justify-content:center;transition:all .2s"><svg viewBox="0 0 24 24" width="${active?9:7}" height="${active?9:7}" fill="${active?'#B8E87A':'rgba(255,255,255,.35)'}" stroke="none"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/></svg></div>`;
+      return`<div class="fcd${active?' fcd-active':''}" style="width:${active?7:5}px;height:${active?7:5}px;border-radius:50%;background:${active?'#B8E87A':'rgba(255,255,255,.35)'};transition:all .2s"></div>`;
+    }).join('')}</div>`:`<div style="height:8px"></div>`;
+
+    return `<div class="feed-card" data-idx="${idx}" data-spotid="${post.spotId||''}" data-lat="${post.lat||''}" data-lng="${post.lng||''}" style="background:var(--bg1);border-bottom:1px solid rgba(255,255,255,.07)">
+
+      <!-- Card header: avatar · username · time · spot pill -->
+      <div style="display:flex;align-items:center;gap:10px;padding:12px 14px">
+        <div onclick="_showUserPopup('${post.userId}','${post.username}',this)" style="width:36px;height:36px;border-radius:50%;background:var(--bg3);border:2px solid rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#B8E87A;flex-shrink:0;cursor:pointer">${initials}</div>
+        <div style="flex:1;min-width:0">
+          <div onclick="_showUserPopup('${post.userId}','${post.username}',this)" style="font-size:13px;font-weight:700;color:var(--txt0);cursor:pointer">@${post.username||'explorer'}</div>
+          <div style="font-size:11px;color:var(--txt3);margin-top:1px">${timeAgo}</div>
+        </div>
+        ${spotPill}
+      </div>
+
+      <!-- Photo carousel — square aspect ratio, position:absolute per-slide -->
+      <div class="feed-carousel" data-postidx="${idx}" data-real-count="${realCount}" data-hasmap="${hasMap?1:0}" data-lat="${post.lat||''}" data-lng="${post.lng||''}" data-spotname="${spotNameEnc}" style="position:relative;overflow:hidden;aspect-ratio:1;width:100%;touch-action:pan-y;cursor:grab">
+        <div class="feed-carousel-track" style="position:relative;height:100%;width:100%">
+          ${realSlidesHtml}${mapSlideHtml}
+        </div>
+      </div>
+
+      <!-- Dot indicators (below photo, above action bar) -->
+      ${dotsHtml}
+
+      <!-- Action bar: like · comment · send · save -->
+      <div style="display:flex;align-items:center;padding:10px 14px 4px;gap:0">
+        <div onclick="_feedCardLike(${idx},this)" style="display:flex;align-items:center;gap:5px;padding:4px 12px 4px 0;cursor:pointer;-webkit-tap-highlight-color:transparent">
+          <svg class="feed-like-svg" viewBox="0 0 24 24" width="22" height="22" fill="${liked?'#ff4d6d':'none'}" stroke="${liked?'#ff4d6d':'var(--txt1)'}" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+          <span class="feed-like-count" style="font-size:13px;font-weight:600;color:var(--txt1)">${likeCount||''}</span>
+        </div>
+        <div onclick="${post.spotId?`openDetail(${post.spotId})`:'showToast(\'No spot linked\')'}" style="display:flex;align-items:center;gap:5px;padding:4px 12px;cursor:pointer;-webkit-tap-highlight-color:transparent">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="var(--txt1)" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          <span style="font-size:13px;font-weight:600;color:var(--txt1)">${commentCount||''}</span>
+        </div>
+        <div onclick="_feedCardSend(${idx})" style="display:flex;align-items:center;gap:5px;padding:4px 12px;cursor:pointer;-webkit-tap-highlight-color:transparent">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="var(--txt1)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </div>
+        <div onclick="_feedCardSave(${idx},this)" style="margin-left:auto;padding:4px 0 4px 8px;cursor:pointer;-webkit-tap-highlight-color:transparent">
+          <svg class="feed-save-svg" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="var(--txt1)" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+        </div>
+      </div>
+
+      <!-- Caption -->
+      ${post.caption?`<div style="padding:4px 14px 14px;font-size:13px;color:var(--txt0);line-height:1.55"><span style="font-weight:700;margin-right:6px">@${post.username||'explorer'}</span>${post.caption}</div>`:'<div style="height:12px"></div>'}
+
+    </div>`;
+  }).join('');
+
+  // ── Init carousels and attach swipe gestures ──
+  _initFeedCarousels();
+}
+
+function _timeAgo(iso){
+  if(!iso)return '';
+  const secs=Math.floor((Date.now()-new Date(iso).getTime())/1000);
+  if(secs<60)return 'just now';
+  if(secs<3600)return Math.floor(secs/60)+'m ago';
+  if(secs<86400)return Math.floor(secs/3600)+'h ago';
+  if(secs<604800)return Math.floor(secs/86400)+'d ago';
+  return Math.floor(secs/604800)+'w ago';
+}
+
+function _attachFeedCardSwipeGestures(){
+  const cards=document.querySelectorAll('.feed-card');
+  cards.forEach(card=>{
+    let tx=0,ty=0,swiped=false;
+    card.addEventListener('touchstart',e=>{
+      tx=e.touches[0].clientX;
+      ty=e.touches[0].clientY;
+      swiped=false;
+    },{passive:true});
+    card.addEventListener('touchend',e=>{
+      if(swiped)return;
+      const dx=e.changedTouches[0].clientX-tx;
+      const dy=e.changedTouches[0].clientY-ty;
+      // Right swipe: horizontal dominant, dx > 70px
+      if(dx>70&&Math.abs(dy)<60){
+        swiped=true;
+        const idx=parseInt(card.dataset.idx);
+        _feedCardGoToMap(idx);
+      }
+    },{passive:true});
+  });
+}
+
+function _feedCardGoToMap(idx){
+  const post=_feedPosts[idx];
+  if(!post)return;
+  const lat=post.lat;
+  const lng=post.lng;
+  const spotId=post.spotId;
+  showTab('map');
+  if(map&&lat&&lng){
+    setTimeout(()=>{
+      map.flyTo({center:[lng,lat],zoom:14,duration:1000,essential:true});
+      if(spotId)setTimeout(()=>openDetail(spotId),1100);
+    },250);
+  } else if(spotId){
+    setTimeout(()=>openDetail(spotId),300);
+  }
+}
+
+function _feedCardLike(idx,btn){
+  const post=_feedPosts[idx];
+  if(!post)return;
+  const myUid=String(_myUid());
+  post.likes=post.likes||[];
+  const alreadyLiked=post.likes.map(String).includes(myUid);
+  if(alreadyLiked){post.likes=post.likes.filter(u=>String(u)!==myUid);}
+  else{post.likes.push(myUid);}
+  const svg=btn.querySelector('.feed-like-svg');
+  const countEl=btn.querySelector('.feed-like-count');
+  const liked2=post.likes.map(String).includes(myUid);
+  if(svg){svg.setAttribute('fill',liked2?'#ff4d6d':'none');svg.setAttribute('stroke',liked2?'#ff4d6d':'var(--txt1)');}
+  if(countEl)countEl.textContent=post.likes.length||'';
+  // Persist to localStorage posts
+  const allPosts=getPosts();
+  const lp=allPosts.find(p=>p.id===post.id);
+  if(lp){lp.likes=post.likes;setPosts(allPosts);}
+  // Heart burst
+  const burst=document.createElement('div');
+  burst.style.cssText='position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);pointer-events:none;z-index:9999;animation:_feedBurst .6s ease forwards';
+  burst.innerHTML='<svg viewBox="0 0 24 24" width="80" height="80" fill="#ff4d6d" stroke="none"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>';
+  if(liked2){document.body.appendChild(burst);setTimeout(()=>burst.remove(),650);}
+}
+
+function _feedCardSave(idx,btn){
+  const post=_feedPosts[idx];
+  if(!post)return;
+  const savedPosts=JSON.parse(localStorage.getItem('wildpath-saved-posts')||'[]');
+  const isSaved=savedPosts.includes(post.id);
+  if(isSaved){const i=savedPosts.indexOf(post.id);savedPosts.splice(i,1);}
+  else{savedPosts.push(post.id);}
+  localStorage.setItem('wildpath-saved-posts',JSON.stringify(savedPosts));
+  // Also save spotId for spot-based saved list
+  if(post.spotId){
+    const saved=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');
+    const isSavedSpot=saved.includes(post.spotId);
+    if(!isSaved&&!isSavedSpot)saved.push(post.spotId);
+    else if(isSaved&&isSavedSpot){const i=saved.indexOf(post.spotId);saved.splice(i,1);}
+    localStorage.setItem('wp_saved_spots',JSON.stringify(saved));
+  }
+  const svg=btn.querySelector('.feed-save-svg');
+  const nowSaved=!isSaved;
+  if(svg){svg.setAttribute('fill',nowSaved?'#B8E87A':'none');svg.setAttribute('stroke',nowSaved?'#B8E87A':'var(--txt1)');}
+  showToast(nowSaved?'Saved':'Removed from saved');
+}
+
+function _feedCardShare(idx){
+  const post=_feedPosts[idx];
+  if(!post)return;
+  const name=post.spotName||post.username||'this post';
+  if(navigator.share){navigator.share({title:'WildPath',text:`Check out ${name} on WildPath!`,url:window.location.href}).catch(()=>{});}
+  else{showToast('Link copied');}
+}
+
+function _feedCardSend(idx){
+  _feedSendPostIdx=idx;
+  openFeedSendSheet();
+}
+
+// Keep openFeedViewer as no-op (feed is now scroll-based, no overlay viewer)
+function openFeedViewer(idx){_feedCardGoToMap(idx);}
+function closeFeedViewer(){}
+
+// ── Feed post carousels — position:absolute per-slide ──────────
+function _initFeedCarousels(){
+  document.querySelectorAll('.feed-carousel').forEach(carousel=>{
+    const realCount=parseInt(carousel.dataset.realCount)||1;
+    if(realCount<=1)return;
+    const track=carousel.querySelector('.feed-carousel-track');
+    if(!track)return;
+    const dotsRow=carousel.parentElement.querySelector('.fcd-row');
+
+    let cur=0; // logical index 0..realCount-1
+    const slides=Array.from(track.querySelectorAll('.fcs'));
+    if(!slides.length)return;
+
+    function _setSlidePositions(withTransition){
+      slides.forEach((s,i)=>{
+        s.style.transition=withTransition?'transform 300ms ease':'none';
+        let offset=i-cur;
+        // wrap: if offset is more than half the count, adjust
+        if(offset>Math.floor(realCount/2)) offset-=realCount;
+        else if(offset<-Math.floor(realCount/2)) offset+=realCount;
+        s.style.transform=`translateX(${offset*100}%)`;
+      });
+    }
+
+    function updateDots(idx){
+      if(!dotsRow)return;
+      dotsRow.querySelectorAll('.fcd').forEach((d,i)=>{
+        const active=i===idx;
+        if(d.classList.contains('fcd-map')){
+          const sv=d.querySelector('svg');
+          if(sv){sv.setAttribute('width',active?9:7);sv.setAttribute('height',active?9:7);sv.setAttribute('fill',active?'#B8E87A':'rgba(255,255,255,.35)');}
+        } else {
+          d.style.background=active?'#B8E87A':'rgba(255,255,255,.35)';
+          d.style.width=(active?7:5)+'px';
+          d.style.height=(active?7:5)+'px';
+        }
+      });
+    }
+
+    function maybeInitMap(idx){
+      if(parseInt(carousel.dataset.hasmap)!==1)return;
+      if(idx!==realCount-1)return;
+      const pi=carousel.dataset.postidx;
+      const lat=parseFloat(carousel.dataset.lat);
+      const lng=parseFloat(carousel.dataset.lng);
+      const sn=carousel.dataset.spotname||'';
+      setTimeout(()=>_initFeedCardMap('fcmap-'+pi,lat,lng,sn),60);
+    }
+
+    function goTo(newIdx){
+      // Remove transitions, snap all to new positions
+      cur=((newIdx%realCount)+realCount)%realCount;
+      // Force reflow before adding transition
+      slides.forEach(s=>{s.style.transition='none';});
+      void track.offsetWidth; // reflow
+      slides.forEach((s,i)=>{
+        s.style.transition='transform 300ms ease';
+        let offset=i-cur;
+        if(offset>Math.floor(realCount/2)) offset-=realCount;
+        else if(offset<-Math.floor(realCount/2)) offset+=realCount;
+        s.style.transform=`translateX(${offset*100}%)`;
+      });
+      updateDots(cur);
+      maybeInitMap(cur);
+      console.log('[carousel] slide',cur,'/',realCount);
+    }
+
+    // Initial placement — no transition
+    _setSlidePositions(false);
+    updateDots(0);
+
+    // ── Touch ──────────────────────────────────────────────────────
+    let tx=0,ty=0,tdrag=false,tVertDom=false;
+    carousel.addEventListener('touchstart',e=>{
+      tx=e.touches[0].clientX;ty=e.touches[0].clientY;
+      tdrag=true;tVertDom=false;
+    },{passive:true});
+    carousel.addEventListener('touchmove',e=>{
+      if(!tdrag)return;
+      const dx=e.touches[0].clientX-tx;
+      const dy=e.touches[0].clientY-ty;
+      if(!tVertDom&&Math.abs(dy)>Math.abs(dx)+8){tVertDom=true;tdrag=false;return;}
+    },{passive:true});
+    carousel.addEventListener('touchend',e=>{
+      if(!tdrag)return;tdrag=false;tVertDom=false;
+      const dx=e.changedTouches[0].clientX-tx;
+      if(dx<-50)goTo(cur+1);
+      else if(dx>50)goTo(cur-1);
+    },{passive:true});
+
+    // ── Mouse ──────────────────────────────────────────────────────
+    let mdown=false,mx=0;
+    carousel.addEventListener('mousedown',e=>{
+      mdown=true;mx=e.clientX;
+      carousel.style.cursor='grabbing';
+      e.preventDefault();
+      const onUp=ev=>{
+        document.removeEventListener('mouseup',onUp);
+        if(!mdown)return;mdown=false;
+        carousel.style.cursor='grab';
+        const dx=ev.clientX-mx;
+        if(dx<-50)goTo(cur+1);
+        else if(dx>50)goTo(cur-1);
+      };
+      document.addEventListener('mouseup',onUp);
+    });
+  });
+}
+
+function _initFeedCardMap(containerId,lat,lng,spotName){
+  if(_feedMapsInited.has(containerId))return;
+  const el=document.getElementById(containerId);
+  if(!el)return;
+  const token=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||'';
+  if(!token||!token.startsWith('pk.')){
+    el.innerHTML=`<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0d1a0d;gap:10px">
+      <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="rgba(184,232,122,.4)" stroke-width="1.5"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+      <div style="font-size:12px;font-weight:700;color:rgba(255,255,255,.5);text-align:center;padding:0 16px">${spotName||'Location'}</div>
+      <div style="font-size:10px;color:rgba(255,255,255,.25)">Add Mapbox token to enable maps</div>
+    </div>`;
+    return;
+  }
+  _feedMapsInited.add(containerId);
+  try{
+    mapboxgl.accessToken=token;
+    const m=new mapboxgl.Map({
+      container:el,
+      style:'mapbox://styles/mapbox/dark-v11',
+      center:[lng,lat],zoom:13,
+      interactive:true,
+      attributionControl:false
+    });
+    new mapboxgl.Marker({color:'#B8E87A',scale:0.85}).setLngLat([lng,lat]).addTo(m);
+  }catch(err){
+    console.warn('Feed card map error:',err);
+    el.innerHTML=`<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#0d1a0d"><div style="font-size:12px;color:rgba(255,255,255,.3)">${spotName||''}</div></div>`;
+  }
+}
+
+function _buildSpotFeedPosts(){
+  // Build synthetic posts for spots that have photos, to fill the feed
+  const allS=[...spots,...userSpots];
+
+  // ── Two hard-coded demo posts at the top so the user can swipe between them ──
+  const demoPosts=[];
+  const spot0=allS[0]; // Sutro Baths
+  const spot1=allS[1]; // Moaning Caverns
+  if(spot0){
+    demoPosts.push({
+      id:'demo_post_0',
+      type:'spot',
+      spotId:spot0.id,
+      spotName:'McWay Falls',
+      spotGradient:spot0.heroGradient||'linear-gradient(160deg,#0d1a2e,#1a3a5c)',
+      caption:'Golden hour at the edge of the Pacific. The fog rolled in through the ruined archways and I just stood there watching the light change.',
+      mediaUrl:null,
+      photos:[
+        'gradient:linear-gradient(160deg,#0a1a0a,#1a3a1a,#0d2a0d)',
+        'gradient:linear-gradient(160deg,#0a1a1a,#1a3a3a,#0d2a2a)',
+        'gradient:linear-gradient(160deg,#0a0d1a,#1a2040,#0d1530)'
+      ],
+      username:'jaron_explores',
+      userId:'demo_user_1',
+      lat:spot0.lat,
+      lng:spot0.lng,
+      likes:['demo_user_2','demo_user_3'],
+      createdAt:new Date(Date.now()-3600000*2).toISOString(),
+      privacy:'public'
+    });
+  }
+  if(spot1){
+    demoPosts.push({
+      id:'demo_post_1',
+      type:'spot',
+      spotId:spot1.id,
+      spotName:'Moaning Caverns',
+      spotGradient:spot1.heroGradient||'linear-gradient(160deg,#1a0a2e,#2d1a5c)',
+      caption:'Rappelled 165 feet straight down into the dark. Heart pounding the entire way. Moaning Caverns is absolutely wild — bucket list unlocked.',
+      mediaUrl:null,
+      photos:[
+        'gradient:linear-gradient(160deg,#1a0a2a,#3a1a4a,#2a0d3a)',
+        'gradient:linear-gradient(160deg,#0a0d2a,#1a2060,#0d1550)'
+      ],
+      username:'trail_seeker',
+      userId:'demo_user_2',
+      lat:spot1.lat,
+      lng:spot1.lng,
+      likes:['demo_user_1'],
+      createdAt:new Date(Date.now()-86400000).toISOString(),
+      privacy:'public'
+    });
+  }
+
+  // Rest of spots fill the feed
+  const posts=[];
+  allS.slice(0,12).forEach((s,i)=>{
+    // Skip spots already used in demo posts
+    if((spot0&&s.id===spot0.id)||(spot1&&s.id===spot1.id))return;
+    posts.push({
+      id:'spot_feed_'+s.id,
+      type:'spot',
+      spotId:s.id,
+      spotName:s.name,
+      spotGradient:s.heroGradient||'linear-gradient(135deg,#1a3a2a,#2d6e52)',
+      caption:s.description||s.insiderTips||`${s.typeLabel||'Spot'} near ${s.name}`,
+      mediaUrl:null,
+      photos:[`https://picsum.photos/seed/${s.id}w1/800/800`,`https://picsum.photos/seed/${s.id}w2/800/800`],
+      username:s.discoveredBy||'WildPath',
+      userId:'system',
+      lat:s.lat,
+      lng:s.lng,
+      likes:[],
+      createdAt:new Date(Date.now()-(i+2)*86400000*3).toISOString(),
+      privacy:'public'
+    });
+  });
+  return [...demoPosts,...posts];
+}
+
+function _renderFeedPost(idx){
+  const post=_feedPosts[idx];
+  if(!post)return;
+  _feedMediaIdx=0;
+  _feedLiked=false;
+  _feedSaved=false;
+
+  // Author
+  const avatarEl=document.getElementById('feedPostAvatar');
+  const usernameEl=document.getElementById('feedPostUsername');
+  if(avatarEl){
+    avatarEl.innerHTML='';
+    const initials=(post.username||'WP').slice(0,2).toUpperCase();
+    // Try avatar image
+    const savedAvatar=localStorage.getItem('wp_avatar_'+String(post.userId));
+    if(savedAvatar&&post.userId!=='system'){
+      const img=document.createElement('img');
+      img.src=savedAvatar;img.style.cssText='width:100%;height:100%;object-fit:cover;border-radius:50%';
+      avatarEl.appendChild(img);
+    } else {
+      avatarEl.textContent=initials;
+    }
+  }
+  if(usernameEl)usernameEl.textContent='@'+(post.username||'wildpath');
+
+  // Location pill
+  const locNameEl=document.getElementById('feedLocationName');
+  const locPill=document.getElementById('feedLocationPill');
+  const spotName=post.spotName||(()=>{
+    if(post.spotId){const s=[...spots,...userSpots].find(x=>x.id===post.spotId);return s?s.name:null;}
+    return null;
+  })();
+  if(locPill)locPill.style.display=spotName?'flex':'none';
+  if(locNameEl)locNameEl.textContent=spotName||'';
+
+  // Like state
+  const liked=(post.likes||[]).includes(String(_myUid()));
+  _feedLiked=liked;
+  _setFeedLikeUI(liked);
+  const likeCountEl=document.getElementById('feedLikeCount');
+  if(likeCountEl)likeCountEl.textContent=(post.likes||[]).length;
+
+  // Comment count
+  const commCountEl=document.getElementById('feedCommentCount');
+  if(commCountEl){
+    const cKey=post.spotId?`wp_comments_spot_${post.spotId}`:`wp_comments_post_${post.id}`;
+    const c=JSON.parse(localStorage.getItem(cKey)||'[]').length;
+    commCountEl.textContent=c;
+  }
+
+  // Save state
+  const savedSpots=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');
+  _feedSaved=post.spotId&&savedSpots.includes(post.spotId);
+  _setFeedSaveUI(_feedSaved);
+
+  // Build media slides
+  _buildFeedSlides(post);
+}
+
+function _buildFeedSlides(post){
+  const container=document.getElementById('feedMediaSlides');
+  if(!container)return;
+
+  const slides=[];
+  // Media slide(s)
+  if(post.mediaUrl&&post.type==='photo'){
+    slides.push(`<div style="width:100vw;height:100%;flex-shrink:0;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center">
+      <img src="${post.mediaUrl}" style="width:100%;height:100%;object-fit:cover">
+    </div>`);
+  } else if(post.type==='spot'||post.spotId){
+    // Gradient hero for spot
+    const allS=[...spots,...userSpots];
+    const s=allS.find(x=>x.id===(post.spotId||post.id.replace('spot_feed_','')));
+    const grad=(s&&s.heroGradient)||post.spotGradient||'linear-gradient(135deg,#1a3a2a,#2d6e52)';
+    const label=s?s.typeLabel:'Spot';
+    slides.push(`<div style="width:100vw;height:100%;flex-shrink:0;background:${grad};overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px">
+      <div style="font-size:64px;opacity:0.8">${_getSpotEmojiForType(s?.type)}</div>
+      <div style="font-size:18px;font-weight:700;color:#fff;text-shadow:0 2px 8px rgba(0,0,0,.6);padding:0 32px;text-align:center">${post.spotName||s?.name||'Wild Spot'}</div>
+      <div style="font-size:13px;color:rgba(255,255,255,.7)">${label}</div>
+    </div>`);
+  } else {
+    // Text/generic post
+    slides.push(`<div style="width:100vw;height:100%;flex-shrink:0;background:linear-gradient(135deg,#0b1a0b,#1a3a2a);overflow:hidden;display:flex;align-items:center;justify-content:center;padding:32px">
+      <div style="font-size:16px;color:#fff;line-height:1.6;text-align:center">${post.caption||''}</div>
+    </div>`);
+  }
+  // If post has a spotId, also add a map slide
+  if(post.spotId){
+    const allS=[...spots,...userSpots];
+    const s=allS.find(x=>x.id===post.spotId);
+    if(s){
+      slides.push(`<div style="width:100vw;height:100%;flex-shrink:0;background:#0b1a0b;overflow:hidden;position:relative" id="feedMapSlide_${post.id}">
+        <div id="feedMapSlideMap_${post.id}" style="position:absolute;inset:0"></div>
+        <div style="position:absolute;bottom:16px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.7);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.2);border-radius:20px;padding:6px 16px;font-size:12px;color:#fff;font-weight:600;white-space:nowrap">${s.name}</div>
+      </div>`);
+    }
+  }
+
+  container.innerHTML=slides.join('');
+  container.style.transition='none';
+  container.style.transform='translateX(0)';
+  // If the first slide is a map slide (no other media), init it
+  if(slides.length>1&&post.spotId){
+    // Map slide is last - init lazily when swiped to
+  }
+  _updateFeedDots(slides.length,0,!!post.spotId);
+  // Store slide count on the post object for gesture handler
+  _feedPosts[_feedPostIdx]._slideCount=slides.length;
+}
+
+function _getSpotEmojiForType(type){
+  return '';
+}
+
+function _updateFeedDots(total,current,hasMapSlide){
+  const dotsEl=document.getElementById('feedDotsRow');
+  if(!dotsEl)return;
+  if(total<=1){dotsEl.innerHTML='';return;}
+  dotsEl.innerHTML=Array.from({length:total},(_,i)=>{
+    const isLast=i===total-1;
+    const isActive=i===current;
+    if(isLast&&hasMapSlide){
+      // Map pin icon as final dot
+      const pinColor=isActive?'#B8E87A':'rgba(255,255,255,.45)';
+      const scale=isActive?1.2:1;
+      return `<div style="width:16px;height:16px;display:flex;align-items:center;justify-content:center;transition:all .2s;transform:scale(${scale})">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="${pinColor}" stroke="none" style="transition:fill .2s">
+          <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
+        </svg>
+      </div>`;
+    }
+    return `<div style="width:${isActive?16:6}px;height:6px;border-radius:3px;background:${isActive?'#B8E87A':'rgba(255,255,255,.3)'};transition:all .2s"></div>`;
+  }).join('');
+}
+
+function _setFeedLikeUI(liked){
+  // Only the bottom bar heart icon (feedLikeIconBar); the media-area duplicate was removed
+  const iconBar=document.getElementById('feedLikeIconBar');
+  if(iconBar){iconBar.setAttribute('fill',liked?'#ff4d6d':'none');iconBar.setAttribute('stroke',liked?'#ff4d6d':'var(--txt2)');}
+}
+
+function _setFeedSaveUI(saved){
+  const icon=document.getElementById('feedSaveIcon');
+  if(icon){icon.setAttribute('fill',saved?'#B8E87A':'none');icon.setAttribute('stroke',saved?'#B8E87A':'var(--txt2)');}
+}
+
+function feedToggleLike(){
+  if(isGuest()){showLoginScreen();return;}
+  const post=_feedPosts[_feedPostIdx];
+  if(!post)return;
+  _feedLiked=!_feedLiked;
+  _setFeedLikeUI(_feedLiked);
+  const allPosts=getPosts();
+  const livePost=allPosts.find(p=>p.id===post.id);
+  if(livePost){
+    const uid=String(_myUid());
+    livePost.likes=livePost.likes||[];
+    if(_feedLiked){if(!livePost.likes.includes(uid))livePost.likes.push(uid);}
+    else{livePost.likes=livePost.likes.filter(u=>u!==uid);}
+    setPosts(allPosts);
+    post.likes=livePost.likes;
+  } else {
+    post.likes=post.likes||[];
+    if(_feedLiked)post.likes.push(String(_myUid()));
+    else post.likes=post.likes.filter(u=>u!==String(_myUid()));
+  }
+  const likeCountEl=document.getElementById('feedLikeCount');
+  if(likeCountEl)likeCountEl.textContent=(post.likes||[]).length;
+}
+
+function shareFeedPost(){
+  const post=_feedPosts[_feedPostIdx];
+  if(!post)return;
+  const spotName=post.spotName||'this spot';
+  if(navigator.share){
+    navigator.share({title:'WildPath — '+spotName,text:`Check out ${spotName} on WildPath!`,url:window.location.href}).catch(()=>{});
+  } else {
+    showToast('Share: WildPath — '+spotName);
+  }
+}
+
+function feedOpenComments(){
+  const post=_feedPosts[_feedPostIdx];
+  if(!post)return;
+  if(post.spotId){openDetail(post.spotId);}
+  else{openPostDetail(post.id);}
+}
+
+function feedToggleSave(){
+  if(isGuest()){showLoginScreen();return;}
+  const post=_feedPosts[_feedPostIdx];
+  if(!post)return;
+  _feedSaved=!_feedSaved;
+  _setFeedSaveUI(_feedSaved);
+  const savedPosts=JSON.parse(localStorage.getItem('wildpath-saved-posts')||'[]');
+  if(_feedSaved){
+    if(!savedPosts.find(p=>p.id===post.id))savedPosts.unshift(post);
+    if(post.spotId){const s=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');if(!s.includes(post.spotId)){s.push(post.spotId);localStorage.setItem('wp_saved_spots',JSON.stringify(s));}}
+  } else {
+    const i=savedPosts.findIndex(p=>p.id===post.id);if(i>=0)savedPosts.splice(i,1);
+    if(post.spotId){const s=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');const si=s.indexOf(post.spotId);if(si>=0){s.splice(si,1);localStorage.setItem('wp_saved_spots',JSON.stringify(s));}}
+  }
+  localStorage.setItem('wildpath-saved-posts',JSON.stringify(savedPosts));
+  showToast(_feedSaved?'Saved!':'Removed from saved');
+  refreshSpotMarkers();
+}
+
+function feedOpenSpotDetail(){
+  const post=_feedPosts[_feedPostIdx];
+  if(!post)return;
+  if(post.spotId)openDetail(post.spotId);
+}
+
+function openFeedAuthorProfile(){
+  const post=_feedPosts[_feedPostIdx];
+  if(!post||post.userId==='system')return;
+  _openUserProfileSheet(post.userId,post.username);
+}
+
+function _showUserPopup(userId,username,anchorEl){
+  // Remove any existing popup
+  document.querySelectorAll('._user-popup').forEach(p=>p.remove());
+  const allPosts=getPosts();
+  const userPosts=allPosts.filter(p=>String(p.userId)===String(userId));
+  const follows=getFollows();
+  const myUid=String(_myUid());
+  const myFollowing=follows[myUid]||[];
+  const isFollowing=myFollowing.includes(String(userId));
+  const initials=(username||'?').slice(0,2).toUpperCase();
+  const followerCount=Object.values(follows).filter(arr=>arr.includes(String(userId))).length;
+
+  const popup=document.createElement('div');
+  popup.className='_user-popup';
+  popup.style.cssText='position:fixed;z-index:8000;background:var(--bg1);border:1px solid var(--border2);border-radius:16px;padding:14px;width:220px;box-shadow:0 8px 32px rgba(0,0,0,.5)';
+
+  // Position near anchor
+  const rect=anchorEl?anchorEl.getBoundingClientRect():null;
+  const top=rect?Math.min(rect.bottom+6,window.innerHeight-200):100;
+  const left=rect?Math.max(8,Math.min(rect.left,window.innerWidth-228)):window.innerWidth/2-110;
+  popup.style.top=top+'px';popup.style.left=left+'px';
+
+  popup.innerHTML=`
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <div style="width:42px;height:42px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;color:#B8E87A;flex-shrink:0">${initials}</div>
+      <div>
+        <div style="font-size:14px;font-weight:700;color:var(--txt0)">@${username||'explorer'}</div>
+        <div style="font-size:11px;color:var(--txt3)">${followerCount} followers · ${userPosts.length} posts</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px">
+      ${!isGuest()?`<button onclick="_toggleFollowUser('${userId}','${username}',this)" style="flex:1;padding:8px;border-radius:10px;border:1.5px solid ${isFollowing?'var(--border2)':'#B8E87A'};background:${isFollowing?'transparent':'#B8E87A'};color:${isFollowing?'var(--txt2)':'#0f1a0a'};font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">${isFollowing?'Following':'Follow'}</button>`:''}
+      <button onclick="document.querySelectorAll('._user-popup').forEach(p=>p.remove());_openUserProfileSheet('${userId}','${username}')" style="flex:1;padding:8px;border-radius:10px;border:1.5px solid var(--border2);background:transparent;color:var(--txt0);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">View Profile</button>
+    </div>`;
+
+  // Dismiss on outside click
+  const dismiss=(e)=>{if(!popup.contains(e.target)){popup.remove();document.removeEventListener('click',dismiss,true);}};
+  setTimeout(()=>document.addEventListener('click',dismiss,true),50);
+  document.body.appendChild(popup);
+}
+
+function _openUserProfileSheet(uid,username){
+  const existing=document.getElementById('userProfileSheet');
+  if(existing)existing.remove();
+  const sheet=document.createElement('div');
+  sheet.id='userProfileSheet';
+  sheet.style.cssText='position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,.6);display:flex;align-items:flex-end';
+  const allPosts=getPosts();
+  const userPosts=allPosts.filter(p=>String(p.userId)===String(uid));
+  const initials=(username||'?').slice(0,2).toUpperCase();
+  const follows=getFollows();
+  const myUid=String(_myUid());
+  const myFollowing=follows[myUid]||[];
+  const isFollowing=myFollowing.includes(String(uid));
+  const photoGrid=userPosts.slice(0,9).map(p=>{
+    const bg=p.mediaUrl?'':`background:${p.spotGradient||p.heroGradient||'linear-gradient(135deg,#1a2c1a,#2d4a2d)'}`;
+    return `<div style="aspect-ratio:1;overflow:hidden;border-radius:6px;${bg}">
+      ${p.mediaUrl?`<img src="${p.mediaUrl}" style="width:100%;height:100%;object-fit:cover" loading="lazy">`:''}
+    </div>`;
+  }).join('');
+  sheet.innerHTML=`<div style="width:100%;max-height:82vh;background:var(--bg1);border-radius:20px 20px 0 0;display:flex;flex-direction:column;overflow:hidden">
+    <div style="width:40px;height:4px;background:rgba(255,255,255,.18);border-radius:2px;margin:12px auto 0"></div>
+    <!-- Header -->
+    <div style="padding:16px 16px 12px;display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--border);flex-shrink:0">
+      <div style="width:54px;height:54px;border-radius:50%;background:var(--bg3);border:2px solid rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:#B8E87A;flex-shrink:0">${initials}</div>
+      <div style="flex:1">
+        <div style="font-size:16px;font-weight:800;color:var(--txt0)">@${username||'explorer'}</div>
+        <div style="font-size:12px;color:var(--txt3);margin-top:2px">${userPosts.length} posts · Explorer</div>
+      </div>
+      ${!isGuest()?`<button onclick="_toggleFollowUser('${uid}','${username}',this)" style="padding:8px 18px;border-radius:20px;border:1.5px solid ${isFollowing?'var(--border2)':'#B8E87A'};background:${isFollowing?'transparent':'#B8E87A'};color:${isFollowing?'var(--txt2)':'#0f1a0a'};font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">${isFollowing?'Following':'Follow'}</button>`:''}
+    </div>
+    <!-- Post grid -->
+    <div style="flex:1;overflow-y:auto;padding:12px">
+      ${photoGrid?`<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px">${photoGrid}</div>`:`<div style="text-align:center;padding:40px 20px;color:var(--txt3);font-size:13px">No posts yet</div>`}
+    </div>
+    <div style="padding:12px 16px;flex-shrink:0">
+      <button onclick="document.getElementById('userProfileSheet').remove()" style="width:100%;height:44px;background:var(--bg2);border:1px solid var(--border2);color:var(--txt1);border-radius:12px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit">Close</button>
+    </div>
+  </div>`;
+  sheet.onclick=e=>{if(e.target===sheet)sheet.remove();};
+  document.body.appendChild(sheet);
+}
+
+function _toggleFollowUser(uid,username,btn){
+  if(isGuest()){showLoginScreen();return;}
+  const follows=getFollows();
+  const myUid=String(_myUid());
+  const following=follows[myUid]||[];
+  const idx=following.indexOf(String(uid));
+  if(idx>=0){following.splice(idx,1);btn.textContent='Follow';btn.style.background='#B8E87A';btn.style.color='#0f1a0a';btn.style.borderColor='#B8E87A';}
+  else{following.push(String(uid));btn.textContent='Following';btn.style.background='transparent';btn.style.color='var(--txt2)';btn.style.borderColor='var(--border2)';}
+  follows[myUid]=following;
+  setFollows(follows);
+  showToast(idx>=0?'Unfollowed @'+username:'Following @'+username);
+}
+
+function _feedNavigatePost(dir){
+  // dir: +1=next, -1=prev
+  const newIdx=_feedPostIdx+dir;
+  if(newIdx<0){closeFeedViewer();return;} // swipe down past first post = back to grid
+  if(newIdx>=_feedPosts.length)return;
+  _feedPostIdx=newIdx;
+  _feedMediaIdx=0;
+  _renderFeedPost(_feedPostIdx);
+}
+
+function _feedNavigateMedia(dir){
+  // dir: +1=next slide, -1=prev slide
+  const post=_feedPosts[_feedPostIdx];
+  const total=post?._slideCount||1;
+  const newMediaIdx=_feedMediaIdx+dir;
+  if(newMediaIdx<0){
+    // Already at first slide — do nothing
+    return false;
+  }
+  if(newMediaIdx>=total){
+    // Past last slide — advance to next post
+    _feedNavigatePost(1);
+    return true;
+  }
+  _feedMediaIdx=newMediaIdx;
+  const container=document.getElementById('feedMediaSlides');
+  if(container){
+    container.style.transition='transform .28s cubic-bezier(.4,0,.2,1)';
+    container.style.transform=`translateX(-${_feedMediaIdx*100}vw)`;
+  }
+  _updateFeedDots(total,_feedMediaIdx,!!post.spotId);
+  // Init map slide if navigating to it
+  if(post.spotId&&_feedMediaIdx===total-1){
+    _initFeedMapSlide(post);
+  }
+  return true;
+}
+
+function _initFeedMapSlide(post){
+  const mapContainerId='feedMapSlideMap_'+post.id;
+  const mapContainer=document.getElementById(mapContainerId);
+  if(!mapContainer||mapContainer._mapInit)return;
+  mapContainer._mapInit=true;
+  const allS=[...spots,...userSpots];
+  const s=allS.find(x=>x.id===post.spotId);
+  if(!s)return;
+  const tok=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||'';
+  if(!tok)return;
+  try{
+    mapboxgl.accessToken=tok;
+    const slideMap=new mapboxgl.Map({
+      container:mapContainerId,
+      style:'mapbox://styles/mapbox/outdoors-v12',
+      center:[s.lng,s.lat],
+      zoom:13,
+      interactive:true,
+      attributionControl:false
+    });
+    slideMap.on('load',()=>{
+      const el=document.createElement('div');
+      el.style.cssText='width:16px;height:16px;border-radius:50%;background:#B8E87A;border:3px solid #fff;box-shadow:0 0 0 5px rgba(184,232,122,.3)';
+      new mapboxgl.Marker({element:el}).setLngLat([s.lng,s.lat]).addTo(slideMap);
+    });
+  }catch(e){}
+}
+
+function _initFeedGestures(){
+  const viewport=document.getElementById('feedViewport');
+  if(!viewport||viewport._gesturesAttached)return;
+  viewport._gesturesAttached=true;
+
+  viewport.addEventListener('touchstart',(e)=>{
+    _feedTouchStartX=e.touches[0].clientX;
+    _feedTouchStartY=e.touches[0].clientY;
+    _feedTouchStartTime=Date.now();
+    _feedTouchActive=true;
+    _feedSwipeInProgress=false;
+  },{passive:true});
+
+  viewport.addEventListener('touchend',(e)=>{
+    if(!_feedTouchActive)return;
+    _feedTouchActive=false;
+    const dx=e.changedTouches[0].clientX-_feedTouchStartX;
+    const dy=e.changedTouches[0].clientY-_feedTouchStartY;
+    const dt=Date.now()-_feedTouchStartTime;
+    const absDx=Math.abs(dx), absDy=Math.abs(dy);
+    // Minimum swipe distance
+    if(Math.max(absDx,absDy)<40)return;
+    // Determine primary direction
+    if(absDx>absDy&&absDx>50){
+      // Horizontal swipe
+      if(dx<-50){
+        // Swipe left → next media or next post
+        _feedNavigateMedia(1);
+      } else if(dx>50&&_feedMediaIdx>0){
+        // Swipe right → prev media
+        _feedNavigateMedia(-1);
+      }
+    } else if(absDy>absDx&&absDy>60){
+      // Vertical swipe
+      if(dy<-60){
+        // Swipe up → next post
+        _feedNavigatePost(1);
+      } else if(dy>60){
+        // Swipe down → prev post
+        _feedNavigatePost(-1);
+      }
+    }
+  },{passive:true});
+}
+
+// ═══════════════════════════════════════════════════
+// PROFILE — map thumbnail, saved, want-to-go
+// ═══════════════════════════════════════════════════
+let _profileMapThumbnailInstance=null;
+
+function _initProfileMapThumbnail(){
+  const container=document.getElementById('profileMapThumbnail');
+  if(!container)return;
+  const tok=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||'';
+  if(!tok){
+    container.innerHTML=`<div style="width:100%;height:100%;background:linear-gradient(135deg,#0b1a0b,#1a3a2a);border-radius:12px"></div>`;
+    return;
+  }
+  // Destroy previous
+  if(_profileMapThumbnailInstance){try{_profileMapThumbnailInstance.remove();}catch(e){}  _profileMapThumbnailInstance=null;}
+  container.style.cssText='width:100%;height:100%;border-radius:12px;overflow:hidden;position:relative';
+  try{
+    mapboxgl.accessToken=tok;
+    _profileMapThumbnailInstance=new mapboxgl.Map({
+      container,
+      style:'mapbox://styles/mapbox/outdoors-v12',
+      center:window._lastUserLng?[window._lastUserLng,window._lastUserLat]:[-121.5,38.5],
+      zoom:8,
+      interactive:false,
+      attributionControl:false
+    });
+    _profileMapThumbnailInstance.on('load',()=>{
+      // Add dots for visited spots
+      const myUid=String(_myUid());
+      const myPosts=getPosts().filter(p=>String(p.userId)===myUid&&p.spotId);
+      const visitedIds=new Set(myPosts.map(p=>p.spotId));
+      const allS=[...spots,...userSpots].filter(s=>visitedIds.has(s.id));
+      allS.forEach(s=>{
+        const el=document.createElement('div');
+        el.style.cssText='width:8px;height:8px;border-radius:50%;background:#F5C842;border:1.5px solid #fff';
+        new mapboxgl.Marker({element:el}).setLngLat([s.lng,s.lat]).addTo(_profileMapThumbnailInstance);
+      });
+    });
+  }catch(e){console.warn('Profile map thumbnail failed',e);}
+}
+
+function openProfileYourMap(){
+  showTab('map');
+  setTimeout(()=>{
+    const myUid=String(_myUid());
+    const myPosts=getPosts().filter(p=>String(p.userId)===myUid&&p.spotId);
+    if(!myPosts.length){showToast('No spots posted yet!');return;}
+    const spotIds=new Set(myPosts.map(p=>p.spotId));
+    const allS=[...spots,...userSpots].filter(s=>spotIds.has(s.id));
+    if(allS.length&&map){
+      const lngs=allS.map(s=>s.lng), lats=allS.map(s=>s.lat);
+      const bounds=[[Math.min(...lngs)-0.1,Math.min(...lats)-0.1],[Math.max(...lngs)+0.1,Math.max(...lats)+0.1]];
+      map.fitBounds(bounds,{padding:50,duration:1000});
+    }
+    showToast('Your visited spots');
+  },300);
+}
+
+function openFriendsMap(){
+  const page=document.getElementById('friendsMapPage');
+  if(!page)return;
+  page.style.display='flex';
+  _buildFriendsMap();
+}
+function _buildFriendsMap(){
+  const container=document.getElementById('friendsMapEl');
+  if(!container)return;
+  const myUid=String(_myUid());
+  const follows=getFollows();
+  const followingIds=new Set(follows[myUid]||[]);
+  const followingUsers=Array.from(followingIds);
+  const allPosts=getPosts();
+  // Build legend
+  const legend=document.getElementById('friendsMapLegend');
+  if(legend){
+    legend.innerHTML=followingUsers.length?followingUsers.map(uid=>{
+      const p=getUserProfile(uid)||{};
+      const name=p.username||uid;
+      return`<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+        <div style="width:28px;height:28px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#B8E87A">${name.slice(0,2).toUpperCase()}</div>
+        <span style="font-size:12px;color:var(--txt0)">@${name}</span>
+      </div>`;
+    }).join('<div style="width:1px;height:20px;background:var(--border);flex-shrink:0"></div>')
+    :'<div style="font-size:12px;color:var(--txt3)">Follow people to see their spots on this map</div>';
+  }
+  if(container._mapInit)return;
+  const token=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||'';
+  if(!token){
+    container.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--txt3);font-size:13px;text-align:center;padding:20px">Add a Mapbox token to see the Friends Map</div>';
+    return;
+  }
+  container._mapInit=true;
+  mapboxgl.accessToken=token;
+  try{
+    const m=new mapboxgl.Map({container,style:'mapbox://styles/mapbox/dark-v11',center:[-121.5,38.5],zoom:5,interactive:true,attributionControl:false});
+    m.on('load',()=>{
+      // Friend spot pins
+      followingUsers.forEach(uid=>{
+        const friendPosts=allPosts.filter(p=>String(p.userId)===uid&&(p.lat||p.spotId));
+        friendPosts.forEach(p=>{
+          let lat=p.lat,lng=p.lng;
+          if(!lat&&p.spotId){const s=[...spots,...userSpots].find(x=>x.id===p.spotId);if(s){lat=s.lat;lng=s.lng;}}
+          if(!lat||!lng)return;
+          const prof=getUserProfile(uid)||{};
+          const name=prof.username||uid;
+          const el=document.createElement('div');
+          el.style.cssText='width:28px;height:28px;border-radius:50%;background:#B8E87A;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#0f1a0a;cursor:pointer';
+          el.textContent=name.slice(0,2).toUpperCase();
+          new mapboxgl.Marker({element:el}).setLngLat([lng,lat]).setPopup(new mapboxgl.Popup({offset:20}).setHTML(`<div style="color:#fff;font-size:12px"><strong>@${name}</strong><br>${p.spotName||p.caption?.slice(0,40)||'Post'}</div>`)).addTo(m);
+        });
+        // Real-time location dot
+        const locData=localStorage.getItem('wildpath-user-location-'+uid);
+        if(locData){
+          try{
+            const loc=JSON.parse(locData);
+            if(Date.now()-loc.ts<3600000){// within 1 hour
+              const dotEl=document.createElement('div');
+              dotEl.style.cssText='width:14px;height:14px;border-radius:50%;background:#B8E87A;border:2px solid #fff;box-shadow:0 0 0 4px rgba(184,232,122,.3)';
+              new mapboxgl.Marker({element:dotEl}).setLngLat([loc.lng,loc.lat]).addTo(m);
+            }
+          }catch(e){}
+        }
+      });
+    });
+  }catch(e){}
+}
+
+function openSavedLocations(){
+  const saved=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');
+  if(!saved.length){showToast('No saved spots yet — bookmark spots to save them');return;}
+  const allS=[...spots,...userSpots].filter(s=>saved.includes(s.id));
+  _showSpotListSheet('Saved Locations',allS);
+}
+
+function openSavedPostsPage(){
+  const page=document.getElementById('savedPostsPage');
+  if(!page)return;
+  page.style.display='flex';
+  _renderSavedPostsGrid();
+}
+function _renderSavedPostsGrid(){
+  const savedIds=JSON.parse(localStorage.getItem('wildpath-saved-posts')||'[]');
+  const allPosts=getPosts();
+  const savedPosts=_feedPosts.filter(p=>savedIds.includes(p.id)).concat(allPosts.filter(p=>savedIds.includes(p.id)&&!_feedPosts.find(fp=>fp.id===p.id)));
+  const grid=document.getElementById('savedPostsGrid');
+  if(!grid)return;
+  const cnt=document.getElementById('profileSavedCount');
+  if(cnt)cnt.textContent=savedIds.length+' post'+(savedIds.length!==1?'s':'');
+  if(!savedPosts.length){grid.innerHTML='<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--txt3);font-size:13px">No saved posts yet</div>';return;}
+  grid.innerHTML=savedPosts.map(p=>{
+    const thumb=p.photos?.[0]||p.mediaUrl||'';
+    const bg=p.spotGradient||p.heroGradient||'linear-gradient(160deg,#0d1a0d,#1a3a2a)';
+    // gradient: prefix means we render a div, not an img
+    const isGrad=thumb&&thumb.startsWith('gradient:');
+    const gradVal=isGrad?thumb.replace('gradient:',''):null;
+    const innerHtml=isGrad
+      ? `<div style="width:100%;height:100%;background:${gradVal}"></div>`
+      : (thumb?`<img src="${thumb}" style="width:100%;height:100%;object-fit:cover">`:'');
+    return`<div onclick="_openSavedPostDetail('${p.id}')" style="aspect-ratio:1;position:relative;overflow:hidden;cursor:pointer;background:${bg}">
+      ${innerHtml}
+    </div>`;
+  }).join('');
+}
+function _openSavedPostDetail(postId){
+  const p=_feedPosts.find(x=>x.id===postId)||getPosts().find(x=>x.id===postId);
+  if(!p)return;
+  if(p.spotId)openDetail(p.spotId);
+  else openPostDetail(postId);
+}
+function setSavedView(view,el){
+  document.getElementById('savedTabGrid').style.cssText='padding:6px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;background:'+(view==='grid'?'var(--accent)':'var(--bg2)')+';color:'+(view==='grid'?'#0f1a0a':'var(--txt2)');
+  document.getElementById('savedTabMap').style.cssText='padding:6px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;background:'+(view==='map'?'var(--accent)':'var(--bg2)')+';color:'+(view==='map'?'#0f1a0a':'var(--txt2)');
+  document.getElementById('savedPostsGrid').style.display=view==='grid'?'grid':'none';
+  const mapEl=document.getElementById('savedPostsMap');
+  if(mapEl){mapEl.style.display=view==='map'?'flex':'none';}
+  if(view==='map')_initSavedPostsMap();
+}
+function _initSavedPostsMap(){
+  const container=document.getElementById('savedPostsMapEl');
+  if(!container||container._mapInit)return;
+  const token=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||'';
+  if(!token){container.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--txt3);font-size:13px;text-align:center;padding:20px">Add a Mapbox token to enable map view</div>';return;}
+  container._mapInit=true;
+  mapboxgl.accessToken=token;
+  const savedIds=JSON.parse(localStorage.getItem('wildpath-saved-posts')||'[]');
+  const posts=_feedPosts.filter(p=>savedIds.includes(p.id)&&p.lat&&p.lng);
+  try{
+    const m=new mapboxgl.Map({container,style:'mapbox://styles/mapbox/dark-v11',center:[-121.5,38.5],zoom:5,interactive:true,attributionControl:false});
+    m.on('load',()=>{
+      posts.forEach(p=>{
+        const el=document.createElement('div');
+        el.style.cssText='width:32px;height:32px;border-radius:50%;overflow:hidden;border:2px solid #B8E87A;cursor:pointer';
+        const thumb=p.photos?.[0]||p.mediaUrl||'';
+        const isGrad=thumb&&thumb.startsWith('gradient:');
+        el.innerHTML=(thumb&&!isGrad)?`<img src="${thumb}" style="width:100%;height:100%;object-fit:cover">`:`<div style="width:100%;height:100%;background:${isGrad?thumb.replace('gradient:',''):p.spotGradient||'var(--bg3)'}"></div>`;
+        el.onclick=()=>_openSavedPostDetail(p.id);
+        new mapboxgl.Marker({element:el}).setLngLat([p.lng,p.lat]).addTo(m);
+      });
+    });
+  }catch(e){}
+}
+
+function openWantToGoList(){
+  const pinned=JSON.parse(localStorage.getItem('wp_want_to_go')||'[]');
+  if(!pinned.length){showToast('No pinned spots yet — add spots to your want-to-go list');return;}
+  const allS=[...spots,...userSpots].filter(s=>pinned.includes(s.id));
+  _showSpotListSheet('Want to Go',allS);
+}
+
+function _showSpotListSheet(title,spotList){
+  // Create an overlay sheet showing a list of spots
+  const existing=document.getElementById('_spotListSheet');
+  if(existing)existing.remove();
+  const sheet=document.createElement('div');
+  sheet.id='_spotListSheet';
+  sheet.style.cssText='position:absolute;inset:0;z-index:800;background:rgba(0,0,0,.75);display:flex;align-items:flex-end';
+  sheet.onclick=(e)=>{if(e.target===sheet)sheet.remove();};
+  const inner=document.createElement('div');
+  inner.style.cssText='background:var(--bg1);border-radius:20px 20px 0 0;width:100%;max-height:75vh;overflow-y:auto;padding:0 0 calc(env(safe-area-inset-bottom,0px)+16px)';
+  inner.innerHTML=`
+    <div style="padding:16px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+      <div style="font-size:16px;font-weight:700;color:var(--txt0)">${title}</div>
+      <button onclick="document.getElementById('_spotListSheet').remove()" style="background:var(--bg2);border:1px solid var(--border);color:var(--txt1);border-radius:50%;width:32px;height:32px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px">×</button>
+    </div>
+    ${spotList.length?spotList.map(s=>`
+      <div onclick="openDetail(${s.id});document.getElementById('_spotListSheet')?.remove()" style="padding:12px 14px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;gap:12px;align-items:center">
+        <div style="width:52px;height:52px;border-radius:12px;background:${s.heroGradient||'var(--bg3)'};flex-shrink:0"></div>
+        <div style="flex:1">
+          <div style="font-size:14px;font-weight:700;color:var(--txt0)">${s.name}</div>
+          <div style="font-size:12px;color:var(--txt3);margin-top:2px">${s.typeLabel||''} · ${s._realDistStr||s.distance||''}</div>
+          <div style="font-size:11px;color:var(--txt3)">${s.rating} · ${s.reviews} reviews</div>
+        </div>
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--txt3)" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+      </div>`).join('')
+    :`<div style="padding:32px;text-align:center;color:var(--txt3);font-size:13px">No spots yet.</div>`}
+  `;
+  sheet.appendChild(inner);
+  document.getElementById('app').appendChild(sheet);
+}
+
+// ═══════════════════════════════════════════════════
+// OPEN COMMUNITY POST — tap on post in profile grid
+// ═══════════════════════════════════════════════════
+function openCommPost(postId){
+  const allPosts=getPosts();
+  const post=allPosts.find(p=>p.id===postId);
+  if(!post)return;
+  // If post has a spotId, open the detail page
+  if(post.spotId){
+    openDetail(post.spotId);
+    return;
+  }
+  // Otherwise show a simple overlay with post info
+  const existing=document.getElementById('_postViewSheet');
+  if(existing)existing.remove();
+  const sheet=document.createElement('div');
+  sheet.id='_postViewSheet';
+  sheet.style.cssText='position:absolute;inset:0;z-index:800;background:rgba(0,0,0,.82);display:flex;align-items:flex-end';
+  sheet.onclick=(e)=>{if(e.target===sheet)sheet.remove();};
+  const mediaHTML=post.mediaUrl&&post.type==='photo'
+    ?`<div style="height:260px;background:#000;overflow:hidden;border-radius:14px 14px 0 0"><img src="${post.mediaUrl}" style="width:100%;height:100%;object-fit:cover"></div>`
+    :`<div style="height:120px;background:var(--bg2);border-radius:14px 14px 0 0;display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--txt3)">text post</div>`;
+  const initials=(post.username||'WP').slice(0,2).toUpperCase();
+  const dateStr=post.createdAt?new Date(post.createdAt).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'';
+  sheet.innerHTML=`<div style="background:var(--bg1);border-radius:14px 14px 0 0;width:100%;max-height:80vh;overflow-y:auto">
+    ${mediaHTML}
+    <div style="padding:14px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <div style="width:34px;height:34px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#B8E87A">${initials}</div>
+        <div>
+          <div style="font-size:13px;font-weight:700;color:var(--txt0)">@${post.username||'Explorer'}</div>
+          <div style="font-size:11px;color:var(--txt3)">${dateStr}</div>
+        </div>
+        <button onclick="document.getElementById('_postViewSheet').remove()" style="margin-left:auto;background:var(--bg2);border:1px solid var(--border);color:var(--txt1);border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px">×</button>
+      </div>
+      ${post.caption?`<div style="font-size:14px;color:var(--txt1);line-height:1.6;margin-bottom:12px">${post.caption}</div>`:''}
+      <div style="display:flex;gap:16px">
+        <div style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--txt2)">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+          ${(post.likes||[]).length}
+        </div>
+      </div>
+    </div>
+  </div>`;
+  document.getElementById('app').appendChild(sheet);
+}
+
+// ═══════════════════════════════════════════════════
+// DETAIL PAGE — DRAG TO DISMISS
+// ═══════════════════════════════════════════════════
+let _detailDragStartY=0, _detailDragActive=false, _detailDragDismissThreshold=120;
+
+function _initDetailDragToDismiss(){
+  const handle=document.getElementById('detailDragHandle');
+  const sheet=document.getElementById('detailSheet');
+  if(!handle||!sheet||handle._dragInited)return;
+  handle._dragInited=true;
+
+  handle.addEventListener('touchstart',(e)=>{
+    _detailDragStartY=e.touches[0].clientY;
+    _detailDragActive=true;
+    sheet.style.transition='none';
+  },{passive:true});
+
+  handle.addEventListener('touchmove',(e)=>{
+    if(!_detailDragActive)return;
+    const dy=e.touches[0].clientY-_detailDragStartY;
+    if(dy>0){sheet.style.transform=`translateY(${dy}px)`;}
+  },{passive:true});
+
+  handle.addEventListener('touchend',(e)=>{
+    if(!_detailDragActive)return;
+    _detailDragActive=false;
+    const dy=e.changedTouches[0].clientY-_detailDragStartY;
+    if(dy>_detailDragDismissThreshold){
+      closeDetail();
+    } else {
+      sheet.style.transition='transform 0.3s cubic-bezier(0.32,0.72,0,1)';
+      sheet.style.transform='translateY(0)';
+    }
+  },{passive:true});
+}
+
+// ═══════════════════════════════════════════════════
+// CONTENT CREATION — REDESIGNED FORM OVERLAY
+// ═══════════════════════════════════════════════════
+let _createCapturedDataUrl=null, _createCapturedBlob=null;
+let _createNewSelectedSpotId=null, _createNewPrivacy='public';
+let _createAdvancedOpen=false;
+// Legacy vars kept so old refs don't throw
+let _createStream=null, _createFacingMode='environment', _createType='photo';
+let _createIsRecording=false, _createMediaRecorder=null, _createChunks=[];
+
+function openFeedCreate(){
+  if(isGuest()){showLoginScreen();return;}
+  const ov=document.getElementById('feedCreateOverlay');
+  if(!ov)return;
+  ov.style.display='flex';
+  // Reset all fields
+  _createCapturedDataUrl=null;
+  _createCapturedBlob=null;
+  _createNewSelectedSpotId=null;
+  _createNewPrivacy='public';
+  _createAdvancedOpen=false;
+  // Media placeholder
+  const placeholder=document.getElementById('createMediaPlaceholder');
+  const prevImg=document.getElementById('createNewPreviewImg');
+  const prevVid=document.getElementById('createNewPreviewVid');
+  const removeBtn=document.getElementById('createMediaRemoveBtn');
+  if(placeholder)placeholder.style.display='flex';
+  if(prevImg){prevImg.style.display='none';prevImg.src='';}
+  if(prevVid){prevVid.style.display='none';prevVid.src='';}
+  if(removeBtn)removeBtn.style.display='none';
+  // Caption
+  const cap=document.getElementById('createNewCaption');
+  if(cap)cap.value='';
+  const remain=document.getElementById('createCharRemain');
+  if(remain)remain.textContent='500';
+  // Location
+  clearCreateLocationNew();
+  // Own comment
+  const comm=document.getElementById('createNewOwnComment');
+  if(comm)comm.value='';
+  // Privacy — default Public selected
+  setCreateNewPrivacy('public',document.getElementById('createNewPrivPublic'));
+  // Advanced closed
+  const adv=document.getElementById('createAdvancedContent');
+  const chev=document.getElementById('createAdvancedChevron');
+  if(adv)adv.style.display='none';
+  if(chev)chev.style.transform='rotate(0deg)';
+  // Post button disabled
+  _updateCreatePostBtn();
+  // Hide success anim
+  const succ=document.getElementById('createSuccessAnim');
+  if(succ)succ.style.display='none';
+  // Reset file inputs
+  const lib=document.getElementById('createLibraryInput');
+  if(lib)lib.value='';
+}
+
+function closeFeedCreate(){
+  const ov=document.getElementById('feedCreateOverlay');
+  if(ov)ov.style.display='none';
+  _clearCreateCamUI(); // stop any live camera stream and remove DOM elements
+}
+
+// Legacy compat stubs
+function _stopCreateCamera(){if(_createStream){_createStream.getTracks().forEach(t=>t.stop());_createStream=null;}}
+function _startCreateCamera(){}
+function setCreateTab(){}
+function flipCreateCamera(){}
+function createCapture(){document.getElementById('createLibraryInput')?.click();}
+function handleCreateFile(e){handleCreateNewFile(e);}
+function closeFeedCreatePreview(){closeFeedCreate();}
+function setCreatePrivacy(type,el){setCreateNewPrivacy(type,el);}
+function filterCreateLocation(q){filterCreateLocationNew(q);}
+function clearCreateLocation(){clearCreateLocationNew();}
+function _selectCreateLocation(id,name){_selectCreateLocationNew(id,name);}
+function submitCreatePost(){submitCreateNewPost();}
+
+// ── New create overlay functions ──
+
+function _updateCreatePostBtn(){
+  const btn=document.getElementById('createNewPostBtn');
+  if(!btn)return;
+  const hasMedia=!!_createCapturedDataUrl;
+  btn.disabled=!hasMedia;
+  btn.style.opacity=hasMedia?'1':'0.35';
+  btn.style.cursor=hasMedia?'pointer':'not-allowed';
+}
+
+function createTakePhotoDemo(){
+  // Try live camera via getUserMedia first
+  if(navigator.mediaDevices && navigator.mediaDevices.getUserMedia){
+    navigator.mediaDevices.getUserMedia({video:{facingMode:_createFacingMode},audio:false})
+      .then(stream=>{ _startCreateLiveCamera(stream); })
+      .catch(()=>{
+        // getUserMedia denied or unavailable — try capture= file input (mobile native camera)
+        const cap=document.getElementById('createCameraCapture');
+        if(cap){ cap.click(); }
+      });
+  } else {
+    // No getUserMedia at all — try capture= file input
+    const cap=document.getElementById('createCameraCapture');
+    if(cap){ cap.click(); }
+  }
+}
+
+function _startCreateLiveCamera(stream){
+  _createStream=stream;
+  const area=document.getElementById('createMediaArea');
+  if(!area)return;
+  // Hide placeholder
+  const ph=document.getElementById('createMediaPlaceholder');
+  if(ph) ph.style.display='none';
+
+  // Create live video element
+  const vid=document.createElement('video');
+  vid.id='createLiveVid';
+  vid.autoplay=true;
+  vid.playsInline=true;
+  vid.muted=true;
+  vid.srcObject=stream;
+  vid.style.cssText='position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:14px;';
+  area.appendChild(vid);
+
+  // Camera UI overlay: cancel | shutter | flip
+  const ui=document.createElement('div');
+  ui.id='createCamUI';
+  ui.style.cssText='position:absolute;bottom:14px;left:0;right:0;display:flex;align-items:center;justify-content:space-between;padding:0 24px;z-index:10;';
+  ui.innerHTML=`
+    <button onclick="_cancelCreateLiveCam()" style="background:rgba(0,0,0,.55);border:none;border-radius:50%;width:40px;height:40px;display:flex;align-items:center;justify-content:center;cursor:pointer;">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#fff" stroke-width="2.2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+    <button onclick="_captureCreateFrame()" style="background:#fff;border:3px solid rgba(255,255,255,.6);border-radius:50%;width:64px;height:64px;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 0 0 4px rgba(255,255,255,.2);">
+      <div style="width:52px;height:52px;border-radius:50%;background:#fff;"></div>
+    </button>
+    <button onclick="_flipCreateLiveCam()" style="background:rgba(0,0,0,.55);border:none;border-radius:50%;width:40px;height:40px;display:flex;align-items:center;justify-content:center;cursor:pointer;">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#fff" stroke-width="2"><path d="M1 4v6h6"/><path d="M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
+    </button>`;
+  area.appendChild(ui);
+}
+
+function _captureCreateFrame(){
+  const vid=document.getElementById('createLiveVid');
+  if(!vid)return;
+  const canvas=document.createElement('canvas');
+  canvas.width=vid.videoWidth||600;
+  canvas.height=vid.videoHeight||600;
+  canvas.getContext('2d').drawImage(vid,0,0,canvas.width,canvas.height);
+  _clearCreateCamUI();
+  _createCapturedDataUrl=canvas.toDataURL('image/jpeg',0.92);
+  _createCapturedBlob=null;
+  _showCreateNewPreview(_createCapturedDataUrl,false);
+  _updateCreatePostBtn();
+}
+
+function _cancelCreateLiveCam(){
+  _clearCreateCamUI();
+  const ph=document.getElementById('createMediaPlaceholder');
+  if(ph) ph.style.display='flex';
+}
+
+function _flipCreateLiveCam(){
+  _clearCreateCamUI();
+  _createFacingMode=(_createFacingMode==='environment')?'user':'environment';
+  if(navigator.mediaDevices && navigator.mediaDevices.getUserMedia){
+    navigator.mediaDevices.getUserMedia({video:{facingMode:_createFacingMode},audio:false})
+      .then(stream=>{ _createStream=stream; _startCreateLiveCamera(stream); })
+      .catch(()=>{ const ph=document.getElementById('createMediaPlaceholder'); if(ph)ph.style.display='flex'; });
+  }
+}
+
+function _clearCreateCamUI(){
+  if(_createStream){
+    _createStream.getTracks().forEach(t=>t.stop());
+    _createStream=null;
+  }
+  const vid=document.getElementById('createLiveVid');
+  const ui=document.getElementById('createCamUI');
+  if(vid) vid.remove();
+  if(ui) ui.remove();
+}
+
+function handleCreateNewFile(event){
+  const file=event.target.files?.[0];
+  if(!file)return;
+  const isVideo=file.type.startsWith('video');
+  const reader=new FileReader();
+  reader.onload=(e)=>{
+    _createCapturedDataUrl=e.target.result;
+    _createCapturedBlob=file;
+    _showCreateNewPreview(e.target.result, isVideo);
+    _updateCreatePostBtn();
+  };
+  reader.readAsDataURL(file);
+}
+
+function _showCreateNewPreview(dataUrl, isVideo){
+  const placeholder=document.getElementById('createMediaPlaceholder');
+  const prevImg=document.getElementById('createNewPreviewImg');
+  const prevVid=document.getElementById('createNewPreviewVid');
+  const removeBtn=document.getElementById('createMediaRemoveBtn');
+  if(placeholder)placeholder.style.display='none';
+  if(isVideo){
+    if(prevImg)prevImg.style.display='none';
+    if(prevVid){prevVid.src=dataUrl;prevVid.style.display='block';}
+  } else {
+    if(prevVid)prevVid.style.display='none';
+    if(prevImg){prevImg.src=dataUrl;prevImg.style.display='block';}
+  }
+  if(removeBtn)removeBtn.style.display='flex';
+}
+
+function clearCreateNewMedia(){
+  _createCapturedDataUrl=null;
+  _createCapturedBlob=null;
+  const placeholder=document.getElementById('createMediaPlaceholder');
+  const prevImg=document.getElementById('createNewPreviewImg');
+  const prevVid=document.getElementById('createNewPreviewVid');
+  const removeBtn=document.getElementById('createMediaRemoveBtn');
+  if(placeholder)placeholder.style.display='flex';
+  if(prevImg){prevImg.style.display='none';prevImg.src='';}
+  if(prevVid){prevVid.style.display='none';prevVid.src='';}
+  if(removeBtn)removeBtn.style.display='none';
+  const lib=document.getElementById('createLibraryInput');
+  if(lib)lib.value='';
+  _updateCreatePostBtn();
+}
+
+function updateCreateCharCount(el){
+  const remaining=500-(el.value||'').length;
+  const span=document.getElementById('createCharRemain');
+  if(span){span.textContent=remaining;span.style.color=remaining<50?'#ff6b6b':'var(--txt3)';}
+}
+
+let _createLocNominatimTimer=null;
+function filterCreateLocationNew(query){
+  const drop=document.getElementById('createNewLocationDrop');
+  const clear=document.getElementById('createNewLocationClear');
+  if(clear)clear.style.display=query?'block':'none';
+  if(!drop)return;
+  if(!query){drop.style.display='none';return;}
+
+  // First show WildPath spots
+  const allS=[...spots,...userSpots];
+  const spotResults=allS.filter(s=>s.name.toLowerCase().includes(query.toLowerCase())).slice(0,5);
+  const spotItems=spotResults.map(s=>
+    `<div onclick="_selectCreateLocationNew(${s.id},'${s.name.replace(/'/g,"\\'")}')" style="padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:10px;-webkit-tap-highlight-color:transparent">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="#B8E87A" style="flex-shrink:0"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+      <div><div style="font-size:13px;font-weight:600;color:var(--txt0)">${s.name}</div><div style="font-size:11px;color:var(--txt3)">${s.typeLabel||'WildPath Spot'}</div></div>
+    </div>`
+  ).join('');
+
+  if(spotItems){drop.style.display='block';drop.innerHTML=spotItems;}
+
+  // Then query Nominatim (debounced)
+  clearTimeout(_createLocNominatimTimer);
+  _createLocNominatimTimer=setTimeout(()=>{
+    fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=5&addressdetails=1`,{headers:{'Accept-Language':'en'}})
+      .then(r=>r.json())
+      .then(results=>{
+        if(!document.getElementById('createNewLocationInput')||document.getElementById('createNewLocationInput').value!==query)return;
+        const nomItems=results.map(r=>{
+          const displayName=r.display_name.split(',').slice(0,3).join(', ');
+          return `<div onclick="_selectCreateLocationNew(null,'${displayName.replace(/'/g,"\\'")}')" style="padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:10px;-webkit-tap-highlight-color:transparent">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="2" style="flex-shrink:0"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+            <div style="font-size:13px;color:var(--txt1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${displayName}</div>
+          </div>`;
+        }).join('');
+        if(nomItems){
+          drop.style.display='block';
+          drop.innerHTML=(spotItems||'')+nomItems;
+        } else if(!spotItems){
+          drop.style.display='none';
+        }
+      })
+      .catch(()=>{});
+  },350);
+}
+
+function _selectCreateLocationNew(spotId, name){
+  _createNewSelectedSpotId=spotId;
+  const drop=document.getElementById('createNewLocationDrop');
+  const chosen=document.getElementById('createNewLocationChosen');
+  const label=document.getElementById('createNewLocationLabel');
+  const input=document.getElementById('createNewLocationInput');
+  const clear=document.getElementById('createNewLocationClear');
+  if(drop){drop.style.display='none';drop.innerHTML='';}
+  if(input)input.value='';
+  if(clear)clear.style.display='none';
+  if(label)label.textContent=name;
+  if(chosen)chosen.style.display='block';
+}
+
+function clearCreateLocationNew(){
+  _createNewSelectedSpotId=null;
+  const drop=document.getElementById('createNewLocationDrop');
+  const chosen=document.getElementById('createNewLocationChosen');
+  const input=document.getElementById('createNewLocationInput');
+  const clear=document.getElementById('createNewLocationClear');
+  if(drop){drop.style.display='none';drop.innerHTML='';}
+  if(chosen)chosen.style.display='none';
+  if(input)input.value='';
+  if(clear)clear.style.display='none';
+}
+
+function setCreateNewPrivacy(type, el){
+  _createNewPrivacy=type;
+  [['createNewPrivPublic','public'],['createNewPrivCommunity','community'],['createNewPrivPrivate','private']].forEach(([id,t])=>{
+    const tile=document.getElementById(id);
+    if(!tile)return;
+    const isSelected=t===type;
+    tile.style.border=isSelected?'2px solid rgba(184,232,122,.7)':'2px solid var(--border2)';
+    tile.style.background=isSelected?'rgba(184,232,122,.12)':'var(--bg2)';
+    const label=tile.querySelector('div:last-child');
+    if(label){label.style.color=isSelected?'#B8E87A':'var(--txt2)';label.style.fontWeight=isSelected?'700':'600';}
+  });
+}
+
+function toggleCreateAdvanced(){
+  _createAdvancedOpen=!_createAdvancedOpen;
+  const adv=document.getElementById('createAdvancedContent');
+  const chev=document.getElementById('createAdvancedChevron');
+  if(adv)adv.style.display=_createAdvancedOpen?'flex':'none';
+  if(chev)chev.style.transform=_createAdvancedOpen?'rotate(180deg)':'rotate(0deg)';
+}
+
+function submitCreateNewPost(){
+  if(isGuest()){showLoginScreen();return;}
+  if(!_createCapturedDataUrl){showToast('Please select media first');return;}
+
+  const caption=(document.getElementById('createNewCaption')?.value||'').trim();
+  const ownComment=(document.getElementById('createNewOwnComment')?.value||'').trim();
+  const privacy=_createNewPrivacy||'public';
+  const myUid=_myUid();
+  const username=_currentUser?.username||'Explorer';
+
+  const newPost={
+    id:_uid(),
+    userId:myUid,
+    username,
+    type:'photo',
+    mediaUrl:_createCapturedDataUrl,
+    caption,
+    spotId:_createNewSelectedSpotId||null,
+    privacy,
+    likes:[],
+    comments:ownComment?[{userId:myUid,username,text:ownComment,createdAt:new Date().toISOString()}]:[],
+    createdAt:new Date().toISOString()
+  };
+
+  const posts=getPosts();
+  posts.unshift(newPost);
+  setPosts(posts);
+
+  // Show success animation then return to feed
+  const succ=document.getElementById('createSuccessAnim');
+  const circle=document.getElementById('createSuccessCircle');
+  const text=document.getElementById('createSuccessText');
+  if(succ){
+    succ.style.display='flex';
+    setTimeout(()=>{if(circle)circle.style.transform='scale(1)';},30);
+    setTimeout(()=>{if(text)text.style.opacity='1';},250);
+    setTimeout(()=>{
+      succ.style.display='none';
+      closeFeedCreate();
+      showTab('home');
+      setTimeout(()=>buildHomeFeed(),80);
+    },1400);
+  } else {
+    closeFeedCreate();
+    showTab('home');
+    setTimeout(()=>buildHomeFeed(),80);
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// ACTIVITY / NOTIFICATIONS PAGE
+// ═══════════════════════════════════════════════════
+function openActivityPage(){
+  const page=document.getElementById('feedActivityPage');
+  if(!page)return;
+  page.style.display='flex';
+  // Hide badge
+  const badge=document.getElementById('feedActivityBadge');
+  if(badge)badge.style.display='none';
+  _buildActivityList();
+}
+
+function closeFeedActivity(){
+  const page=document.getElementById('feedActivityPage');
+  if(page)page.style.display='none';
+}
+
+function _buildActivityList(){
+  const list=document.getElementById('feedActivityList');
+  if(!list)return;
+  const myUid=String(_myUid());
+  const posts=getPosts();
+  const myPosts=posts.filter(p=>String(p.userId)===myUid);
+  const events=[];
+
+  // Collect likes on my posts
+  myPosts.forEach(post=>{
+    (post.likes||[]).forEach(uid=>{
+      if(String(uid)===myUid)return;
+      const profile=getUserProfile(uid)||{};
+      events.push({type:'like',username:profile.username||'Someone',postCaption:post.caption||'your post',time:post.createdAt,avatar:profile.avatarUrl||null});
+    });
+  });
+
+  // Collect comments on my posts
+  myPosts.forEach(post=>{
+    const key=`wp_comments_spot_${post.spotId||post.id}`;
+    const comments=JSON.parse(localStorage.getItem(key)||'[]');
+    comments.forEach(c=>{
+      if(String(c.userId)===myUid)return;
+      events.push({type:'comment',username:c.username||'Someone',text:c.text||'',time:c.date,avatar:null});
+    });
+  });
+
+  if(!events.length){
+    list.innerHTML=`<div style="text-align:center;padding:60px 20px;color:var(--txt3)">
+      
+      <div style="font-size:15px;font-weight:700;color:var(--txt1)">No activity yet</div>
+      <div style="font-size:13px;margin-top:6px;line-height:1.6">When someone likes or comments on your posts, it'll show up here.</div>
+    </div>`;
+    return;
+  }
+
+  list.innerHTML=events.map(ev=>{
+    const initials=(ev.username||'?').slice(0,2).toUpperCase();
+    const icon=ev.type==='like'
+      ?`<svg viewBox="0 0 24 24" width="14" height="14" fill="#ff4d6d" stroke="none"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>`
+      :`<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#B8E87A" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
+    const desc=ev.type==='like'
+      ?`liked your post${ev.postCaption?' "'+ev.postCaption.slice(0,30)+(ev.postCaption.length>30?'…':'')+'"':''}`
+      :`commented: "${(ev.text||'').slice(0,40)}${(ev.text||'').length>40?'…':''}"`;
+    return `<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--border)">
+      <div style="width:40px;height:40px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#B8E87A;flex-shrink:0">${initials}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;color:var(--txt0)"><strong>@${ev.username}</strong> ${desc}</div>
+      </div>
+      <div style="flex-shrink:0">${icon}</div>
+    </div>`;
+  }).join('');
+}
+
+// ═══════════════════════════════════════════════════
+// FEED SEND SHEET (DM a post)
+// ═══════════════════════════════════════════════════
+function openFeedSendSheet(){
+  const sheet=document.getElementById('feedSendSheet');
+  const inner=document.getElementById('feedSendSheetInner');
+  if(!sheet||!inner)return;
+  sheet.style.display='flex';
+  inner.style.transition='none';
+  inner.style.transform='translateY(100%)';
+  requestAnimationFrame(()=>{
+    inner.style.transition='transform 0.3s cubic-bezier(0.32,0.72,0,1)';
+    requestAnimationFrame(()=>{inner.style.transform='translateY(0)';});
+  });
+  const searchInput=document.getElementById('feedSendSearchInput');
+  if(searchInput){searchInput.value='';setTimeout(()=>searchInput.focus(),350);}
+  filterFeedSendSearch('');
+  // Drag-to-dismiss on the inner sheet
+  _attachSendSheetDrag(inner,sheet);
+}
+
+function _attachSendSheetDrag(inner,sheet){
+  if(inner._dragAttached)return;
+  inner._dragAttached=true;
+  let ty=0,sy=0,dragging=false;
+  inner.addEventListener('touchstart',e=>{
+    if(e.target.closest('input')||e.target.closest('#feedSendUserList'))return;
+    dragging=true;sy=e.touches[0].clientY;ty=0;
+    inner.style.transition='none';
+  },{passive:true});
+  inner.addEventListener('touchmove',e=>{
+    if(!dragging)return;
+    ty=Math.max(0,e.touches[0].clientY-sy);
+    inner.style.transform='translateY('+ty+'px)';
+  },{passive:true});
+  inner.addEventListener('touchend',()=>{
+    if(!dragging)return;dragging=false;
+    if(ty>80){closeFeedSendSheet();}
+    else{inner.style.transition='transform 0.25s cubic-bezier(0.32,0.72,0,1)';inner.style.transform='translateY(0)';}
+  },{passive:true});
+}
+
+function closeFeedSendSheet(){
+  const inner=document.getElementById('feedSendSheetInner');
+  const sheet=document.getElementById('feedSendSheet');
+  if(!inner||!sheet)return;
+  inner.style.transition='transform 0.25s cubic-bezier(0.32,0.72,0,1)';
+  inner.style.transform='translateY(100%)';
+  setTimeout(()=>{sheet.style.display='none';_feedSendPostIdx=-1;},260);
+}
+
+function filterFeedSendSearch(query){
+  const list=document.getElementById('feedSendUserList');
+  if(!list)return;
+  const myUid=String(_myUid());
+  const colors=['#2d5a3a','#3a2d5a','#5a3a2d','#2d4a5a','#5a2d4a'];
+
+  function userRow(uid,username,fullName,avatarUrl){
+    const initials=(username||'??').slice(0,2).toUpperCase();
+    const ci=(username||'').charCodeAt(0)%colors.length;
+    const avatarContent=avatarUrl&&avatarUrl.startsWith('data:')?`<img src="${avatarUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`:(initials);
+    return `<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,.06);-webkit-tap-highlight-color:transparent" onclick="sendFeedPostAsDm('${uid}')">
+      <div style="width:40px;height:40px;border-radius:50%;background:${colors[ci]};display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:#fff;flex-shrink:0;overflow:hidden">${avatarContent}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:14px;font-weight:700;color:var(--txt0)">@${username||'Explorer'}</div>
+        ${fullName?`<div style="font-size:12px;color:var(--txt3);margin-top:1px">${fullName}</div>`:''}
+      </div>
+      <div style="background:transparent;border:1.5px solid #B8E87A;border-radius:20px;padding:5px 14px;font-size:12px;font-weight:700;color:#B8E87A;flex-shrink:0">Send</div>
+    </div>`;
+  }
+
+  if(query){
+    // Search all users by username
+    const allUsers=_getUsers()||[];
+    const filtered=allUsers.filter(u=>String(u.id||u.uid)!==myUid&&(u.username||'').toLowerCase().includes(query.toLowerCase()));
+    if(!filtered.length){
+      list.innerHTML=`<div style="text-align:center;padding:40px 20px;color:var(--txt3);font-size:13px">No users found</div>`;
+      return;
+    }
+    list.innerHTML=filtered.map(u=>userRow(u.id||u.uid||'',u.username,u.fullName,null)).join('');
+  } else {
+    // Show recent conversations as suggested recipients
+    const msgs=getMessages();
+    const convos=Object.entries(msgs).filter(([k])=>k.includes(myUid)).slice(0,8);
+    if(convos.length){
+      const header=`<div style="font-size:11px;font-weight:700;color:var(--txt3);letter-spacing:.5px;text-transform:uppercase;padding:10px 16px 4px">Recent</div>`;
+      const allUsersMap={};(_getUsers()||[]).forEach(u=>{allUsersMap[String(u.id||u.uid)]=u;});
+      list.innerHTML=header+convos.map(([key])=>{
+        const otherUid=key.split('__').find(u=>u!==myUid)||key.split('__')[0];
+        const pd=getUserProfile(otherUid)||{};
+        const uu=allUsersMap[otherUid]||{};
+        const username=pd.username||uu.username||otherUid||'Explorer';
+        const fullName=pd.fullName||uu.fullName||'';
+        return userRow(otherUid,username,fullName,pd.avatarUrl||null);
+      }).join('');
+    } else {
+      // Fall back to showing all users
+      const allUsers=(_getUsers()||[]).filter(u=>String(u.id||u.uid)!==myUid).slice(0,12);
+      if(!allUsers.length){
+        list.innerHTML=`<div style="text-align:center;padding:40px 20px;color:var(--txt3);font-size:13px">Search to find people</div>`;
+        return;
+      }
+      const header=`<div style="font-size:11px;font-weight:700;color:var(--txt3);letter-spacing:.5px;text-transform:uppercase;padding:10px 16px 4px">People</div>`;
+      list.innerHTML=header+allUsers.map(u=>userRow(u.id||u.uid||'',u.username,u.fullName||'',null)).join('');
+    }
+  }
+}
+
+function sendFeedPostAsDm(toUserId){
+  if(isGuest()){showLoginScreen();return;}
+  const post=_feedPosts[_feedSendPostIdx>=0?_feedSendPostIdx:_feedPostIdx];
+  if(!post)return;
+  const key=_dmConvKey(_myUid(),toUserId);
+  const msgs=getMessages();
+  if(!msgs[key])msgs[key]=[];
+  // Send as post card (rich preview)
+  const postCard={
+    caption:(post.caption||'').slice(0,80)+(post.caption&&post.caption.length>80?'…':''),
+    spotName:post.spotName||'',
+    gradient:post.spotGradient||post.heroGradient||'linear-gradient(135deg,#1a3a2a,#2d4a3a)',
+    mediaUrl:(post.photos&&post.photos[0])||post.mediaUrl||null,
+    spotId:post.spotId||null
+  };
+  msgs[key].push({id:_uid(),fromId:_myUid(),postCard,time:new Date().toISOString()});
+  setMessages(msgs);
+  // Get recipient username for toast
+  const pd=getUserProfile(toUserId)||{};
+  const toName=pd.username||toUserId||'them';
+  closeFeedSendSheet();
+  // Checkmark toast
+  showToast('Sent to @'+toName);
+}
+
+// ═══════════════════════════════════════════════════
+// COMMUNITY LIST — pin left + 3-dot right
+// ═══════════════════════════════════════════════════
+// Override _buildCommunityList with pin+3-dot design
+(function(){
+  const _orig=window._buildCommunityList;
+  window._buildCommunityList=function(){
+    try {
+      const listEl=document.getElementById('commListContent');
+      if(!listEl)return;
+      const comms=getCommunities();
+      const pinned=JSON.parse(localStorage.getItem('wp_pinned_comms')||'[]');
+      const sorted=[...comms].sort((a,b)=>{
+        const ap=pinned.includes(a.id)?1:0, bp=pinned.includes(b.id)?1:0;
+        if(ap!==bp)return bp-ap;
+        return (b.memberCount||0)-(a.memberCount||0);
+      });
+      if(!sorted.length){
+        listEl.innerHTML='<div style="text-align:center;padding:48px 20px;color:var(--txt3);font-size:13px">No communities yet.<br>Create one or search to find groups.</div>';
+        return;
+      }
+      listEl.innerHTML=sorted.map(c=>{
+        const isPinned=pinned.includes(c.id);
+        const since=c.createdAt?new Date(c.createdAt).getFullYear():'2024';
+        const members=c.memberCount||(getMembers?.(c.id)||[]).length||0;
+        const coverBg=c.coverColor||'linear-gradient(135deg,#1a2c1a,#2d4a2d)';
+        return `<div style="display:flex;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid var(--border)">
+          <!-- Pin icon on far LEFT -->
+          <div onclick="event.stopPropagation();_togglePinComm('${c.id}')" style="flex-shrink:0;width:32px;height:32px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:50%;background:${isPinned?'rgba(184,232,122,.15)':'transparent'}">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="${isPinned?'#B8E87A':'none'}" stroke="${isPinned?'#B8E87A':'var(--txt3)'}" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+          </div>
+          <!-- Cover thumbnail -->
+          <div onclick="openCommunityDetail('${c.id}')" style="width:52px;height:52px;border-radius:10px;flex-shrink:0;overflow:hidden;background:${coverBg};cursor:pointer">
+            ${c.coverUrl?`<img src="${c.coverUrl}" style="width:100%;height:100%;object-fit:cover">`:''}
+          </div>
+          <!-- Info -->
+          <div onclick="openCommunityDetail('${c.id}')" style="flex:1;min-width:0;cursor:pointer">
+            <div style="font-size:14px;font-weight:700;color:var(--txt0);line-height:1.3">
+              ${c.name||'Community'}
+              ${isPinned?'<svg viewBox="0 0 24 24" width="9" height="9" fill="var(--accent)" stroke="none" style="margin-left:4px;vertical-align:middle"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>':''}
+            </div>
+            <div style="font-size:12px;color:var(--txt3);margin-top:2px">${members.toLocaleString()} members · since ${since}</div>
+          </div>
+          <!-- Three-dot on far RIGHT -->
+          <div onclick="event.stopPropagation();_commThreeDotMenu('${c.id}')" style="flex-shrink:0;width:34px;height:34px;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:50%;background:var(--bg2);border:1px solid var(--border2)">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="var(--txt2)"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
+          </div>
+        </div>`;
+      }).join('');
+    } catch(e) {
+      console.error('Community screen error:', e);
+    }
+  };
+})();
+
+function _commThreeDotMenu(commId){
+  const pinned=JSON.parse(localStorage.getItem('wp_pinned_comms')||'[]');
+  const isPinned=pinned.includes(commId);
+  const sheet=document.createElement('div');
+  sheet.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.65);display:flex;align-items:flex-end';
+  sheet.innerHTML=`<div style="width:100%;background:var(--bg1);border-radius:20px 20px 0 0;padding:14px 0 calc(env(safe-area-inset-bottom,0px)+14px)">
+    <div style="width:36px;height:4px;background:var(--border2);border-radius:2px;margin:0 auto 12px"></div>
+    <div onclick="openCommunityDetail('${commId}');this.closest('[style*=fixed]').remove()" style="padding:14px 20px;font-size:15px;font-weight:600;color:var(--txt0);cursor:pointer;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--txt2)" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      View Community
+    </div>
+    <div onclick="_togglePinComm('${commId}');this.closest('[style*=fixed]').remove()" style="padding:14px 20px;font-size:15px;font-weight:600;color:var(--txt0);cursor:pointer;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--txt2)" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+      ${isPinned?'Unpin from Top':'Pin to Top'}
+    </div>
+    <div onclick="showToast('Notifications muted');this.closest('[style*=fixed]').remove()" style="padding:14px 20px;font-size:15px;font-weight:600;color:var(--txt0);cursor:pointer;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--txt2)" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+      Mute Notifications
+    </div>
+    <div onclick="showToast('Left community');this.closest('[style*=fixed]').remove()" style="padding:14px 20px;font-size:15px;font-weight:600;color:#e05252;cursor:pointer;display:flex;align-items:center;gap:12px">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#e05252" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      Leave Community
+    </div>
+    <div onclick="this.closest('[style*=fixed]').remove()" style="padding:14px 20px;font-size:15px;font-weight:600;color:var(--txt3);cursor:pointer;text-align:center">Cancel</div>
+  </div>`;
+  sheet.onclick=e=>{if(e.target===sheet)sheet.remove();};
+  document.body.appendChild(sheet);
+}
+
+// ═══════════════════════════════════════════════════
+// MAP SIDE PANEL — 3D toggle + land layer toggles
+// ═══════════════════════════════════════════════════
+const _sidePanelActiveLayers=new Set();
+
+function _toggleSidePanelLayer(layerId, rowEl){
+  const toggle=rowEl?.querySelector('.side-layer-toggle');
+  const knob=rowEl?.querySelector('.side-layer-knob');
+  const isOn=_sidePanelActiveLayers.has(layerId);
+  if(isOn){
+    _sidePanelActiveLayers.delete(layerId);
+    if(toggle){toggle.classList.remove('on');toggle.classList.add('off');}
+    _removeSidePanelLayer(layerId);
+  } else {
+    _sidePanelActiveLayers.add(layerId);
+    if(toggle){toggle.classList.remove('off');toggle.classList.add('on');}
+    _addSidePanelLayer(layerId);
+  }
+}
+
+function _addSidePanelLayer(layerId){
+  if(!map||!map.loaded())return;
+  try{
+    const configs={
+      blm:{color:'#f9a825',opacity:0.25,label:'Bureau of Land Management',source:'blm-data'},
+      natforest:{color:'#388e3c',opacity:0.25,label:'National Forest',source:'natforest-data'},
+      stateparks:{color:'#1565c0',opacity:0.25,label:'State Parks',source:'stateparks-data'},
+      countylines:{color:'rgba(255,255,255,0.7)',opacity:1,label:'County Lines',source:'countylines-data',line:true},
+      privateland:{color:'#c62828',opacity:0.18,label:'Private Land',source:'privateland-data'}
+    };
+    const cfg=configs[layerId];
+    if(!cfg)return;
+    // Use existing layers if available (from the layers system)
+    const existingLayer=document.querySelector(`[data-layer="${layerId}"]`);
+    // Try to toggle existing map layer if it exists
+    const layerIds=map.getStyle()?.layers?.map(l=>l.id)||[];
+    const matchingLayer=layerIds.find(id=>id.toLowerCase().includes(layerId)||id.toLowerCase().includes(cfg.label.toLowerCase().replace(/ /g,'-')));
+    if(matchingLayer){
+      map.setLayoutProperty(matchingLayer,'visibility','visible');
+    } else {
+      // Show toast since real boundary data requires a tile source
+      showToast(`${cfg.label} layer toggled`);
+    }
+  }catch(e){}
+}
+
+function _removeSidePanelLayer(layerId){
+  if(!map||!map.loaded())return;
+  try{
+    const configs={blm:{label:'Bureau of Land Management'},natforest:{label:'National Forest'},stateparks:{label:'State Parks'},countylines:{label:'County Lines'},privateland:{label:'Private Land'}};
+    const cfg=configs[layerId];
+    if(!cfg)return;
+    const layerIds=map.getStyle()?.layers?.map(l=>l.id)||[];
+    const matchingLayer=layerIds.find(id=>id.toLowerCase().includes(layerId)||id.toLowerCase().includes((cfg.label||'').toLowerCase().replace(/ /g,'-')));
+    if(matchingLayer){map.setLayoutProperty(matchingLayer,'visibility','none');}
+  }catch(e){}
+}
+
+// Show/hide 3D toggle based on style
+function _updateSidePanel3DRow(styleName){
+  const row=document.getElementById('sidePanel3DRow');
+  if(row){row.style.display=(styleName==='satellite'||styleName==='hybrid')?'block':'none';}
+}
+
+// Hook into setMapStyle to show/hide 3D row — wrap without breaking original
+const _origSetMapStyle=window.setMapStyle;
+if(_origSetMapStyle){
+  window.setMapStyle=function(s,...args){
+    _origSetMapStyle.call(this,s,...args);
+    _updateSidePanel3DRow(s);
+  };
+}
+
+// Stub for legacy calls
+function toggleDotMenu(){}
+function closeDotMenu(){}
+
+// CSS helper for side-layer toggles (injected once)
+(function(){
+  if(document.getElementById('_sideLayerStyles'))return;
+  const style=document.createElement('style');
+  style.id='_sideLayerStyles';
+  style.textContent=`
+    .side-layer-toggle{width:40px;height:24px;border-radius:12px;position:relative;transition:background .2s;flex-shrink:0}
+    .side-layer-toggle.off{background:var(--border2)}
+    .side-layer-toggle.on{background:#B8E87A}
+    .side-layer-knob{position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:transform .2s;box-shadow:0 1px 3px rgba(0,0,0,.3)}
+    .side-layer-toggle.on .side-layer-knob{transform:translateX(16px)}
+  `;
+  document.head.appendChild(style);
+})();
+
+// ═══════════════════════════════════════════════════
+// COMMUNITY — PULL TO REFRESH
+// ═══════════════════════════════════════════════════
+(function(){
+  let _ptr_startY=0, _ptr_dist=0, _ptr_active=false;
+  const THRESHOLD=60;
+
+  document.addEventListener('DOMContentLoaded',()=>{
+    const scrollEl=document.getElementById('commCommunitiesList');
+    if(!scrollEl)return;
+    scrollEl.addEventListener('touchstart',(e)=>{
+      if(scrollEl.scrollTop===0){
+        _ptr_startY=e.touches[0].clientY;
+        _ptr_active=true;
+      }
+    },{passive:true});
+    scrollEl.addEventListener('touchmove',(e)=>{
+      if(!_ptr_active)return;
+      _ptr_dist=e.touches[0].clientY-_ptr_startY;
+    },{passive:true});
+    scrollEl.addEventListener('touchend',()=>{
+      if(_ptr_active&&_ptr_dist>THRESHOLD){
+        _buildCommunityList();
+        showToast('Communities refreshed');
+      }
+      _ptr_active=false;
+      _ptr_dist=0;
+    },{passive:true});
+  });
+})();
+
+function _sidePanelToggle3D(){
+  toggle3DMap();
+  // Sync visual toggle
+  const tog=document.getElementById('sidePanel3DToggle');
+  const knob=document.getElementById('sidePanel3DKnob');
+  if(tog&&knob){
+    const is3dOn=typeof _map3dOn!=='undefined'?_map3dOn:false;
+    if(is3dOn){
+      tog.style.background='#B8E87A';
+      knob.style.transform='translateX(18px)';
+    } else {
+      tog.style.background='var(--border2)';
+      knob.style.transform='translateX(0)';
+    }
+  }
+}

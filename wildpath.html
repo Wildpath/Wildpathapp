@@ -1,0 +1,1924 @@
+<!-- NO EMOJIS — SVG icons or plain text only -->
+<!-- =============================================================================
+     STRICT RULE — No emojis allowed anywhere in this app.
+     Never add emojis to any text, labels, buttons, placeholders, empty states,
+     notifications, or any other UI element.
+     Use Tabler icons (inline SVG) or plain text only.
+     This rule applies to all future edits permanently.
+     ============================================================================= -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>WildPath</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.11.0/dist/tabler-icons.min.css" rel="stylesheet"/>
+<link href="https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.css" rel="stylesheet"/>
+<script src="https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.js"></script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ── LOGIN SCREEN ──────────────────────────────── -->
+<div id="loginScreen" style="position:fixed;inset:0;z-index:99999;background:#0d120d;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;padding-bottom:40px">
+  <!-- Background photo -->
+  <div style="position:absolute;inset:0;background-image:url('https://source.unsplash.com/1080x1920/?california,coast,ocean');background-size:cover;background-position:center"></div>
+  <div style="position:absolute;inset:0;background:rgba(0,0,0,0.55)"></div>
+  <!-- Logo -->
+  <div style="position:absolute;top:15%;left:0;right:0;display:flex;flex-direction:column;align-items:center;gap:10px;z-index:2">
+    <svg width="48" height="48" viewBox="0 0 48 48" fill="none"><path d="M4 40 L16 18 L24 28 L32 16 L44 40 Z" fill="#B8E87A" opacity=".9"/><path d="M2 40 Q8 36 14 38 Q20 40 26 37 Q32 34 38 36 Q42 38 46 40" stroke="#B8E87A" stroke-width="1.5" stroke-linecap="round" fill="none" opacity=".45"/></svg>
+    <div style="font-size:28px;font-weight:700;letter-spacing:-0.03em;color:#fff">WildPath</div>
+    <div style="font-size:12px;color:rgba(255,255,255,0.45)">Explore the unknown</div>
+  </div>
+  <!-- Auth card -->
+  <div style="position:relative;z-index:2;width:calc(100% - 40px);max-width:420px;background:rgba(15,20,16,0.85);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.08);border-radius:24px;padding:24px">
+    <!-- Tab pills -->
+    <div style="display:flex;background:rgba(255,255,255,0.06);border-radius:12px;padding:3px;margin-bottom:20px">
+      <div id="loginTabSignIn" onclick="loginShowSignIn()" style="flex:1;text-align:center;padding:9px;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;background:#B8E87A;color:#0f1a0a;transition:all .2s">Sign In</div>
+      <div id="loginTabSignUp" onclick="loginShowSignUp()" style="flex:1;text-align:center;padding:9px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;color:rgba(255,255,255,0.5);transition:all .2s">Create Account</div>
+    </div>
+    <!-- Sign In panel -->
+    <div id="loginSignInPanel">
+      <div id="loginSignInError" style="display:none;background:rgba(196,82,74,0.15);border:1px solid rgba(196,82,74,0.4);border-radius:10px;padding:10px 12px;font-size:12px;color:#e88080;margin-bottom:12px"></div>
+      <input id="loginEmail" type="email" placeholder="Email address" autocomplete="email"
+        style="width:100%;height:48px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:12px;color:#fff;padding:0 14px;font-size:14px;box-sizing:border-box;outline:none;font-family:inherit;margin-bottom:10px"
+        onkeydown="if(event.key==='Enter')doLogin()">
+      <input id="loginPassword" type="password" placeholder="Password" autocomplete="current-password"
+        style="width:100%;height:48px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:12px;color:#fff;padding:0 14px;font-size:14px;box-sizing:border-box;outline:none;font-family:inherit;margin-bottom:14px"
+        onkeydown="if(event.key==='Enter')doLogin()">
+      <div onclick="doLogin()" style="width:100%;height:48px;background:#B8E87A;color:#0f1a0a;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:inherit;-webkit-tap-highlight-color:transparent">Sign In</div>
+    </div>
+    <!-- Sign Up panel -->
+    <div id="loginSignUpPanel" style="display:none">
+      <div id="loginSignUpError" style="display:none;background:rgba(196,82,74,0.15);border:1px solid rgba(196,82,74,0.4);border-radius:10px;padding:10px 12px;font-size:12px;color:#e88080;margin-bottom:12px"></div>
+      <input id="signupUsername" type="text" placeholder="Username" autocomplete="username"
+        style="width:100%;height:48px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:12px;color:#fff;padding:0 14px;font-size:14px;box-sizing:border-box;outline:none;font-family:inherit;margin-bottom:10px">
+      <input id="signupEmail" type="email" placeholder="Email address" autocomplete="email"
+        style="width:100%;height:48px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:12px;color:#fff;padding:0 14px;font-size:14px;box-sizing:border-box;outline:none;font-family:inherit;margin-bottom:10px">
+      <input id="signupPassword" type="password" placeholder="Password" autocomplete="new-password"
+        style="width:100%;height:48px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:12px;color:#fff;padding:0 14px;font-size:14px;box-sizing:border-box;outline:none;font-family:inherit;margin-bottom:10px">
+      <input id="signupConfirm" type="password" placeholder="Confirm password" autocomplete="new-password"
+        style="width:100%;height:48px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:12px;color:#fff;padding:0 14px;font-size:14px;box-sizing:border-box;outline:none;font-family:inherit;margin-bottom:10px">
+      <input id="signupAdminCode" type="text" placeholder="Admin code (optional)"
+        style="width:100%;height:48px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:12px;color:#fff;padding:0 14px;font-size:14px;box-sizing:border-box;outline:none;font-family:inherit;margin-bottom:14px">
+      <div onclick="doSignup()" style="width:100%;height:48px;background:#B8E87A;color:#0f1a0a;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:inherit;-webkit-tap-highlight-color:transparent">Create Account</div>
+    </div>
+  </div>
+  <!-- Continue as guest -->
+  <div onclick="continueAsGuest()" style="position:relative;z-index:2;margin-top:16px;font-size:13px;color:rgba(255,255,255,0.35);cursor:pointer;padding:8px 20px;-webkit-tap-highlight-color:transparent">Continue as Guest</div>
+</div>
+
+<div id="app">
+
+  <div class="toast" id="toast"></div>
+
+  <!-- ── MAP SCREEN ────────────────────────────────── -->
+  <div class="screen" id="map-screen">
+    <div id="map">
+      <div id="mapbox-token-prompt" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:1000;background:rgba(15,20,16,0.95);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:24px;width:280px;text-align:center;font-family:-apple-system,'Inter',sans-serif">
+        <svg width="40" height="40" viewBox="0 0 48 48" fill="none" style="margin-bottom:14px"><path d="M4 38 L16 18 L24 28 L30 20 L44 38 Z" stroke="#B8E87A" stroke-width="2.2" stroke-linejoin="round" fill="none"/><path d="M10 38 Q18 34 24 36 Q30 38 38 34" stroke="#B8E87A" stroke-width="1.8" stroke-linecap="round" fill="none" opacity=".55"/></svg>
+        <div style="font-size:16px;font-weight:700;color:#fff;margin-bottom:8px">Map Token Required</div>
+        <div style="font-size:12px;color:rgba(255,255,255,0.45);margin-bottom:16px;line-height:1.5">Get your free token at<br><strong style="color:#B8E87A">mapbox.com</strong> → Account → Access Tokens</div>
+        <input id="token-input" type="text" placeholder="Paste your pk.eyJ1... token" autocomplete="off" spellcheck="false" style="width:100%;height:44px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.15);border-radius:10px;color:#fff;padding:0 12px;font-size:13px;box-sizing:border-box;outline:none;font-family:inherit" onkeydown="if(event.key==='Enter')_saveTokenAndLoad()">
+        <div id="token-input-error" style="font-size:11px;color:#e88080;margin-top:6px;display:none">Invalid token — must start with pk.</div>
+        <button onclick="_saveTokenAndLoad()" style="width:100%;height:44px;background:#B8E87A;color:#0f1a0a;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;margin-top:8px;font-family:inherit">Save and Load Map</button>
+      </div>
+    </div>
+    <!-- Map error / token setup overlay -->
+    <div id="mapError">
+      <div class="map-error-icon"><svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="var(--txt3)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg></div>
+      <div class="map-error-title">Mapbox Token Required</div>
+      <div class="map-error-msg">WildPath uses Mapbox for satellite imagery, 3D terrain, and outdoor maps. Paste your free Mapbox public token below to activate the map.</div>
+      <div class="token-input-row">
+        <input class="token-input" id="mapboxTokenInput" type="text" placeholder="pk.eyJ1..." autocomplete="off" spellcheck="false">
+        <button class="token-save-btn" onclick="saveMapboxToken()">Save</button>
+      </div>
+      <div class="token-hint">
+        Get a free token at <strong style="color:var(--accent)">mapbox.com</strong> → Account → Access Tokens.<br>
+        Your token starts with <code style="background:var(--bg3);padding:1px 5px;border-radius:4px;font-size:10px">pk.eyJ1...</code>
+      </div>
+    </div>
+
+    <!-- Search bar -->
+    <!-- Hamburger menu button -->
+    <div class="menu-btn" onclick="toggleSidePanel()" title="Map controls">
+      <svg width="20" height="14" viewBox="0 0 20 14" fill="none">
+        <rect width="20" height="2.2" rx="1.1" fill="var(--txt1)"/>
+        <rect y="5.9" width="14" height="2.2" rx="1.1" fill="var(--txt1)"/>
+        <rect y="11.8" width="20" height="2.2" rx="1.1" fill="var(--txt1)"/>
+      </svg>
+    </div>
+
+    <!-- Search bar (left shifted to clear menu button) -->
+    <div class="map-search-wrapper" style="position:absolute;top:16px;left:70px;right:14px;z-index:100">
+      <div class="map-search" style="position:relative;left:auto;right:auto;top:auto">
+        <span class="search-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg></span>
+        <input type="text" id="mapSearchInput" placeholder="Search anywhere — trails, cities, mountains…"
+               oninput="nominatimSearch(this.value)" onfocus="nominatimSearch(this.value)" autocomplete="off">
+        <span id="searchClearBtn" style="font-size:16px;color:var(--txt3);cursor:pointer;display:none;padding:4px;flex-shrink:0" onclick="clearMapSearch()">×</span>
+      </div>
+      <div id="mapSearchDrop" class="map-search-drop"></div>
+    </div>
+
+    <!-- Side panel overlay -->
+    <div class="side-panel-overlay" id="sidePanelOverlay" onclick="toggleSidePanel()"></div>
+    <!-- Side panel -->
+    <div class="side-panel" id="sidePanel">
+      <div class="side-panel-header">
+        <div class="side-panel-title">Map Controls</div>
+        <div class="side-panel-close" onclick="toggleSidePanel()">×</div>
+      </div>
+
+      <div class="side-section-label">Map Style</div>
+      <div class="map-style-grid" id="mapStyleGrid">
+        <div class="map-style-tile active" id="tile-standard" onclick="setMapStyle('standard');updateStyleTiles('standard')">
+          <div class="map-style-tile-img standard"></div>
+          <div class="map-style-tile-label">Standard</div>
+        </div>
+        <div class="map-style-tile" id="tile-terrain" onclick="setMapStyle('terrain');updateStyleTiles('terrain')">
+          <div class="map-style-tile-img terrain"></div>
+          <div class="map-style-tile-label">Terrain</div>
+        </div>
+        <div class="map-style-tile" id="tile-satellite" onclick="setMapStyle('satellite');updateStyleTiles('satellite')">
+          <div class="map-style-tile-img satellite"></div>
+          <div class="map-style-tile-label">Satellite</div>
+        </div>
+        <div class="map-style-tile" id="tile-hybrid" onclick="setMapStyle('hybrid');updateStyleTiles('hybrid')">
+          <div class="map-style-tile-img hybrid"></div>
+          <div class="map-style-tile-label">Hybrid</div>
+        </div>
+      </div>
+
+      <!-- 3D View toggle — only visible on satellite / hybrid styles -->
+      <div id="sidePanel3DRow" style="display:none;margin-bottom:14px">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:var(--bg2);border:1px solid var(--border2);border-radius:12px;cursor:pointer" onclick="_sidePanelToggle3D()">
+          <div>
+            <div style="font-size:14px;font-weight:700;color:var(--txt0)">3D View</div>
+            <div style="font-size:11px;color:var(--txt3);margin-top:2px">Satellite &amp; Hybrid only</div>
+          </div>
+          <div id="sidePanel3DToggle" style="width:44px;height:26px;border-radius:13px;background:var(--border2);position:relative;transition:background .2s;flex-shrink:0">
+            <div id="sidePanel3DKnob" style="position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;transition:transform .2s"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Additional options -->
+      <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:14px">
+        <div onclick="toggleSidePanel();startHikeTracking()" style="display:flex;align-items:center;gap:12px;padding:13px 14px;background:var(--bg2);border:1px solid var(--border2);border-radius:12px 12px 0 0;cursor:pointer;margin-bottom:1px">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--accent)" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          <span style="font-size:14px;font-weight:600;color:var(--accent)">Track Hike</span>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--txt3)" stroke-width="2" style="margin-left:auto"><polyline points="9 18 15 12 9 6"/></svg>
+        </div>
+        <div onclick="toggleSidePanel();openOfflineDownload()" style="display:flex;align-items:center;gap:12px;padding:13px 14px;background:var(--bg2);border:1px solid var(--border2);border-radius:0;cursor:pointer;margin-bottom:1px">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--txt2)" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span style="font-size:14px;font-weight:600;color:var(--txt0)">Download Area</span>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--txt3)" stroke-width="2" style="margin-left:auto"><polyline points="9 18 15 12 9 6"/></svg>
+        </div>
+        <div onclick="toggleSidePanel();openARMode()" style="display:flex;align-items:center;gap:12px;padding:13px 14px;background:var(--bg2);border:1px solid var(--border2);border-radius:0 0 12px 12px;cursor:pointer">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--txt2)" stroke-width="2"><path d="M1 6v16l7-4 8 4 7-4V2l-7 4-8-4-7 4z"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>
+          <span style="font-size:14px;font-weight:600;color:var(--txt0)">AR Peaks</span>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--txt3)" stroke-width="2" style="margin-left:auto"><polyline points="9 18 15 12 9 6"/></svg>
+        </div>
+      </div>
+
+      <div class="side-section-label">Spot Filters</div>
+      <div class="filter-chip-row" id="sidePanelFilters"></div>
+
+      <div class="side-section-label">Map Layers</div>
+      <!-- Land boundary layers -->
+      <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:12px" id="sidePanelLandLayers">
+        <div onclick="_toggleSidePanelLayer('blm',this)" class="side-layer-row" data-layer="blm" style="display:flex;align-items:center;gap:12px;padding:11px 14px;background:var(--bg2);border:1px solid var(--border2);border-radius:12px 12px 0 0;cursor:pointer;margin-bottom:1px">
+          <div style="width:14px;height:14px;border-radius:3px;background:#f9a825;flex-shrink:0"></div>
+          <span style="font-size:13px;font-weight:600;color:var(--txt0);flex:1">BLM Land</span>
+          <div class="side-layer-toggle off"><div class="side-layer-knob"></div></div>
+        </div>
+        <div onclick="_toggleSidePanelLayer('natforest',this)" class="side-layer-row" data-layer="natforest" style="display:flex;align-items:center;gap:12px;padding:11px 14px;background:var(--bg2);border:1px solid var(--border2);border-radius:0;cursor:pointer;margin-bottom:1px">
+          <div style="width:14px;height:14px;border-radius:3px;background:#388e3c;flex-shrink:0"></div>
+          <span style="font-size:13px;font-weight:600;color:var(--txt0);flex:1">National Forest</span>
+          <div class="side-layer-toggle off"><div class="side-layer-knob"></div></div>
+        </div>
+        <div onclick="_toggleSidePanelLayer('stateparks',this)" class="side-layer-row" data-layer="stateparks" style="display:flex;align-items:center;gap:12px;padding:11px 14px;background:var(--bg2);border:1px solid var(--border2);border-radius:0;cursor:pointer;margin-bottom:1px">
+          <div style="width:14px;height:14px;border-radius:3px;background:#1565c0;flex-shrink:0"></div>
+          <span style="font-size:13px;font-weight:600;color:var(--txt0);flex:1">State Parks</span>
+          <div class="side-layer-toggle off"><div class="side-layer-knob"></div></div>
+        </div>
+        <div onclick="_toggleSidePanelLayer('countylines',this)" class="side-layer-row" data-layer="countylines" style="display:flex;align-items:center;gap:12px;padding:11px 14px;background:var(--bg2);border:1px solid var(--border2);border-radius:0;cursor:pointer;margin-bottom:1px">
+          <div style="width:14px;height:14px;border-radius:3px;background:rgba(255,255,255,.4);border:1px solid rgba(255,255,255,.3);flex-shrink:0"></div>
+          <span style="font-size:13px;font-weight:600;color:var(--txt0);flex:1">County Lines</span>
+          <div class="side-layer-toggle off"><div class="side-layer-knob"></div></div>
+        </div>
+        <div onclick="_toggleSidePanelLayer('privateland',this)" class="side-layer-row" data-layer="privateland" style="display:flex;align-items:center;gap:12px;padding:11px 14px;background:var(--bg2);border:1px solid var(--border2);border-radius:0 0 12px 12px;cursor:pointer">
+          <div style="width:14px;height:14px;border-radius:3px;background:#c62828;flex-shrink:0"></div>
+          <span style="font-size:13px;font-weight:600;color:var(--txt0);flex:1">Private Land</span>
+          <div class="side-layer-toggle off"><div class="side-layer-knob"></div></div>
+        </div>
+      </div>
+      <!-- Existing dynamic layers (kept) -->
+      <div id="sidePanelLayers"></div>
+
+      <div style="height:32px"></div>
+    </div>
+
+    <!-- Layers button (hidden — kept for compat) -->
+    <div class="map-icon-btn layers-btn" onclick="toggleLayers()" style="display:none">Layers</div>
+
+    <!-- Map style strip -->
+    <div class="style-strip" id="styleStrip">
+      <div class="style-chip active" id="style-standard" onclick="setMapStyle('standard')">
+        <span>Standard</span>
+      </div>
+      <div class="style-chip" id="style-terrain" onclick="setMapStyle('terrain')">
+        <span>Terrain</span>
+      </div>
+      <div class="style-chip" id="style-satellite" onclick="setMapStyle('satellite')">
+        <span>Satellite</span>
+      </div>
+      <div class="style-chip" id="style-hybrid" onclick="setMapStyle('hybrid')">
+        <span>Hybrid</span>
+      </div>
+    </div>
+
+    <!-- Filter strip -->
+    <div class="filter-strip" id="filterStrip"></div>
+
+    <!-- Legacy duplicate fab-add hidden -->
+    <div class="fab-add" onclick="openAddSpot()" style="display:none">＋</div>
+
+    <!-- ── RIGHT COLUMN: Compass on top, Add Spot FAB below ── -->
+    <!-- Compass — tap opens full-screen panel — right side per spec -->
+    <div id="compassOverlay" title="Open compass" onclick="openCompassPanel()">
+      <svg viewBox="0 0 56 56" width="40" height="40">
+        <circle cx="28" cy="28" r="27" fill="rgba(22,19,16,.96)" stroke="rgba(196,149,106,.4)" stroke-width="1.5"/>
+        <!-- Cardinal labels — static, always face up -->
+        <text x="28" y="9" text-anchor="middle" fill="#e05252" font-size="7" font-weight="800" font-family="-apple-system,sans-serif">N</text>
+        <text x="28" y="53" text-anchor="middle" fill="rgba(200,184,168,.6)" font-size="6" font-weight="700" font-family="-apple-system,sans-serif">S</text>
+        <text x="51" y="31" text-anchor="middle" fill="rgba(200,184,168,.6)" font-size="6" font-weight="700" font-family="-apple-system,sans-serif">E</text>
+        <text x="5" y="31" text-anchor="middle" fill="rgba(200,184,168,.6)" font-size="6" font-weight="700" font-family="-apple-system,sans-serif">W</text>
+        <!-- Rotating needle group — rotates to point to north -->
+        <g id="compassNeedle" style="transform-origin:28px 28px;transition:transform .2s ease">
+          <polygon points="28,13 31,27 28,30 25,27" fill="#e05252"/>
+          <polygon points="28,30 31,27 28,43 25,27" fill="rgba(200,184,168,.65)"/>
+        </g>
+        <circle cx="28" cy="28" r="2.5" fill="rgba(196,149,106,.9)"/>
+      </svg>
+    </div>
+
+    <!-- Add Spot FAB — directly below compass on right side -->
+    <div id="addSpotFab" onclick="openAddSpot()" style="position:absolute;bottom:calc(var(--nav-h) + 16px);right:16px;z-index:100;width:52px;height:52px;border-radius:50%;background:#B8E87A;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:300;color:#0f1a0a;box-shadow:0 4px 16px rgba(184,232,122,.4);cursor:pointer;-webkit-tap-highlight-color:transparent">＋</div>
+
+    <!-- Legacy dot-menu elements hidden (kept for JS compat) -->
+    <div id="mapDotOverlay" style="display:none"></div>
+    <div id="mapDotBtn" style="display:none"></div>
+    <div id="mapDotMenu" style="display:none">
+      <div id="dotMenu3DItem" style="display:none"><span id="map3dLabel">Enable 3D</span></div>
+    </div>
+
+    <!-- Trail loading pill -->
+    <div id="trailLoadingPill" style="display:none;position:absolute;bottom:calc(var(--nav-h) + 64px);left:50%;transform:translateX(-50%);z-index:90;background:rgba(0,0,0,.68);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);color:#B8E87A;font-size:11px;font-weight:600;padding:6px 14px;border-radius:20px;align-items:center;gap:7px;white-space:nowrap;pointer-events:none">
+      <div style="width:7px;height:7px;border-radius:50%;background:#B8E87A;animation:pulse 1s ease-in-out infinite"></div>
+      Loading trails…
+    </div>
+
+    <!-- Hike tracking pill -->
+    <div id="hikeTrackingPill" style="display:none;position:absolute;top:calc(52px + 8px);left:50%;transform:translateX(-50%);z-index:95;background:rgba(184,232,122,.15);border:1.5px solid rgba(184,232,122,.5);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-radius:24px;padding:8px 16px;display:none;align-items:center;gap:12px;white-space:nowrap">
+      <div style="width:8px;height:8px;border-radius:50%;background:#ff4d6d;animation:pulse 1s ease-in-out infinite;flex-shrink:0"></div>
+      <div>
+        <div id="hikePillTime" style="font-size:13px;font-weight:700;color:#fff">00:00:00</div>
+        <div id="hikePillDist" style="font-size:11px;color:rgba(184,232,122,.8)">0.0 mi</div>
+      </div>
+      <div onclick="stopHikeTracking()" style="padding:6px 12px;background:rgba(196,82,74,.3);border:1px solid rgba(196,82,74,.5);border-radius:12px;font-size:12px;font-weight:700;color:#fff;cursor:pointer;-webkit-tap-highlight-color:transparent">Stop</div>
+    </div>
+
+    <!-- Offline download overlay -->
+    <div id="offlineDownloadOverlay">
+      <div id="offlineSelectRect"></div>
+      <div id="offlinePanel">
+        <div style="font-size:17px;font-weight:800;color:var(--txt0);margin-bottom:6px">Download Area</div>
+        <div style="font-size:13px;color:var(--txt2);margin-bottom:14px" id="offlineAreaName">Detecting region…</div>
+        <div style="display:flex;justify-content:space-around;margin-bottom:18px">
+          <div style="text-align:center"><div style="font-size:22px;font-weight:800;color:var(--txt0)" id="offlineSize">~45 MB</div><div style="font-size:11px;color:var(--txt3)">Est. size</div></div>
+          <div style="text-align:center"><div style="font-size:22px;font-weight:800;color:var(--txt0)">Z 8–16</div><div style="font-size:11px;color:var(--txt3)">Zoom range</div></div>
+        </div>
+        <button style="width:100%;padding:14px;background:var(--accent);color:var(--bg0);border:none;border-radius:14px;font-size:15px;font-weight:800;cursor:pointer;font-family:var(--font);margin-bottom:10px" onclick="startOfflineDownload()">Download Now</button>
+        <button style="width:100%;padding:12px;background:none;border:1px solid var(--border2);border-radius:14px;font-size:13px;color:var(--txt2);cursor:pointer;font-family:var(--font)" onclick="closeOfflineDownload()">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Offline indicator badge -->
+    <div id="offlineBadge">Offline — cached map</div>
+
+    <!-- Alert banner (fire/road closures) -->
+    <div id="alertBanner" style="display:none;position:absolute;top:52px;left:14px;right:14px;z-index:600;background:rgba(180,40,40,.96);border:1px solid rgba(224,100,100,.5);border-radius:12px;padding:10px 14px;font-size:12px;font-weight:700;color:white;backdrop-filter:blur(16px);box-shadow:0 4px 20px rgba(180,40,40,.5)">
+      <div style="display:flex;align-items:flex-start;gap:8px">
+        <span style="flex:1;line-height:1.4" id="alertBannerText"></span>
+        <button onclick="document.getElementById('alertBanner').style.display='none'" style="background:none;border:none;color:white;cursor:pointer;font-size:16px;font-weight:900;flex-shrink:0;margin-top:-2px;padding:0">×</button>
+      </div>
+    </div>
+
+    <!-- Land ownership label pill -->
+    <div class="land-label-pill" id="landLabelPill">
+      <span id="landLabelIcon"></span>
+      <span id="landLabelText"></span>
+    </div>
+
+    <!-- Spot bottom sheet -->
+    <div class="sheet-backdrop" id="sheetBackdrop" onclick="closeSheet()"></div>
+    <div class="spot-sheet" id="spotSheet">
+      <div class="sheet-handle-bar" id="sheetHandleBar">
+        <div class="sheet-handle"></div>
+      </div>
+      <div class="sheet-scroll">
+        <div id="sheetContent"></div>
+      </div>
+    </div>
+
+    <!-- Add Spot Modal -->
+    <div class="modal-overlay" id="addSpotOverlay" onclick="if(event.target===this)closeAddSpot()">
+      <div class="modal-sheet">
+        <div class="modal-handle-wrap"><div class="modal-handle"></div></div>
+        <div class="modal-title">Add New Spot</div>
+        <div class="modal-sub">Share a hidden gem with the WildPath community</div>
+        <div class="form-group">
+          <label class="form-label">Spot Name</label>
+          <input class="form-input" id="aspName" placeholder="e.g. Crystal Falls Swimming Hole" type="text">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Spot Type</label>
+          <div class="type-grid" id="aspTypeGrid"></div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Location</label>
+          <!-- Nominatim address search -->
+          <div style="position:relative;margin-bottom:8px">
+            <input class="form-input" id="aspAddressSearch" placeholder="Address, trail name, or 37.1234, -122.5678" type="text" autocomplete="off"
+              oninput="aspAddressSearch(this.value)" style="padding-right:36px">
+            <span onclick="document.getElementById('aspAddressSearch').value='';document.getElementById('aspAddressDrop').innerHTML='';document.getElementById('aspAddressDrop').classList.remove('open')" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:14px;color:var(--txt3);cursor:pointer">×</span>
+            <div id="aspAddressDrop" class="ac-drop"></div>
+          </div>
+          <div class="loc-btn" onclick="startMapPinMode()">Tap map to pin location</div>
+          <div class="loc-display" id="aspLocDisplay" style="display:none"></div>
+          <div class="ac-wrap">
+            <input class="form-input" id="aspLocSearch" placeholder="Legacy search…" type="text" autocomplete="off" oninput="acInput(this,'aspLocDrop',true)" style="display:none">
+            <div class="ac-drop" id="aspLocDrop"></div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Description</label>
+          <textarea class="form-input" id="aspDesc" placeholder="What makes this spot special? Approach details, best time to visit…" rows="3" style="resize:none;line-height:1.5"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Difficulty</label>
+          <div class="diff-btns">
+            <div class="diff-btn selected" data-diff="Easy" onclick="selectDiff(this)">Easy</div>
+            <div class="diff-btn" data-diff="Moderate" onclick="selectDiff(this)">Moderate</div>
+            <div class="diff-btn" data-diff="Hard" onclick="selectDiff(this)">Hard</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Your Rating</label>
+          <div class="star-row" id="aspStars" onclick="setStarRating(event)">
+            <span data-s="1"></span><span data-s="2"></span><span data-s="3"></span><span data-s="4"></span><span data-s="5"></span>
+          </div>
+        </div>
+        <button class="btn-submit-spot" onclick="submitNewSpot()">Add to Map</button>
+        <button class="btn-cancel-modal" onclick="closeAddSpot()">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Legacy bottom drawer (hidden, for compat) -->
+    <div class="bottom-drawer" id="bottomDrawer" style="display:none">
+      <div class="drawer-handle"></div>
+      <div class="drawer-preview" id="drawerContent"></div>
+      <button class="btn-primary" onclick="openDetail(currentPin)">View Full Details →</button>
+    </div>
+
+    <!-- Layers panel -->
+    <div class="layers-overlay" id="layersOverlay" onclick="toggleLayers()"></div>
+    <div class="layers-panel" id="layersPanel">
+      <div class="layers-title">Layers</div>
+      <div class="layers-subtitle">Toggle map overlays</div>
+      <div id="layersList"></div>
+    </div>
+  </div>
+
+  <!-- ── SPOT DETAIL (new design) ──────────────────── -->
+  <!-- ══ LOCATION DETAIL — 85% bottom sheet, transparent top shows map ══ -->
+  <div class="screen" id="screen-detail" style="position:absolute;inset:0;z-index:300;background:transparent;display:none;flex-direction:column;pointer-events:none">
+
+    <!-- Transparent top 15% — map shows through, clicks pass to map -->
+    <div style="flex:0 0 15%;pointer-events:none"></div>
+
+    <!-- The sheet (85%) -->
+    <div id="detailSheet" style="flex:1;background:var(--bg0);border-radius:20px 20px 0 0;display:flex;flex-direction:column;pointer-events:auto;overflow:hidden;transform:translateY(100%);will-change:transform">
+
+      <!-- Drag handle -->
+      <div id="detailDragHandle" style="padding:10px 0 2px;display:flex;justify-content:center;align-items:center;flex-shrink:0;cursor:grab;gap:10px">
+        <div style="width:40px;height:4px;background:rgba(255,255,255,.18);border-radius:2px"></div>
+      </div>
+
+    <!-- Scrollable body -->
+    <div id="detailScrollBody" style="flex:1;overflow-y:auto;padding-bottom:80px;-webkit-overflow-scrolling:touch">
+
+      <!-- ── TERRAIN HERO (180px) — 3D map + back button overlaid ── -->
+      <div id="detailTerrainHero" style="position:relative;height:180px;background:#0b1a0b;overflow:hidden;flex-shrink:0">
+        <div id="terrainShimmer" style="position:absolute;inset:0;z-index:3;background:linear-gradient(90deg,#0c1a0c 25%,#183018 37%,#0c1a0c 63%);background-size:800px 180px;animation:shimmer 1.6s infinite linear"></div>
+        <div id="terrainMiniMapContainer" style="position:absolute;inset:0;z-index:2"></div>
+        <div style="position:absolute;bottom:0;left:0;right:0;height:60px;z-index:7;pointer-events:none;background:linear-gradient(to bottom,transparent 0%,var(--bg0) 100%)"></div>
+        <div style="position:absolute;top:0;left:0;right:0;z-index:20;padding:12px 14px 0;display:flex;align-items:center;justify-content:space-between">
+          <button type="button" onclick="closeDetail()" style="width:32px;height:32px;border-radius:50%;background:rgba(0,0,0,.5);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.18);color:#fff;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:inherit">←</button>
+          <div id="detailAdminEditBtn" onclick="adminEditSpot()" style="display:none;background:rgba(212,135,74,.18);border:1px solid rgba(212,135,74,.4);color:#D4874A;border-radius:22px;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer">Edit</div>
+        </div>
+        <div id="terrainSpotLabel" style="display:none;position:absolute;bottom:18px;left:12px;z-index:15;background:rgba(0,0,0,.58);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);color:#fff;font-size:11px;font-weight:600;padding:5px 11px;border-radius:20px;pointer-events:none"></div>
+        <div id="terrainElevLabel" style="display:none;position:absolute;top:12px;right:12px;z-index:15;background:rgba(0,0,0,.58);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);color:#B8E87A;font-size:11px;font-weight:700;padding:5px 10px;border-radius:20px;border:1px solid rgba(184,232,122,.22);pointer-events:none"></div>
+        <button type="button" id="terrainExpandBtn" onclick="openTerrainFullscreen()" style="display:none;position:absolute;top:12px;left:12px;z-index:15;background:rgba(0,0,0,.58);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);color:#fff;font-size:11px;font-weight:600;padding:5px 11px;border-radius:20px;border:1px solid rgba(255,255,255,.18);cursor:pointer;-webkit-tap-highlight-color:transparent">⤢ Expand</button>
+      </div>
+
+      <!-- Search bar hidden — map search bar above sheet is used instead -->
+      <div id="detailSearchInput" style="display:none"></div>
+      <div id="detailSearchDrop" style="display:none"></div>
+
+      <!-- ── NAME + BOOKMARK ── -->
+      <div style="padding:14px 14px 0;display:flex;align-items:flex-start;gap:10px">
+        <div id="detailName" style="flex:1;font-size:22px;font-weight:700;color:var(--txt0);line-height:1.25;letter-spacing:-.3px"></div>
+        <button type="button" id="detailBookmarkBtn" onclick="toggleDetailBookmark()" style="flex-shrink:0;width:40px;height:40px;background:var(--bg2);border:1px solid var(--border2);border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;margin-top:2px">
+          <svg id="detailBookmarkIcon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--txt2)" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+        </button>
+      </div>
+
+      <!-- ── STAR RATING ── -->
+      <div style="padding:8px 14px 0;display:flex;align-items:center;gap:8px">
+        <div id="detailStarsRow" style="display:flex;gap:2px"></div>
+        <span id="detailRatingScore" style="font-size:15px;font-weight:700;color:var(--txt0)"></span>
+        <span id="detailRatingCount" style="font-size:13px;color:var(--txt3)"></span>
+      </div>
+
+      <!-- ── ACTIVITY FILTER CHIPS ── -->
+      <div id="detailActivityChips" style="display:flex;gap:8px;overflow-x:auto;padding:10px 14px 0;-webkit-overflow-scrolling:touch;scrollbar-width:none"></div>
+
+      <!-- ── PHOTO GRID (community photos) ── -->
+      <div style="padding:14px 14px 0">
+        <div id="detailPhotosGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:2px;border-radius:12px;overflow:hidden"></div>
+        <div id="detailPhotosEmpty" style="display:none;background:var(--bg2);border:1px dashed var(--border2);border-radius:14px;padding:28px;text-align:center">
+          <div style="font-size:13px;color:var(--txt3);margin-bottom:10px">No photos yet — be the first to share!</div>
+          <button onclick="openPhotoPicker()" style="background:#B8E87A;color:#0f1a0a;border:none;border-radius:12px;padding:10px 20px;font-size:13px;font-weight:700;cursor:pointer">+ Add Your Photo</button>
+        </div>
+        <!-- Add photo button (shown under grid when photos exist) -->
+        <div id="detailAddPhotoRow" style="display:none;padding-top:8px;text-align:center">
+          <button onclick="openPhotoPicker()" style="background:rgba(184,232,122,.1);border:1px solid rgba(184,232,122,.25);color:#B8E87A;border-radius:12px;padding:9px 20px;font-size:13px;font-weight:600;cursor:pointer">+ Add Photo</button>
+        </div>
+      </div>
+
+      <!-- ── MINI MAP (150px) ── -->
+      <div style="padding:16px 14px 0">
+        <div id="detailMiniMapContainer" style="height:150px;border-radius:14px;overflow:hidden;position:relative;background:var(--bg2)">
+          <div id="detailMiniMap" style="position:absolute;inset:0"></div>
+          <!-- Open in full map button -->
+          <button onclick="openDetailOnMap()" style="position:absolute;bottom:10px;right:10px;z-index:10;background:rgba(0,0,0,.6);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:20px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer">Open Map ↗</button>
+        </div>
+      </div>
+
+      <!-- ── RATINGS DISTRIBUTION + RECENT REVIEWS ── -->
+      <div style="padding:16px 14px 0">
+        <div style="font-size:14px;font-weight:700;color:var(--txt0);margin-bottom:12px">Ratings & Reviews</div>
+        <!-- Star bars -->
+        <div id="detailRatingBars" style="display:flex;flex-direction:column;gap:5px;margin-bottom:16px"></div>
+        <!-- Recent reviews list -->
+        <div id="detailReviewsList" style="display:flex;flex-direction:column;gap:12px"></div>
+      </div>
+
+      <!-- ── FULL COMMENT THREAD ── -->
+      <div style="padding:16px 14px 0">
+        <div style="font-size:14px;font-weight:700;color:var(--txt0);margin-bottom:12px">Comments</div>
+        <div id="detailCommentsList" style="display:flex;flex-direction:column;gap:12px"></div>
+      </div>
+
+      <!-- Spacer for fixed button -->
+      <div style="height:20px"></div>
+
+    </div><!-- end detailScrollBody -->
+
+    <!-- ── FIXED BOTTOM: Add a Comment ── -->
+    <div style="flex-shrink:0;padding:10px 14px calc(env(safe-area-inset-bottom,0px) + 10px);background:var(--bg0);border-top:1px solid var(--border)">
+      <button type="button" onclick="openDetailAddComment()" style="width:100%;height:50px;background:#B8E87A;color:#0f1a0a;border:none;border-radius:16px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;letter-spacing:-.1px;display:flex;align-items:center;justify-content:center;gap:8px">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#0f1a0a" stroke-width="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Add a Comment
+      </button>
+    </div>
+
+    <!-- Comment input panel (slides up when tapped) -->
+    <div id="detailCommentPanel" style="display:none;position:absolute;inset:0;background:rgba(0,0,0,.7);z-index:50;align-items:flex-end" onclick="if(event.target===this)closeDetailCommentPanel()">
+      <div style="background:var(--bg1);border-radius:20px 20px 0 0;width:100%;padding:20px 14px calc(env(safe-area-inset-bottom,0px) + 16px)">
+        <div style="width:36px;height:4px;background:var(--border2);border-radius:2px;margin:0 auto 16px"></div>
+        <!-- Star rating for this review -->
+        <div style="margin-bottom:12px">
+          <div style="font-size:11px;color:var(--txt3);font-weight:600;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Your Rating</div>
+          <div id="detailCommentStars" style="display:flex;gap:6px">
+            <span onclick="setDetailReviewStar(1)" class="detail-review-star" data-v="1" style="font-size:28px;cursor:pointer;color:var(--border2)"><svg viewBox="0 0 24 24" width="26" height="26" style="vertical-align:middle" fill="rgba(255,255,255,.15)" stroke="rgba(255,255,255,.35)" stroke-width="1.5"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg></span>
+            <span onclick="setDetailReviewStar(2)" class="detail-review-star" data-v="2" style="font-size:28px;cursor:pointer;color:var(--border2)"><svg viewBox="0 0 24 24" width="26" height="26" style="vertical-align:middle" fill="rgba(255,255,255,.15)" stroke="rgba(255,255,255,.35)" stroke-width="1.5"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg></span>
+            <span onclick="setDetailReviewStar(3)" class="detail-review-star" data-v="3" style="font-size:28px;cursor:pointer;color:var(--border2)"><svg viewBox="0 0 24 24" width="26" height="26" style="vertical-align:middle" fill="rgba(255,255,255,.15)" stroke="rgba(255,255,255,.35)" stroke-width="1.5"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg></span>
+            <span onclick="setDetailReviewStar(4)" class="detail-review-star" data-v="4" style="font-size:28px;cursor:pointer;color:var(--border2)"><svg viewBox="0 0 24 24" width="26" height="26" style="vertical-align:middle" fill="rgba(255,255,255,.15)" stroke="rgba(255,255,255,.35)" stroke-width="1.5"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg></span>
+            <span onclick="setDetailReviewStar(5)" class="detail-review-star" data-v="5" style="font-size:28px;cursor:pointer;color:var(--border2)"><svg viewBox="0 0 24 24" width="26" height="26" style="vertical-align:middle" fill="rgba(255,255,255,.15)" stroke="rgba(255,255,255,.35)" stroke-width="1.5"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg></span>
+          </div>
+        </div>
+        <textarea id="detailCommentInput" placeholder="Share your experience…" rows="3"
+          style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:14px;padding:12px 14px;font-size:14px;font-family:inherit;outline:none;resize:none;margin-bottom:12px"></textarea>
+        <button type="button" onclick="submitDetailComment()" style="width:100%;height:48px;background:#B8E87A;color:#0f1a0a;border:none;border-radius:14px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit">Post Comment</button>
+      </div>
+    </div>
+
+    <!-- Hidden ranger contact (still populated by JS for info purposes) -->
+    <div id="detailRangerContact" style="display:none"></div>
+    <!-- Hidden extra detail (populated by JS) -->
+    <div id="detailExtra" style="display:none"></div>
+    <!-- Hidden weather widget (populated by JS) -->
+    <div id="weatherWidget" style="display:none"></div>
+    <!-- Hidden panels kept for JS compat -->
+    <div id="detailPanelInfo" style="display:none"></div>
+    <div id="detailPanelPhotos" style="display:none"></div>
+    <div id="detailPanelDiscussion" style="display:none"></div>
+    <div id="detailHeaderBadges" style="display:none"></div>
+    <div id="detailElevRow" style="display:none"></div>
+    <div id="detailQuickStats" style="display:none"></div>
+    <div id="detailLegalBanner" style="display:none"></div>
+    <div id="detailFreshness" style="display:none"></div>
+    <div id="detailApproach" style="display:none"></div>
+    <div id="detailDiscoveredBy" style="display:none"></div>
+    <div id="detailNearestServices" style="display:none"></div>
+    <div id="detailAppleMapsBtn" style="display:none"></div>
+    <div id="detailGoogleMapsBtn" style="display:none"></div>
+    </div><!-- end detailSheet -->
+  </div><!-- end screen-detail -->
+
+  <!-- ── TERRAIN FULLSCREEN MODAL ──────────────────── -->
+  <div id="terrainFullscreenOverlay" style="display:none;position:absolute;inset:0;z-index:9400;background:#000;flex-direction:column">
+    <!-- Fullscreen map fills entire overlay -->
+    <div id="terrainFullscreenMapContainer" style="position:absolute;inset:0;z-index:1"></div>
+    <!-- Top bar with spot name + close -->
+    <div style="position:absolute;top:0;left:0;right:0;z-index:10;padding:52px 16px 20px;display:flex;align-items:center;justify-content:space-between;background:linear-gradient(to bottom,rgba(0,0,0,.65) 0%,transparent 100%)">
+      <div id="terrainFsSpotName" style="font-size:15px;font-weight:700;color:#fff;text-shadow:0 1px 6px rgba(0,0,0,.8)"></div>
+      <button type="button" onclick="closeTerrainFullscreen()" style="background:rgba(0,0,0,.55);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:50%;width:38px;height:38px;font-size:17px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0">×</button>
+    </div>
+    <!-- Interaction hint at bottom -->
+    <div style="position:absolute;bottom:28px;left:0;right:0;z-index:10;text-align:center;pointer-events:none">
+      <div style="display:inline-block;background:rgba(0,0,0,.5);backdrop-filter:blur(6px);border-radius:20px;padding:6px 14px;font-size:11px;color:rgba(255,255,255,.55)">Drag to rotate · Pinch to zoom · Two-finger drag to tilt</div>
+    </div>
+  </div>
+
+  <!-- ── AR PEAK IDENTIFICATION OVERLAY ───────────────── -->
+  <div id="arOverlay" style="display:none;position:absolute;inset:0;z-index:9450;background:#000;flex-direction:column;overflow:hidden">
+    <!-- Live camera feed -->
+    <video id="arVideo" autoplay playsinline muted style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover"></video>
+    <!-- Semi-transparent horizon line -->
+    <div id="arHorizonLine" style="position:absolute;left:0;right:0;z-index:5;height:1px;background:rgba(255,255,255,.18);pointer-events:none"></div>
+    <!-- Peak label container — labels positioned here -->
+    <div id="arPeaksContainer" style="position:absolute;inset:0;z-index:6;pointer-events:none;overflow:hidden"></div>
+    <!-- Compass indicator at bottom -->
+    <div style="position:absolute;bottom:0;left:0;right:0;z-index:10;padding:0 0 36px;display:flex;justify-content:center;pointer-events:none">
+      <div id="arCompassStrip" style="background:rgba(0,0,0,.5);backdrop-filter:blur(8px);border-radius:16px;padding:8px 20px;text-align:center">
+        <div id="arHeadingVal" style="font-size:22px;font-weight:700;color:#fff">---°</div>
+        <div id="arCompassDir" style="font-size:11px;color:rgba(255,255,255,.5);margin-top:1px">Compass heading</div>
+      </div>
+    </div>
+    <!-- Top bar -->
+    <div style="position:absolute;top:0;left:0;right:0;z-index:10;padding:52px 16px 0;display:flex;align-items:center;justify-content:space-between">
+      <div style="background:rgba(0,0,0,.5);backdrop-filter:blur(8px);border-radius:20px;padding:6px 12px;font-size:12px;color:rgba(255,255,255,.7);font-weight:600">AR Peaks <span style="color:rgba(255,255,255,.35);font-size:10px">~±15° accuracy</span></div>
+      <div style="display:flex;gap:8px">
+        <button type="button" onclick="calibrateAR()" style="background:rgba(0,0,0,.5);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:20px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer">Calibrate</button>
+        <button type="button" onclick="closeARMode()" style="background:rgba(0,0,0,.5);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:50%;width:36px;height:36px;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center">×</button>
+      </div>
+    </div>
+    <!-- No permission message (shown if camera fails) -->
+    <div id="arNoPermission" style="display:none;position:absolute;inset:0;z-index:20;background:rgba(0,0,0,.85);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:40px">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#B8E87A" stroke-width="1.5"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+      <div style="font-size:16px;font-weight:700;color:#fff">Camera Required</div>
+      <div style="font-size:13px;color:rgba(255,255,255,.55);text-align:center;line-height:1.5">Allow camera access to use AR Peak Identification. Check your browser settings and reload.</div>
+      <button onclick="closeARMode()" style="background:#B8E87A;color:#0f1a0a;border:none;border-radius:12px;padding:12px 24px;font-size:14px;font-weight:700;cursor:pointer">Close</button>
+    </div>
+  </div>
+
+  <!-- ── MOMENT CAPTURE OVERLAY ─────────────────────── -->
+  <div id="momentCaptureOverlay" style="display:none;position:absolute;inset:0;z-index:9500;background:#000;flex-direction:column">
+    <!-- Header -->
+    <div style="padding:54px 16px 12px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+      <button type="button" onclick="closeMomentCapture()" style="background:rgba(255,255,255,.12);border:none;color:#fff;border-radius:50%;width:36px;height:36px;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center">×</button>
+      <div id="momentLocationLabel" style="font-size:12px;font-weight:600;color:rgba(255,255,255,.7);text-align:center;flex:1;padding:0 12px"></div>
+      <div style="width:36px"></div>
+    </div>
+    <!-- Camera viewfinder placeholder -->
+    <div style="flex:1;display:flex;align-items:center;justify-content:center;background:#111;position:relative">
+      <div style="text-align:center;color:rgba(255,255,255,.4)">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+        <div style="font-size:12px;margin-top:8px">Camera access required</div>
+      </div>
+      <video id="momentVideo" autoplay playsinline muted style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:none"></video>
+    </div>
+    <!-- Capture type selector -->
+    <div style="padding:16px;display:flex;justify-content:center;gap:24px;flex-shrink:0">
+      <div id="capTypePhoto" onclick="setCapType('photo',this)" style="font-size:12px;font-weight:700;color:#B8E87A;padding:6px 16px;border-bottom:2px solid #B8E87A;cursor:pointer">Photo</div>
+      <div id="capTypeVideo" onclick="setCapType('video',this)" style="font-size:12px;font-weight:600;color:rgba(255,255,255,.4);padding:6px 16px;border-bottom:2px solid transparent;cursor:pointer">Video</div>
+      <div id="capTypeMoment" onclick="setCapType('moment',this)" style="font-size:12px;font-weight:600;color:rgba(255,255,255,.4);padding:6px 16px;border-bottom:2px solid transparent;cursor:pointer">Moment</div>
+    </div>
+    <!-- Capture button -->
+    <div style="padding:0 16px 40px;display:flex;justify-content:center;flex-shrink:0">
+      <button type="button" onclick="capturePhoto()" id="captureBtn" style="width:72px;height:72px;border-radius:50%;background:#fff;border:4px solid rgba(255,255,255,.3);cursor:pointer"></button>
+    </div>
+    <!-- File input for photo selection fallback -->
+    <input type="file" id="momentFileInput" accept="image/*,video/*" capture="environment" style="display:none" onchange="handleMomentCapture(event)">
+  </div>
+
+  <!-- ── MOMENT PREVIEW OVERLAY ─────────────────────── -->
+  <div id="momentPreviewOverlay" style="display:none;position:absolute;inset:0;z-index:9600;background:#000;flex-direction:column">
+    <div style="padding:54px 16px 12px;display:flex;align-items:center;gap:12px;flex-shrink:0">
+      <button type="button" onclick="closeMomentPreview()" style="background:rgba(255,255,255,.12);border:none;color:#fff;border-radius:50%;width:36px;height:36px;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center">←</button>
+      <div style="font-size:16px;font-weight:700;color:#fff;flex:1">New Moment</div>
+    </div>
+    <div style="flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden">
+      <img id="momentPreviewImg" style="max-width:100%;max-height:100%;object-fit:contain;display:none">
+    </div>
+    <!-- Privacy tiles -->
+    <div style="padding:16px;flex-shrink:0">
+      <div style="font-size:11px;font-weight:700;color:rgba(255,255,255,.5);letter-spacing:.4px;text-transform:uppercase;margin-bottom:10px">Share With</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px">
+        <div id="privTilePublic" onclick="setMomentPrivacy('public',this)" style="background:rgba(184,232,122,.15);border:2px solid #B8E87A;border-radius:12px;padding:12px 8px;text-align:center;cursor:pointer">
+          <div style="margin-bottom:4px"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
+          <div style="font-size:12px;font-weight:700;color:#B8E87A">Public</div>
+          <div style="font-size:10px;color:rgba(255,255,255,.4);margin-top:2px">Main feed + map</div>
+        </div>
+        <div id="privTileCommunity" onclick="setMomentPrivacy('community',this)" style="background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.12);border-radius:12px;padding:12px 8px;text-align:center;cursor:pointer">
+          <div style="margin-bottom:4px"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+          <div style="font-size:12px;font-weight:700;color:#fff">Community</div>
+          <div style="font-size:10px;color:rgba(255,255,255,.4);margin-top:2px">Community only</div>
+        </div>
+        <div id="privTilePrivate" onclick="setMomentPrivacy('private',this)" style="background:rgba(255,255,255,.06);border:2px solid rgba(255,255,255,.12);border-radius:12px;padding:12px 8px;text-align:center;cursor:pointer">
+          <div style="margin-bottom:4px"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+          <div style="font-size:12px;font-weight:700;color:#fff">Private</div>
+          <div style="font-size:10px;color:rgba(255,255,255,.4);margin-top:2px">Personal map</div>
+        </div>
+      </div>
+      <textarea id="momentCaption" placeholder="Add a caption…" style="width:100%;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);color:#fff;border-radius:12px;padding:12px 14px;font-size:14px;font-family:inherit;outline:none;resize:none;min-height:60px;box-sizing:border-box;margin-bottom:12px"></textarea>
+      <button type="button" onclick="postMoment()" style="width:100%;background:#B8E87A;color:#0f1a0a;border:none;border-radius:14px;padding:15px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit">Post</button>
+    </div>
+  </div>
+
+  <!-- Trip Report Modal -->
+  <div class="modal-overlay" id="tripReportOverlay" onclick="if(event.target===this)closeTripReport()">
+    <div class="modal-sheet">
+      <div class="modal-header">
+        <div class="modal-title">Add Trip Report</div>
+        <button class="modal-close" onclick="closeTripReport()">×</button>
+      </div>
+      <div style="padding:0 20px 20px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
+          <div>
+            <div style="font-size:11px;color:var(--txt2);font-weight:700;margin-bottom:6px">WATER LEVEL</div>
+            <select id="trWater" style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:10px;padding:9px 10px;font-size:12px">
+              <option>Not applicable</option><option>Very Low</option><option>Low</option><option>Normal</option><option>High</option><option>Flood</option>
+            </select>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--txt2);font-weight:700;margin-bottom:6px">TRAIL CONDITION</div>
+            <select id="trTrail" style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:10px;padding:9px 10px;font-size:12px">
+              <option>Great</option><option>Good</option><option>Fair</option><option>Poor</option><option>Closed</option>
+            </select>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--txt2);font-weight:700;margin-bottom:6px">ACCESS ROAD</div>
+            <select id="trRoad" style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:10px;padding:9px 10px;font-size:12px">
+              <option>Open — Good</option><option>Open — Rough</option><option>4WD Only</option><option>Closed</option>
+            </select>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--txt2);font-weight:700;margin-bottom:6px">GATE STATUS</div>
+            <select id="trGate" style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:10px;padding:9px 10px;font-size:12px">
+              <option>Open</option><option>Closed</option><option>Locked</option><option>Unknown</option>
+            </select>
+          </div>
+        </div>
+        <textarea id="trNotes" rows="3" placeholder="Any notes for fellow explorers? Water temp, crowds, recent changes…" style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:10px;padding:10px 12px;font-size:13px;resize:none;font-family:inherit;margin-bottom:12px"></textarea>
+        <button class="btn-primary" onclick="saveTripReport()">Post Report</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Q&A Modal -->
+  <div class="modal-overlay" id="qaOverlay" onclick="if(event.target===this)closeQA()">
+    <div class="modal-sheet">
+      <div class="modal-header">
+        <div class="modal-title">Ask the Community</div>
+        <button class="modal-close" onclick="closeQA()">×</button>
+      </div>
+      <div style="padding:0 20px 20px">
+        <textarea id="qaQuestion" rows="3" placeholder="What do you want to know? (e.g. Is the road passable in a Prius? Is there shade near the water?)" style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:10px;padding:10px 12px;font-size:13px;resize:none;font-family:inherit;margin-bottom:12px"></textarea>
+        <button class="btn-primary" onclick="saveQuestion()">Post Question</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── ADMIN EDIT SPOT OVERLAY ──────────────────── -->
+  <div class="modal-overlay" id="adminEditOverlay" onclick="if(event.target===this)closeAdminEdit()">
+    <div class="modal-sheet" style="max-height:90vh;overflow-y:auto">
+      <div class="modal-header">
+        <div class="modal-title" style="color:#D4874A">Edit Spot</div>
+        <button class="modal-close" onclick="closeAdminEdit()">×</button>
+      </div>
+      <div style="padding:0 20px 24px">
+        <div style="font-size:11px;color:var(--txt3);font-weight:700;letter-spacing:.7px;margin-bottom:6px">SPOT NAME</div>
+        <input id="aeSpotName" type="text" style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;margin-bottom:14px" placeholder="Spot name">
+
+        <div style="font-size:11px;color:var(--txt3);font-weight:700;letter-spacing:.7px;margin-bottom:6px">DESCRIPTION</div>
+        <textarea id="aeSpotDesc" rows="3" style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:10px;padding:10px 12px;font-size:13px;resize:none;font-family:inherit;margin-bottom:14px" placeholder="Short description"></textarea>
+
+        <div style="font-size:11px;color:var(--txt3);font-weight:700;letter-spacing:.7px;margin-bottom:6px">APPROACH / HOW TO GET THERE</div>
+        <textarea id="aeSpotApproach" rows="3" style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:10px;padding:10px 12px;font-size:13px;resize:none;font-family:inherit;margin-bottom:14px" placeholder="Driving directions, trailhead info"></textarea>
+
+        <div style="font-size:11px;color:var(--txt3);font-weight:700;letter-spacing:.7px;margin-bottom:6px">INSIDER TIPS</div>
+        <textarea id="aeSpotTips" rows="2" style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:10px;padding:10px 12px;font-size:13px;resize:none;font-family:inherit;margin-bottom:14px" placeholder="Insider tips for visitors"></textarea>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+          <div>
+            <div style="font-size:11px;color:var(--txt3);font-weight:700;letter-spacing:.7px;margin-bottom:6px">LEGAL STATUS</div>
+            <select id="aeSpotLegal" style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:10px;padding:9px 10px;font-size:12px">
+              <option value="legal">Legal</option>
+              <option value="permit">Permit Required</option>
+              <option value="gray">Gray Area</option>
+              <option value="illegal">Illegal</option>
+            </select>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--txt3);font-weight:700;letter-spacing:.7px;margin-bottom:6px">ENTRY FEE</div>
+            <input id="aeSpotFee" type="text" style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:10px;padding:9px 10px;font-size:12px;font-family:inherit" placeholder="e.g. Free, $10/vehicle">
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--txt3);font-weight:700;letter-spacing:.7px;margin-bottom:6px">BEST SEASON</div>
+            <input id="aeSpotSeason" type="text" style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:10px;padding:9px 10px;font-size:12px;font-family:inherit" placeholder="e.g. Year-round, Spring–Fall">
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--txt3);font-weight:700;letter-spacing:.7px;margin-bottom:6px">ROAD CONDITION</div>
+            <input id="aeSpotRoad" type="text" style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:10px;padding:9px 10px;font-size:12px;font-family:inherit" placeholder="e.g. Paved, Dirt 2WD">
+          </div>
+        </div>
+
+        <div style="display:flex;gap:10px;margin-top:4px">
+          <button class="btn-primary" onclick="saveAdminEdit()" style="flex:1">Save Changes</button>
+          <button onclick="adminDeleteSpot()" style="flex:0 0 auto;background:rgba(196,82,74,.15);border:1px solid rgba(196,82,74,.35);color:var(--red);border-radius:14px;padding:12px 18px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit">Delete Spot</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── HOME SCREEN — Full-screen post feed ────────── -->
+  <div class="screen" id="screen-home" style="background:#000;overflow:hidden">
+
+    <!-- ── INSTAGRAM-STYLE SCROLL FEED ── -->
+    <div id="feedGrid" style="position:absolute;inset:0;overflow-y:auto;-webkit-overflow-scrolling:touch;background:var(--bg0);display:flex;flex-direction:column">
+
+      <!-- Sticky top bar -->
+      <div style="position:sticky;top:0;z-index:30;background:var(--bg0);padding:52px 16px 10px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;border-bottom:1px solid rgba(255,255,255,.06)">
+        <div style="font-size:22px;font-weight:900;color:#fff;letter-spacing:-.8px">WildPath</div>
+        <div style="display:flex;align-items:center;gap:4px">
+          <div onclick="openActivityPage()" style="position:relative;cursor:pointer;width:40px;height:40px;display:flex;align-items:center;justify-content:center">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="var(--txt0)" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+            <div id="feedActivityBadge" style="display:none;position:absolute;top:7px;right:7px;width:7px;height:7px;border-radius:50%;background:#ff4d6d;border:1.5px solid var(--bg0)"></div>
+          </div>
+          <div onclick="openDmPage()" style="cursor:pointer;width:40px;height:40px;display:flex;align-items:center;justify-content:center">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="var(--txt0)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </div>
+          <div onclick="openCreatePost()" style="cursor:pointer;width:40px;height:40px;display:flex;align-items:center;justify-content:center;-webkit-tap-highlight-color:transparent">
+            <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="var(--txt0)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- Scrollable post cards list -->
+      <div id="feedGridContent" style="padding-bottom:calc(var(--nav-h) + 20px)"></div>
+
+      <!-- Empty state -->
+      <div id="feedEmptyState" style="display:none;flex-direction:column;align-items:center;justify-content:center;padding:80px 40px;gap:16px">
+        <svg viewBox="0 0 24 24" width="52" height="52" fill="none" stroke="rgba(184,232,122,.3)" stroke-width="1.3"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        <div style="font-size:18px;font-weight:700;color:#fff">No posts yet</div>
+        <div style="font-size:13px;color:rgba(255,255,255,.4);text-align:center;line-height:1.6">Be the first to explore and share a hidden spot</div>
+        <button onclick="showTab('map')" style="background:#B8E87A;color:#0f1a0a;border:none;border-radius:14px;padding:12px 28px;font-size:14px;font-weight:700;cursor:pointer">Explore the Map</button>
+      </div>
+    </div>
+
+    <!-- Viewer top bar kept hidden — no longer used as primary mode -->
+    <div id="feedViewerTopBar" style="display:none"></div>
+
+    <!-- ── POST VIEWER — full-screen, hidden until grid tap ── -->
+    <div id="feedViewport" style="position:absolute;inset:0;overflow:hidden;touch-action:pan-y;display:none">
+
+      <!-- Active feed post (rebuilt each time by JS) -->
+      <div id="feedPostWrap" style="position:absolute;inset:0;display:flex;flex-direction:column">
+
+        <!-- FULL BLEED MEDIA AREA -->
+        <div id="feedMediaArea" style="position:absolute;top:0;left:0;right:0;bottom:calc(var(--nav-h) + 70px);overflow:hidden">
+
+          <!-- Media slides container (moves left/right) -->
+          <div id="feedMediaSlides" style="position:absolute;inset:0;display:flex;transition:transform .28s cubic-bezier(.4,0,.2,1)">
+            <!-- Slides injected by JS — each is 100vw wide -->
+          </div>
+
+          <!-- Top gradient for legibility -->
+          <div style="position:absolute;top:0;left:0;right:0;height:140px;background:linear-gradient(to bottom,rgba(0,0,0,.65) 0%,transparent 100%);z-index:5;pointer-events:none"></div>
+          <!-- Bottom gradient -->
+          <div style="position:absolute;bottom:0;left:0;right:0;height:120px;background:linear-gradient(to top,rgba(0,0,0,.75) 0%,transparent 100%);z-index:5;pointer-events:none"></div>
+
+          <!-- Top row: avatar + username (left) — top bar icons handled by persistent bar above -->
+          <div style="position:absolute;top:0;left:0;right:0;z-index:10;padding:90px 16px 0;display:flex;align-items:center">
+            <div style="display:flex;align-items:center;gap:10px;cursor:pointer" id="feedPostAuthorRow" onclick="openFeedAuthorProfile()">
+              <div id="feedPostAvatar" style="width:38px;height:38px;border-radius:50%;background:var(--bg3);border:2px solid rgba(255,255,255,.35);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;overflow:hidden;flex-shrink:0"></div>
+              <div id="feedPostUsername" style="font-size:14px;font-weight:700;color:#fff;text-shadow:0 1px 6px rgba(0,0,0,.6)"></div>
+            </div>
+          </div>
+
+          <!-- Location name pill — bottom of media, tappable -->
+          <div id="feedLocationPill" onclick="feedOpenSpotDetail()" style="position:absolute;bottom:16px;left:16px;z-index:10;background:rgba(0,0,0,.6);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.2);border-radius:20px;padding:7px 14px;cursor:pointer;display:flex;align-items:center;gap:6px">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#B8E87A" stroke-width="2.5"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+            <span id="feedLocationName" style="font-size:12px;font-weight:700;color:#fff;white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis"></span>
+            <span style="font-size:10px;color:rgba(255,255,255,.55)">›</span>
+          </div>
+
+        </div><!-- end feedMediaArea -->
+
+        <!-- BELOW MEDIA: dot indicators + action bar -->
+        <div style="position:absolute;left:0;right:0;bottom:var(--nav-h);height:70px;display:flex;flex-direction:column;justify-content:center;padding:0 16px;gap:8px;background:rgba(0,0,0,.85);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)">
+
+          <!-- Dot indicators row -->
+          <div id="feedDotsRow" style="display:flex;align-items:center;justify-content:center;gap:6px;min-height:8px"></div>
+
+          <!-- Action bar: like count | comment | share | bookmark -->
+          <div style="display:flex;align-items:center;gap:0">
+            <!-- Like count -->
+            <div style="display:flex;align-items:center;gap:5px;padding:4px 12px 4px 0;cursor:pointer" onclick="feedToggleLike()">
+              <svg id="feedLikeIconBar" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--txt2)" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+              <span id="feedLikeCount" style="font-size:13px;color:var(--txt2);font-weight:600">0</span>
+            </div>
+            <!-- Comment -->
+            <div style="display:flex;align-items:center;gap:5px;padding:4px 12px;cursor:pointer" onclick="feedOpenComments()">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--txt2)" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              <span id="feedCommentCount" style="font-size:13px;color:var(--txt2);font-weight:600">0</span>
+            </div>
+            <!-- Send (DM) -->
+            <div style="display:flex;align-items:center;gap:5px;padding:4px 12px;cursor:pointer" onclick="openFeedSendSheet()">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--txt2)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            </div>
+            <!-- Bookmark — pushed to right -->
+            <div style="margin-left:auto;padding:4px 0 4px 12px;cursor:pointer" onclick="feedToggleSave()">
+              <svg id="feedSaveIcon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--txt2)" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+            </div>
+          </div>
+
+        </div><!-- end below-media row -->
+
+      </div><!-- end feedPostWrap -->
+
+    </div><!-- end feedViewport -->
+
+    <!-- ── DM SEND SHEET (slides up from bottom, 60% height) ── -->
+    <div id="feedSendSheet" style="display:none;position:absolute;inset:0;z-index:400;background:rgba(0,0,0,.55)" onclick="if(event.target===this)closeFeedSendSheet()">
+      <div id="feedSendSheetInner" style="position:absolute;left:0;right:0;bottom:0;height:60%;background:rgba(15,20,16,0.97);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-radius:24px 24px 0 0;display:flex;flex-direction:column;transform:translateY(100%);will-change:transform;border-top:1px solid rgba(255,255,255,.1)">
+        <!-- Drag handle -->
+        <div style="padding:10px 0 4px;display:flex;justify-content:center;flex-shrink:0">
+          <div style="width:36px;height:4px;background:rgba(255,255,255,.2);border-radius:2px"></div>
+        </div>
+        <!-- Search bar row -->
+        <div style="padding:4px 14px 10px;flex-shrink:0">
+          <div style="display:flex;align-items:center;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.1);border-radius:12px;height:44px;padding:0 14px;gap:10px">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input id="feedSendSearchInput" placeholder="Search people…" oninput="filterFeedSendSearch(this.value)"
+              style="flex:1;background:none;border:none;outline:none;color:var(--txt0);font-size:14px;font-family:inherit">
+          </div>
+        </div>
+        <div id="feedSendUserList" style="flex:1;overflow-y:auto;padding:0 0 calc(env(safe-area-inset-bottom,0px) + 16px)"></div>
+      </div>
+    </div>
+
+    <!-- ── ACTIVITY / NOTIFICATIONS PAGE ── -->
+    <div id="feedActivityPage" style="display:none;position:absolute;inset:0;z-index:400;background:var(--bg0);flex-direction:column">
+      <div style="flex-shrink:0;padding:52px 14px 0;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border)">
+        <button onclick="closeFeedActivity()" style="background:none;border:none;color:var(--txt1);font-size:18px;cursor:pointer;padding:4px 8px 4px 0;font-family:inherit">←</button>
+        <div style="font-size:17px;font-weight:700;color:var(--txt0)">Activity</div>
+      </div>
+      <div id="feedActivityList" style="flex:1;overflow-y:auto;padding:8px 0"></div>
+    </div>
+
+    <!-- ── CONTENT CREATION OVERLAY ── -->
+    <div id="feedCreateOverlay" style="display:none;position:absolute;inset:0;z-index:400;background:var(--bg0);flex-direction:column">
+      <!-- Header -->
+      <div style="flex-shrink:0;padding:52px 16px 12px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)">
+        <button onclick="closeFeedCreate()" style="background:none;border:none;color:var(--txt1);font-size:22px;cursor:pointer;font-family:inherit;padding:2px;width:36px;height:36px;display:flex;align-items:center;justify-content:center">×</button>
+        <div style="font-size:15px;font-weight:700;color:var(--txt0)">New Post</div>
+        <div style="width:36px"></div>
+      </div>
+      <!-- Scrollable form body -->
+      <div style="flex:1;overflow-y:auto;padding:16px 16px 8px;-webkit-overflow-scrolling:touch">
+
+        <!-- 300px media placeholder -->
+        <div id="createMediaArea" style="width:100%;height:300px;background:#111;border-radius:16px;margin-bottom:12px;position:relative;overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px">
+          <div id="createMediaPlaceholder">
+            <div style="display:flex;flex-direction:column;align-items:center;gap:8px">
+              <svg viewBox="0 0 24 24" width="52" height="52" fill="none" stroke="rgba(255,255,255,.25)" stroke-width="1.4"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+              <div style="font-size:13px;color:rgba(255,255,255,.25)">Tap below to add media</div>
+            </div>
+          </div>
+          <img id="createNewPreviewImg" style="display:none;position:absolute;inset:0;width:100%;height:100%;object-fit:cover" alt="">
+          <video id="createNewPreviewVid" style="display:none;position:absolute;inset:0;width:100%;height:100%;object-fit:cover" autoplay muted loop playsinline></video>
+          <!-- Remove media button (shown after selection) -->
+          <div id="createMediaRemoveBtn" onclick="clearCreateNewMedia()" style="display:none;position:absolute;top:10px;right:10px;width:28px;height:28px;background:rgba(0,0,0,.6);border-radius:50%;align-items:center;justify-content:center;cursor:pointer;color:#fff;font-size:14px">×</div>
+        </div>
+
+        <!-- Media action buttons -->
+        <div style="display:flex;gap:10px;margin-bottom:20px">
+          <button onclick="createTakePhotoDemo()" style="flex:1;height:44px;background:var(--bg2);border:1px solid var(--border2);color:var(--txt1);border-radius:12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:7px">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            Take Photo or Video
+          </button>
+          <label style="flex:1;height:44px;background:var(--bg2);border:1px solid var(--border2);color:var(--txt1);border-radius:12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:7px">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+            Choose from Library
+            <input id="createLibraryInput" type="file" accept="image/*,video/*" style="display:none" onchange="handleCreateNewFile(event)">
+          </label>
+        </div>
+
+        <!-- Caption -->
+        <div style="margin-bottom:16px">
+          <textarea id="createNewCaption" placeholder="Write a caption…" maxlength="500" rows="3" oninput="updateCreateCharCount(this)"
+            style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:14px;padding:12px 14px;font-size:14px;font-family:inherit;outline:none;resize:none;box-sizing:border-box"></textarea>
+          <div style="text-align:right;font-size:11px;color:var(--txt3);margin-top:4px"><span id="createCharRemain">500</span> remaining</div>
+        </div>
+
+        <!-- Tag Location -->
+        <div style="margin-bottom:16px;position:relative">
+          <div style="display:flex;align-items:center;background:var(--bg2);border:1px solid var(--border2);border-radius:12px;height:44px;padding:0 12px;gap:8px">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+            <input id="createNewLocationInput" placeholder="Search or drop pin…" autocomplete="off" oninput="filterCreateLocationNew(this.value)"
+              style="flex:1;background:none;border:none;outline:none;color:var(--txt0);font-size:13px;font-family:inherit">
+            <div id="createNewLocationClear" onclick="clearCreateLocationNew()" style="display:none;color:var(--txt3);cursor:pointer;font-size:16px;padding:2px 0">×</div>
+          </div>
+          <div id="createNewLocationDrop" style="display:none;position:absolute;top:48px;left:0;right:0;background:var(--bg1);border:1px solid var(--border2);border-radius:12px;overflow:hidden;z-index:20;max-height:200px;overflow-y:auto;box-shadow:0 6px 24px rgba(0,0,0,.5)"></div>
+          <div id="createNewLocationChosen" style="display:none;margin-top:8px">
+            <div style="display:flex;align-items:center;gap:8px;background:rgba(184,232,122,.08);border:1px solid rgba(184,232,122,.2);border-radius:12px;padding:8px 12px">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="#B8E87A"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/></svg>
+              <div id="createNewLocationLabel" style="font-size:13px;font-weight:700;color:#B8E87A;flex:1"></div>
+              <div onclick="clearCreateLocationNew()" style="color:var(--txt3);cursor:pointer;font-size:14px">×</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Comment on own post -->
+        <div style="margin-bottom:16px">
+          <input id="createNewOwnComment" placeholder="Add a comment to your own post…"
+            style="width:100%;background:var(--bg2);border:1px solid var(--border2);border-radius:12px;height:44px;padding:0 14px;font-size:13px;color:var(--txt0);font-family:inherit;outline:none;box-sizing:border-box">
+        </div>
+
+        <!-- Privacy tiles -->
+        <div style="margin-bottom:16px">
+          <div style="font-size:11px;font-weight:700;color:var(--txt3);letter-spacing:.6px;text-transform:uppercase;margin-bottom:8px">Privacy</div>
+          <div style="display:flex;gap:8px">
+            <div id="createNewPrivPublic" onclick="setCreateNewPrivacy('public',this)" style="flex:1;background:rgba(184,232,122,.12);border:2px solid rgba(184,232,122,.55);border-radius:12px;padding:11px 6px;text-align:center;cursor:pointer;-webkit-tap-highlight-color:transparent">
+              <div style="margin-bottom:4px"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
+              <div style="font-size:11px;font-weight:700;color:#B8E87A">Public</div>
+            </div>
+            <div id="createNewPrivCommunity" onclick="setCreateNewPrivacy('community',this)" style="flex:1;background:var(--bg2);border:2px solid var(--border2);border-radius:12px;padding:11px 6px;text-align:center;cursor:pointer;-webkit-tap-highlight-color:transparent">
+              <div style="margin-bottom:4px"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+              <div style="font-size:11px;font-weight:600;color:var(--txt2)">Community</div>
+            </div>
+            <div id="createNewPrivPrivate" onclick="setCreateNewPrivacy('private',this)" style="flex:1;background:var(--bg2);border:2px solid var(--border2);border-radius:12px;padding:11px 6px;text-align:center;cursor:pointer;-webkit-tap-highlight-color:transparent">
+              <div style="margin-bottom:4px"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+              <div style="font-size:11px;font-weight:600;color:var(--txt2)">Private</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Advanced Options collapsible -->
+        <div style="margin-bottom:24px;border-top:1px solid var(--border)">
+          <div onclick="toggleCreateAdvanced()" style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;cursor:pointer;-webkit-tap-highlight-color:transparent">
+            <div style="font-size:13px;font-weight:600;color:var(--txt2)">Advanced Options</div>
+            <svg id="createAdvancedChevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--txt3)" stroke-width="2.2" style="transition:transform .2s"><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
+          <div id="createAdvancedContent" style="display:none;padding:2px 0 14px;flex-direction:column;gap:14px">
+            <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer">
+              <span style="font-size:13px;color:var(--txt1)">Allow Comments</span>
+              <input type="checkbox" id="createToggleComments" checked style="width:20px;height:20px;accent-color:#B8E87A;cursor:pointer">
+            </label>
+            <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer">
+              <span style="font-size:13px;color:var(--txt1)">Allow Sharing</span>
+              <input type="checkbox" id="createToggleSharing" checked style="width:20px;height:20px;accent-color:#B8E87A;cursor:pointer">
+            </label>
+            <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer">
+              <span style="font-size:13px;color:var(--txt1)">Show Location on Map</span>
+              <input type="checkbox" id="createToggleShowMap" checked style="width:20px;height:20px;accent-color:#B8E87A;cursor:pointer">
+            </label>
+          </div>
+        </div>
+
+      </div><!-- end scroll body -->
+
+      <!-- Sticky Post button -->
+      <div style="flex-shrink:0;padding:12px 16px 28px;background:var(--bg0);border-top:1px solid var(--border)">
+        <button id="createNewPostBtn" onclick="submitCreateNewPost()" disabled
+          style="width:100%;height:52px;background:#B8E87A;color:#0f1a0a;border:none;border-radius:16px;font-size:16px;font-weight:800;cursor:not-allowed;font-family:inherit;opacity:.35;transition:opacity .2s,background .2s">
+          Post
+        </button>
+      </div>
+
+      <!-- Success animation overlay -->
+      <div id="createSuccessAnim" style="display:none;position:absolute;inset:0;background:rgba(0,0,0,.88);flex-direction:column;align-items:center;justify-content:center;gap:14px;z-index:10">
+        <div id="createSuccessCircle" style="width:80px;height:80px;border-radius:50%;background:#B8E87A;display:flex;align-items:center;justify-content:center;transform:scale(0);transition:transform .35s cubic-bezier(.34,1.56,.64,1)">
+          <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#0f1a0a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </div>
+        <div id="createSuccessText" style="font-size:16px;font-weight:700;color:#fff;opacity:0;transition:opacity .3s .2s">Posted!</div>
+      </div>
+
+      <!-- Hidden inputs -->
+      <!-- Camera capture — opens native camera on iOS/Android, file picker on desktop -->
+      <input id="createCameraCapture" type="file" accept="image/*,video/*" capture="environment" style="display:none" onchange="handleCreateNewFile(event)">
+      <!-- Library/gallery picker (no capture attribute) -->
+      <input id="createGalleryInput" type="file" accept="image/*,video/*" style="display:none" onchange="handleCreateNewFile(event)">
+      <!-- Legacy stubs kept for JS compat -->
+      <video id="createCameraVideo" style="display:none"></video>
+      <canvas id="createCameraCanvas" style="display:none"></canvas>
+      <input id="createFileInput" type="file" accept="image/*,video/*" style="display:none" onchange="handleCreateNewFile(event)">
+    </div>
+
+    <!-- ── CREATE POST PREVIEW (legacy stub — kept for JS compat) ── -->
+    <div id="feedCreatePreview" style="display:none;position:absolute;inset:0;z-index:410;background:var(--bg0);flex-direction:column">
+      <div id="createPreviewMedia" style="display:none"><img id="createPreviewFinalImg" style="display:none" alt=""><video id="createPreviewFinalVid" style="display:none" loop muted playsinline></video></div>
+      <textarea id="createCaptionInput" style="display:none"></textarea>
+      <input id="createLocationInput" style="display:none">
+      <div id="createLocationClear" style="display:none"></div>
+      <div id="createLocationDrop" style="display:none"></div>
+      <div id="createLocationChosen" style="display:none"><div id="createLocationLabel"></div></div>
+      <div id="createPrivPublic" style="display:none"><div></div></div>
+      <div id="createPrivCommunity" style="display:none"><div></div></div>
+      <div id="createPrivPrivate" style="display:none"><div></div></div>
+    </div>
+
+  </div><!-- end screen-home -->
+
+  <!-- ── EXPLORE SCREEN ───────────────────────────── -->
+  <div class="screen" id="explore-screen">
+    <div class="explore-header">
+      <div class="screen-title">Explore</div>
+      <div class="screen-sub">Discover your next adventure</div>
+    </div>
+    <!-- Search bar -->
+    <div style="padding:0 16px 12px;background:var(--bg0);flex-shrink:0">
+      <div style="display:flex;align-items:center;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.1);border-radius:50px;height:44px;padding:0 14px;gap:10px">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="exploreSearchInput" type="search" placeholder="Search spots, trails, locations…"
+          style="flex:1;background:none;border:none;outline:none;color:#fff;font-size:14px;font-family:inherit"
+          oninput="filterExplore(this.value)" autocomplete="off">
+        <svg id="exploreClearBtn" onclick="clearExploreSearch()" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2.5" style="cursor:pointer;display:none"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </div>
+    </div>
+    <!-- Search results (shown when query active) -->
+    <div id="exploreSearchResults" style="display:none;flex:1;overflow-y:auto;padding:0 16px"></div>
+    <div class="explore-scroll" id="exploreMainContent">
+
+      <!-- Drive time filter -->
+      <div class="explore-section">
+        <div class="explore-section-title">Filter by Drive Time</div>
+        <div class="drivetime-strip">
+          <div class="dt-chip active" data-dt="0" onclick="setDriveFilter(this,0)">Any</div>
+          <div class="dt-chip" data-dt="30" onclick="setDriveFilter(this,30)">30 min</div>
+          <div class="dt-chip" data-dt="60" onclick="setDriveFilter(this,60)">1 hour</div>
+          <div class="dt-chip" data-dt="120" onclick="setDriveFilter(this,120)">2 hours</div>
+          <div class="dt-chip" data-dt="180" onclick="setDriveFilter(this,180)">3 hours</div>
+        </div>
+      </div>
+
+      <!-- Seasonal spotlight -->
+      <div class="explore-section">
+        <div class="explore-section-title">In Season Now</div>
+        <div id="seasonalList"></div>
+      </div>
+
+      <!-- Hidden gems -->
+      <div class="explore-section">
+        <div class="explore-section-title">Hidden Gems</div>
+        <div id="hiddenGemsList"></div>
+      </div>
+
+      <!-- Recently added -->
+      <div class="explore-section">
+        <div class="explore-section-title">Recently Added</div>
+        <div id="recentlyAddedList"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── PROFILE SCREEN ────────────────────────────── -->
+  <div class="screen" id="profile-screen">
+    <!-- Fixed header -->
+    <div id="profileHeaderFixed" style="flex-shrink:0;background:var(--bg0);padding:52px 20px 0">
+
+      <!-- Row: Avatar + username/name | Settings gear -->
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:18px">
+        <!-- Avatar -->
+        <div class="avatar" id="profileAvatar" style="width:72px;height:72px;font-size:24px;cursor:pointer;overflow:hidden;position:relative;flex-shrink:0;border:2px solid var(--border2)" onclick="openAvatarActionSheet()">
+          <img id="profileAvatarImg" style="display:none;position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:50%" src="" alt="">
+          <span id="profileAvatarText">WP</span>
+        </div>
+        <!-- Hidden file inputs for avatar -->
+        <input id="avatarFileLibrary" type="file" accept="image/*" style="display:none" onchange="handleAvatarUpload(event)">
+        <input id="avatarFileCamera" type="file" accept="image/*" capture="environment" style="display:none" onchange="handleAvatarUpload(event)">
+        <!-- Username + full name -->
+        <div style="flex:1;min-width:0">
+          <div style="font-size:17px;font-weight:700;color:var(--txt0);letter-spacing:-.02em;line-height:1.2" id="profileUsername">@wildexplorer</div>
+          <div style="font-size:13px;color:var(--txt3);margin-top:3px" id="profileFullName">Explorer</div>
+        </div>
+        <!-- Settings gear -->
+        <button type="button" onclick="openSettingsFull()" style="width:38px;height:38px;background:var(--bg2);border:1px solid var(--border2);border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--txt2)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+
+      <!-- Stats row: Followers | Posts | Following -->
+      <div style="display:flex;text-align:center;margin-bottom:14px">
+        <div style="flex:1;cursor:pointer" onclick="openFollowersList()">
+          <div style="font-size:20px;font-weight:700;color:var(--txt0)" id="profileFollowersCount">0</div>
+          <div style="font-size:11px;color:var(--txt3);margin-top:2px">Followers</div>
+        </div>
+        <div style="flex:1;cursor:default">
+          <div style="font-size:20px;font-weight:700;color:var(--txt0)" id="profilePostsCount">0</div>
+          <div style="font-size:11px;color:var(--txt3);margin-top:2px">Posts</div>
+        </div>
+        <div style="flex:1;cursor:pointer" onclick="openFollowingList()">
+          <div style="font-size:20px;font-weight:700;color:var(--txt0)" id="profileFollowingCount">0</div>
+          <div style="font-size:11px;color:var(--txt3);margin-top:2px">Following</div>
+        </div>
+      </div>
+
+      <!-- Edit Profile button -->
+      <div onclick="openProfileEditSheet()" style="width:100%;height:36px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:var(--txt1);cursor:pointer;margin-bottom:14px;-webkit-tap-highlight-color:transparent">Edit Profile</div>
+
+      <!-- Quick Access Tiles — single horizontal scrollable row of 4 -->
+      <div style="display:flex;gap:8px;overflow-x:auto;margin-bottom:14px;-webkit-overflow-scrolling:touch;scrollbar-width:none;-ms-overflow-style:none;padding-bottom:2px">
+        <!-- Your Map tile -->
+        <div onclick="openProfileYourMap()" style="flex:0 0 calc(25% - 6px);background:var(--bg2);border:1px solid var(--border2);border-radius:14px;overflow:hidden;height:80px;position:relative;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:10px 6px">
+          <div id="profileMapThumbnail" style="position:absolute;inset:0;border-radius:14px;overflow:hidden"></div>
+          <div style="position:absolute;inset:0;background:linear-gradient(to bottom,rgba(0,0,0,.15) 0%,rgba(0,0,0,.6) 100%);border-radius:14px"></div>
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="rgba(255,255,255,.85)" stroke-width="1.8" style="position:relative;z-index:1"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>
+          <div style="font-size:10px;font-weight:700;color:#fff;position:relative;z-index:1;text-align:center;line-height:1.2">Your Map</div>
+        </div>
+        <!-- Friends Map -->
+        <div onclick="openFriendsMap()" style="flex:0 0 calc(25% - 6px);background:var(--bg2);border:1px solid var(--border2);border-radius:14px;overflow:hidden;height:80px;position:relative;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:10px 6px">
+          <div id="friendsMapThumbnail" style="position:absolute;inset:0;background:linear-gradient(135deg,#1a2c1a,#0f1a0f)"></div>
+          <div style="position:absolute;inset:0;background:linear-gradient(to bottom,rgba(0,0,0,.1) 0%,rgba(0,0,0,.55) 100%)"></div>
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="rgba(184,232,122,.8)" stroke-width="1.8" style="position:relative;z-index:1"><circle cx="9" cy="8" r="3"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><path d="M16 4a3 3 0 0 1 0 6"/><path d="M21 21v-2a4 4 0 0 0-3-3.87"/></svg>
+          <div style="font-size:10px;font-weight:700;color:#fff;position:relative;z-index:1;text-align:center;line-height:1.2">Friends</div>
+        </div>
+        <!-- Saved Posts -->
+        <div onclick="openSavedPostsPage()" style="flex:0 0 calc(25% - 6px);background:var(--bg2);border:1px solid var(--border2);border-radius:14px;overflow:hidden;height:80px;position:relative;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:10px 6px">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="rgba(184,232,122,.8)" stroke-width="1.8"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+          <div style="font-size:10px;font-weight:700;color:var(--txt0);text-align:center;line-height:1.2">Saved</div>
+          <div id="profileSavedCount" style="font-size:9px;color:var(--txt3);margin-top:-4px;text-align:center">0 posts</div>
+        </div>
+        <!-- Want to Go / Pinned -->
+        <div onclick="openWantToGoList()" style="flex:0 0 calc(25% - 6px);background:var(--bg2);border:1px solid var(--border2);border-radius:14px;overflow:hidden;height:80px;position:relative;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:10px 6px">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="rgba(212,168,67,.8)" stroke-width="1.8"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+          <div style="font-size:10px;font-weight:700;color:var(--txt0);text-align:center;line-height:1.2">Pinned</div>
+          <div id="profilePinnedCount" style="font-size:9px;color:var(--txt3);margin-top:-4px;text-align:center">Want to go</div>
+        </div>
+      </div>
+
+      <!-- Posts / Tagged tab row -->
+      <div style="display:flex;border-bottom:1px solid var(--border)">
+        <div id="profileTabPosts" onclick="switchProfileTab('posts')" style="flex:1;display:flex;align-items:center;justify-content:center;padding:10px 0;border-bottom:2px solid var(--accent);cursor:pointer;gap:6px">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--txt0)" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        </div>
+        <div id="profileTabTagged" onclick="switchProfileTab('tagged')" style="flex:1;display:flex;align-items:center;justify-content:center;padding:10px 0;border-bottom:2px solid transparent;cursor:pointer;gap:6px">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--txt3)" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+        </div>
+      </div>
+    </div><!-- end profileHeaderFixed -->
+
+    <!-- Scrollable post grids -->
+    <div style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch">
+      <!-- Posts grid (with private overlay) -->
+      <div id="profilePostsGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:2px;padding:2px"></div>
+      <!-- Tagged grid (hidden by default) -->
+      <div id="profileTaggedGrid" style="display:none;grid-template-columns:repeat(3,1fr);gap:2px;padding:2px"></div>
+      <!-- My Hikes -->
+      <div id="profileMyHikes" style="display:none;border-top:1px solid var(--border)"></div>
+      <!-- Hidden legacy sections kept for JS compat -->
+      <div id="profileAboutContent" style="display:none">
+        <div class="profile-section">
+          <div class="stats-grid" id="statsGrid"></div>
+        </div>
+        <div class="mini-chart" id="miniChart"></div>
+        <div id="proFeaturesList" style="display:none"></div>
+        <div id="yearReviewSection" style="display:none"><div id="yearReview"></div></div>
+        <div id="favList" style="display:none"></div>
+        <span id="favCount" style="display:none"></span>
+        <div id="collectionsList" style="display:none"></div>
+        <div id="journalList" style="display:none"></div>
+        <div id="savedSpots" style="display:none"></div>
+        <div id="settingsList" style="display:none"></div>
+      </div>
+    </div>
+    <!-- Keep memberSince for JS compat -->
+    <div id="profileMemberSince" style="display:none"></div>
+  </div>
+
+  <!-- Followers list overlay -->
+  <div id="followersListPage" style="display:none;position:absolute;inset:0;z-index:8500;background:var(--bg0);flex-direction:column">
+    <div style="display:flex;align-items:center;padding:54px 16px 14px;border-bottom:1px solid var(--border);gap:14px;flex-shrink:0">
+      <div onclick="document.getElementById('followersListPage').style.display='none'" style="width:36px;height:36px;border-radius:50%;background:var(--bg2);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:16px;color:var(--txt2)">←</div>
+      <div style="font-size:17px;font-weight:700;color:var(--txt0)">Followers</div>
+    </div>
+    <div id="followersListContent" style="flex:1;overflow-y:auto;padding:8px 0"></div>
+  </div>
+
+  <!-- Following list overlay -->
+  <div id="followingListPage" style="display:none;position:absolute;inset:0;z-index:8500;background:var(--bg0);flex-direction:column">
+    <div style="display:flex;align-items:center;padding:54px 16px 14px;border-bottom:1px solid var(--border);gap:14px;flex-shrink:0">
+      <div onclick="document.getElementById('followingListPage').style.display='none'" style="width:36px;height:36px;border-radius:50%;background:var(--bg2);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:16px;color:var(--txt2)">←</div>
+      <div style="font-size:17px;font-weight:700;color:var(--txt0)">Following</div>
+    </div>
+    <div id="followingListContent" style="flex:1;overflow-y:auto;padding:8px 0"></div>
+  </div>
+
+  <!-- Location Permission Card -->
+  <div id="locationPermCard" style="position:absolute;inset:0;z-index:9000;background:rgba(14,11,9,.96);display:none;flex-direction:column;align-items:center;justify-content:center;padding:32px 28px;text-align:center">
+    
+    <div style="font-size:24px;font-weight:800;color:var(--txt0);margin-bottom:6px;letter-spacing:-.3px">WildPath</div>
+    
+    <div style="font-size:20px;font-weight:800;color:var(--txt0);margin-bottom:10px">Allow Location Access</div>
+    <div style="font-size:14px;color:var(--txt2);line-height:1.65;margin-bottom:28px;max-width:280px">WildPath uses your location to show nearby spots, calculate real distances, and navigate to trailheads. Your location is never stored or shared.</div>
+    <button onclick="requestLocationPermission()" style="width:100%;max-width:280px;padding:15px;background:linear-gradient(135deg,var(--accent),var(--accent-dim));color:var(--bg0);border:none;border-radius:14px;font-size:16px;font-weight:800;cursor:pointer;margin-bottom:12px;font-family:inherit;box-shadow:0 4px 20px rgba(196,149,106,.4)">Allow Location</button>
+    <button onclick="dismissLocationPerm()" style="width:100%;max-width:280px;padding:13px;background:transparent;color:var(--txt3);border:1px solid var(--border2);border-radius:14px;font-size:14px;cursor:pointer;font-family:inherit">Maybe Later</button>
+  </div>
+
+  <!-- Location Denied Banner -->
+  <div id="locationDeniedBanner" style="position:absolute;top:0;left:0;right:0;background:rgba(196,82,74,.92);color:#fff;font-size:12px;padding:10px 16px;z-index:8000;display:none;text-align:center;backdrop-filter:blur(8px)">
+    Location access denied — <a href="#" onclick="this.parentElement.style.display='none'" style="color:#ffcdd2;text-decoration:underline">Dismiss</a> · Enable in browser Settings → Site Permissions
+  </div>
+
+  <!-- Profile Edit Action Sheet -->
+  <div id="profileEditSheet" style="position:absolute;inset:0;z-index:800;background:rgba(0,0,0,.7);display:none;align-items:flex-end" onclick="if(event.target===this)closeProfileEditSheet()">
+    <div style="background:var(--bg1);border-radius:24px 24px 0 0;width:100%;padding:20px 20px 32px">
+      <div style="width:36px;height:4px;background:var(--border2);border-radius:2px;margin:0 auto 18px"></div>
+      <div style="font-size:16px;font-weight:800;color:var(--txt0);margin-bottom:16px">Edit Profile</div>
+      <div onclick="openAvatarPicker()" style="display:flex;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid var(--border);cursor:pointer">
+        <span style="font-size:14px">Photo</span>
+        <div>
+          <div style="font-size:15px;font-weight:600;color:var(--txt0)">Change Profile Photo</div>
+          <div style="font-size:12px;color:var(--txt3)">Select from your photo library</div>
+        </div>
+        <span style="margin-left:auto;color:var(--txt3);font-size:20px">›</span>
+      </div>
+      <div onclick="openUsernameEdit()" style="display:flex;align-items:center;gap:14px;padding:14px 0;cursor:pointer">
+        <span style="font-size:13px;font-weight:700">Edit</span>
+        <div>
+          <div style="font-size:15px;font-weight:600;color:var(--txt0)">Edit Username</div>
+          <div style="font-size:12px;color:var(--txt3)">Change your @handle</div>
+        </div>
+        <span style="margin-left:auto;color:var(--txt3);font-size:20px">›</span>
+      </div>
+      <input type="file" id="avatarPickerInput" accept="image/*" style="display:none" onchange="handleAvatarUpload(event)">
+    </div>
+  </div>
+
+  <!-- Username Edit Modal -->
+  <div id="usernameEditModal" style="position:absolute;inset:0;z-index:900;background:rgba(0,0,0,.75);display:none;align-items:center;justify-content:center;padding:24px" onclick="if(event.target===this)closeUsernameEdit()">
+    <div style="background:var(--bg1);border-radius:20px;padding:24px 20px;width:100%;max-width:320px">
+      <div style="font-size:17px;font-weight:800;color:var(--txt0);margin-bottom:16px">Edit Username</div>
+      <input id="usernameEditInput" type="text" placeholder="@your_username" style="width:100%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:12px;padding:12px 14px;font-size:15px;font-family:inherit;outline:none;margin-bottom:14px">
+      <div style="display:flex;gap:10px">
+        <button onclick="closeUsernameEdit()" style="flex:1;padding:12px;background:var(--bg3);border:none;color:var(--txt2);border-radius:12px;font-size:14px;cursor:pointer;font-family:inherit">Cancel</button>
+        <button onclick="saveUsername()" style="flex:1;padding:12px;background:var(--accent);border:none;color:var(--bg0);border-radius:12px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Share Profile Card Overlay -->
+  <div id="shareProfileOverlay" style="position:absolute;inset:0;z-index:850;background:rgba(0,0,0,.8);display:none;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeShareProfile()">
+    <div style="background:var(--bg1);border-radius:24px;width:100%;max-width:320px;overflow:hidden">
+      <div style="background:linear-gradient(160deg,#1a1714,#2b2520);padding:24px 20px 20px;text-align:center">
+        <div style="font-size:14px;font-weight:800;color:var(--accent);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:14px">WildPath</div>
+        <div id="shareProfileAvatar" style="width:64px;height:64px;border-radius:50%;background:var(--bg3);margin:0 auto 10px;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800;color:var(--accent);overflow:hidden;border:2px solid rgba(196,149,106,.3)">JR</div>
+        <div id="shareProfileUsername" style="font-size:18px;font-weight:800;color:var(--txt0)">@wildexplorer</div>
+        <div style="font-size:12px;color:var(--txt3);margin-top:4px">Member since March 2024</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border);border-top:1px solid var(--border)">
+        <div style="background:var(--bg1);padding:14px;text-align:center"><div style="font-size:20px;font-weight:800;color:var(--txt0)">38</div><div style="font-size:11px;color:var(--txt3);margin-top:2px">Spots Visited</div></div>
+        <div style="background:var(--bg1);padding:14px;text-align:center"><div style="font-size:20px;font-weight:800;color:var(--txt0)">284</div><div style="font-size:11px;color:var(--txt3);margin-top:2px">Miles Hiked</div></div>
+        <div style="background:var(--bg1);padding:14px;text-align:center"><div style="font-size:20px;font-weight:800;color:var(--txt0)" id="shareSpotCount">0</div><div style="font-size:11px;color:var(--txt3);margin-top:2px">Spots Added</div></div>
+        <div style="background:var(--bg1);padding:14px;text-align:center"><div style="font-size:20px;font-weight:800;color:var(--txt0)"></div><div style="font-size:11px;color:var(--txt3);margin-top:2px">Fav Type</div></div>
+      </div>
+      <div style="padding:14px 20px;border-top:1px solid var(--border);text-align:center">
+        <div style="font-size:13px;color:var(--txt2);margin-bottom:14px;font-style:italic">"Join me on WildPath — discover hidden California"</div>
+        <div style="display:flex;gap:10px">
+          <button onclick="copyShareLink()" style="flex:1;padding:11px;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:12px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Copy Link</button>
+          <button onclick="nativeShare()" style="flex:1;padding:11px;background:var(--accent);border:none;color:var(--bg0);border-radius:12px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Share</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Collection Detail Overlay -->
+  <div id="collectionDetailOverlay" style="position:absolute;inset:0;z-index:700;background:var(--bg0);display:none;flex-direction:column">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:52px 20px 14px;border-bottom:1px solid var(--border);flex-shrink:0">
+      <button onclick="closeCollectionDetail()" style="background:none;border:none;color:var(--txt2);font-size:16px;cursor:pointer;padding:4px">← Back</button>
+      <div id="collectionDetailName" style="font-size:17px;font-weight:800;color:var(--txt0)">Collection</div>
+      <button onclick="editCollectionName()" style="background:none;border:none;color:var(--accent);font-size:13px;font-weight:700;cursor:pointer;padding:4px">Edit</button>
+    </div>
+    <div id="collectionDetailBody" style="flex:1;overflow-y:auto;padding:16px 20px"></div>
+  </div>
+
+  <!-- Settings Panel Overlay -->
+  <div class="settings-panel-overlay" id="settingsPanelOverlay" onclick="if(event.target===this)closeSettingsPanel()">
+    <div style="background:var(--bg1);border-radius:24px 24px 0 0;width:100%;max-height:80vh;overflow-y:auto;padding-bottom:env(safe-area-inset-bottom,0px)">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 20px 14px;border-bottom:1px solid var(--border)">
+        <div id="settingsPanelTitle" style="font-size:17px;font-weight:700;color:var(--txt0)">Settings</div>
+        <button onclick="closeSettingsPanel()" style="background:var(--bg3);border:none;color:var(--txt1);width:30px;height:30px;border-radius:50%;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center">×</button>
+      </div>
+      <div id="settingsPanelBody" style="padding:16px 20px 24px"></div>
+    </div>
+  </div>
+
+  <!-- Journal Entry Modal -->
+  <div class="modal-overlay" id="journalOverlay" onclick="if(event.target===this)closeJournal()">
+    <div class="modal-sheet" style="max-height:70vh">
+      <div class="modal-header">
+        <div class="modal-title">New Journal Entry</div>
+        <button class="modal-close" onclick="closeJournal()">×</button>
+      </div>
+      <div style="padding:0 20px 20px;overflow-y:auto">
+        <div style="margin-bottom:12px">
+          <label style="font-size:11px;color:var(--txt2);font-weight:700;letter-spacing:.5px;text-transform:uppercase">Spot (optional)</label>
+          <select id="journalSpotSelect" style="width:100%;margin-top:6px;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:10px;padding:10px 12px;font-size:13px">
+            <option value="">No specific spot</option>
+          </select>
+        </div>
+        <div style="margin-bottom:12px">
+          <label style="font-size:11px;color:var(--txt2);font-weight:700;letter-spacing:.5px;text-transform:uppercase">Date</label>
+          <input type="date" id="journalDate" style="width:100%;margin-top:6px;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:10px;padding:10px 12px;font-size:13px">
+        </div>
+        <div style="margin-bottom:16px">
+          <label style="font-size:11px;color:var(--txt2);font-weight:700;letter-spacing:.5px;text-transform:uppercase">Notes</label>
+          <textarea id="journalNotes" rows="5" placeholder="What did you discover? How was the water level? Any tips for next time…" style="width:100%;margin-top:6px;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:10px;padding:10px 12px;font-size:13px;resize:none;font-family:inherit"></textarea>
+        </div>
+        <div style="display:flex;gap:8px">
+          <span style="font-size:13px;color:var(--txt2);padding-top:4px">Rating:</span>
+          <div id="journalStars" style="display:flex;gap:4px">${[1,2,3,4,5].map(n=>`<span onclick="setJournalStar(${n})" style="font-size:22px;cursor:pointer;transition:.1s" class="jstar" data-v="${n}"></span>`).join('')}</div>
+        </div>
+        <button class="btn-primary" style="margin-top:16px" onclick="saveJournalEntry()">Save Entry</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════
+       COMMUNITY SCREEN (two-view swap design)
+       ══════════════════════════════════════════════════ -->
+  <div class="screen" id="community-screen" style="overflow:hidden">
+
+    <!-- ── COMMUNITY VIEW (default state) ── -->
+    <div id="commCommunityView" style="position:absolute;inset:0;display:flex;flex-direction:column;transform:translateX(0);transition:transform 200ms ease;will-change:transform">
+
+      <!-- Fixed top header area -->
+      <div style="flex-shrink:0;background:var(--bg0);padding:52px 14px 10px;border-bottom:1px solid var(--border)">
+        <div style="text-align:center;font-size:17px;font-weight:600;color:var(--txt0);margin-bottom:12px">Communities</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div id="commSearchBar" onclick="openCommSearch()" style="flex:1;display:flex;align-items:center;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.1);border-radius:12px;height:44px;padding:0 14px;gap:10px;cursor:pointer">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <span style="flex:1;font-size:14px;color:rgba(255,255,255,.32)">Search communities…</span>
+          </div>
+          <div onclick="openCreateCommunity()" style="width:44px;height:44px;flex-shrink:0;background:rgba(184,232,122,.12);border:1px solid rgba(184,232,122,.3);border-radius:12px;display:flex;align-items:center;justify-content:center;cursor:pointer;-webkit-tap-highlight-color:transparent">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#B8E87A" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- Scrollable communities list -->
+      <div id="commCommunitiesList" style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:calc(var(--nav-h) + 20px)">
+        <div id="commListContent" style="padding:0 14px"></div>
+      </div>
+
+    </div><!-- end commCommunityView -->
+
+    <!-- ── MESSAGES VIEW (alternate state, slides in from right) ── -->
+    <div id="commMessagesView" style="position:absolute;inset:0;display:flex;flex-direction:column;transform:translateX(100%);transition:transform 200ms ease;will-change:transform">
+
+      <!-- Messages header — matches Communities header exactly -->
+      <div style="flex-shrink:0;background:var(--bg0);padding:52px 14px 10px;border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <div style="width:40px"></div>
+          <div style="font-size:17px;font-weight:600;color:var(--txt0)">Messages</div>
+          <div onclick="openNewMessageOverlay()" style="width:40px;height:40px;display:flex;align-items:center;justify-content:center;cursor:pointer;-webkit-tap-highlight-color:transparent">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="var(--txt0)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.1);border-radius:12px;height:44px;padding:0 14px;gap:10px">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input id="commDmSearchInput" placeholder="Search conversations…" oninput="filterCommDmSearch(this.value)"
+            style="flex:1;background:none;border:none;outline:none;color:var(--txt0);font-size:14px;font-family:inherit">
+        </div>
+      </div>
+
+      <!-- Messages inbox list -->
+      <div id="commDmInboxBody" style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:calc(var(--nav-h) + 72px)"></div>
+
+      <!-- Swap back to Community — 44px circle matching the paper-plane FAB exactly -->
+      <div onclick="swapCommTab('community')" style="position:absolute;bottom:calc(var(--nav-h) + 8px);right:8px;z-index:10;width:44px;height:44px;border-radius:50%;background:rgba(22,19,16,.92);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.18);display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 3px 14px rgba(0,0,0,.5);-webkit-tap-highlight-color:transparent">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--txt1)" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      </div>
+
+    </div><!-- end commMessagesView -->
+
+    <!-- Messages FAB — 44px frosted circle floating above Profile tab (rightmost nav item) -->
+    <button id="commMsgFab" type="button" onclick="swapCommTab('messages')"
+      style="position:absolute;bottom:calc(var(--nav-h) + 8px);right:8px;z-index:210;width:44px;height:44px;border-radius:50%;background:rgba(22,19,16,.92);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.18);display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 3px 14px rgba(0,0,0,.5);-webkit-tap-highlight-color:transparent">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--txt1)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+    </button>
+
+    <!-- Notification badge (hidden — nav tab dot handles unread indicator) -->
+    <div id="commNotifBadge" style="display:none"></div>
+
+    <!-- Full-screen community search overlay -->
+    <div id="commSearchOverlay" style="display:none;position:absolute;inset:0;z-index:500;background:var(--bg0);flex-direction:column">
+      <div style="display:flex;align-items:center;padding:54px 14px 10px;gap:10px;flex-shrink:0">
+        <div style="flex:1;display:flex;align-items:center;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:50px;height:44px;padding:0 14px;gap:10px">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input id="commSearchInput" type="search" placeholder="Search…" autocomplete="off"
+            style="flex:1;background:none;border:none;outline:none;color:#fff;font-size:14px;font-family:inherit"
+            oninput="runCommSearch(this.value)" autofocus>
+        </div>
+        <div onclick="closeCommSearch()" style="font-size:13px;font-weight:600;color:var(--accent);cursor:pointer;padding:8px;white-space:nowrap">Cancel</div>
+      </div>
+      <div style="display:flex;border-bottom:1px solid var(--border);flex-shrink:0">
+        <div id="csTabPeople" onclick="switchCommSearchTab('people')" style="flex:1;text-align:center;padding:10px 0;font-size:13px;font-weight:700;color:var(--txt0);border-bottom:2px solid var(--accent);cursor:pointer">People</div>
+        <div id="csTabComms" onclick="switchCommSearchTab('communities')" style="flex:1;text-align:center;padding:10px 0;font-size:13px;font-weight:600;color:var(--txt3);border-bottom:2px solid transparent;cursor:pointer">Communities</div>
+      </div>
+      <div id="commSearchResults" style="flex:1;overflow-y:auto;padding:8px 0"></div>
+    </div>
+
+    <!-- Legacy feed elements hidden but kept for JS compat -->
+    <div id="commFeedPanel" style="display:none">
+      <div id="feedChipRow" style="display:none"></div>
+      <div id="feedSortBtn" style="display:none"><span id="feedSortLabel">Recent</span></div>
+      <div id="feedSortDrop" style="display:none"></div>
+      <div id="feedScroll" style="display:none"></div>
+    </div>
+    <div id="commCommunitiesPanel" style="display:none">
+      <div id="yourCommunitiesRow" style="display:none"></div>
+      <div id="discoverCommunitiesList" style="display:none"></div>
+    </div>
+    <div id="commSubFeed" style="display:none"></div>
+    <div id="commSubCommunities" style="display:none"></div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════
+       COMMUNITY DETAIL PAGE
+       ══════════════════════════════════════════════════ -->
+  <div class="comm-full-page" id="communityDetailPage">
+    <div style="flex-shrink:0" id="commDetailHeader"></div>
+    <div class="cfp-body" id="commDetailBody"></div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════
+       POST DETAIL PAGE
+       ══════════════════════════════════════════════════ -->
+  <div class="comm-full-page" id="postDetailPage" style="position:absolute;inset:0;z-index:510">
+    <div class="cfp-nav" style="padding-top:52px">
+      <button class="cfp-back" onclick="closePostDetail()">←</button>
+      <div class="cfp-title">Post</div>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding-bottom:70px;scrollbar-width:none" id="postDetailBody"></div>
+    <div class="comment-input-bar" id="commentInputBar">
+      <div class="post-avatar" style="width:28px;height:28px;font-size:9px;flex-shrink:0" id="commentAvatarSmall">Me</div>
+      <input class="comment-input" id="commentInput" placeholder="Add a comment…" onkeydown="if(event.key==='Enter')submitComment()">
+      <button class="comment-send" onclick="submitComment()">Send</button>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════
+       USER PROFILE PAGE
+       ══════════════════════════════════════════════════ -->
+  <div class="comm-full-page" id="userProfilePage" style="z-index:520">
+    <div class="cfp-nav">
+      <button class="cfp-back" onclick="closeUserProfile()">←</button>
+      <div class="cfp-title" id="userProfilePageTitle">Profile</div>
+      <div class="cfp-action" id="userProfileEditBtn" style="display:none" onclick="openEditProfile()">Edit</div>
+    </div>
+    <div class="cfp-body" id="userProfileBody"></div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════
+       NOTIFICATIONS PAGE
+       ══════════════════════════════════════════════════ -->
+  <div class="comm-full-page" id="notificationsPage" style="z-index:530">
+    <div class="cfp-nav">
+      <button class="cfp-back" onclick="closeNotificationsPage()">←</button>
+      <div class="cfp-title">Notifications</div>
+      <div class="cfp-action" onclick="markAllNotifsRead()">Mark All Read</div>
+    </div>
+    <div class="cfp-body" id="notificationsBody"></div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════
+       DM INBOX PAGE
+       ══════════════════════════════════════════════════ -->
+  <div class="comm-full-page" id="dmPage" style="z-index:540">
+    <div class="cfp-nav">
+      <button class="cfp-back" onclick="closeDmPage()">←</button>
+      <div class="cfp-title">Messages</div>
+    </div>
+    <div style="padding:10px 14px;flex-shrink:0">
+      <input id="dmSearchInput" placeholder="Search by username…" oninput="filterDmSearch(this.value)"
+        style="width:100%;background:var(--bg2);border:1px solid var(--border2);border-radius:20px;padding:8px 14px;font-size:13px;color:var(--txt0);font-family:var(--font);outline:none">
+    </div>
+    <div class="cfp-body" id="dmInboxBody"></div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════
+       DM CHAT PAGE
+       ══════════════════════════════════════════════════ -->
+  <div class="comm-full-page" id="dmChatPage" style="z-index:550">
+    <div class="cfp-nav">
+      <button class="cfp-back" onclick="closeDmChat()">←</button>
+      <div class="cfp-title" id="dmChatTitle">Chat</div>
+    </div>
+    <div class="dm-messages-area" id="dmMessagesArea"></div>
+    <div class="dm-input-bar">
+      <div class="comm-hdr-icon" style="color:var(--txt2)" onclick="openDmSpotShare()">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+      </div>
+      <input class="dm-input" id="dmChatInput" placeholder="Message…" onkeydown="if(event.key==='Enter')sendDmMessage()">
+      <button class="dm-send-btn" onclick="sendDmMessage()">Send</button>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════
+       CREATE POST WIZARD
+       ══════════════════════════════════════════════════ -->
+  <div class="comm-full-page" id="createPostPage" style="z-index:560">
+    <div class="cfp-nav">
+      <button class="cfp-back" onclick="closeCreatePost()">×</button>
+      <div class="cfp-title" id="createPostTitle">New Post</div>
+      <div class="cfp-action" id="createPostStepLabel" style="color:var(--txt3)">Step 1 of 5</div>
+    </div>
+    <div class="wizard-progress-bar"><div class="wizard-progress-fill" id="createPostProgress" style="width:20%"></div></div>
+    <!-- Step 1: type -->
+    <div class="wizard-step active" id="cpStep1">
+      <div class="wizard-content">
+        <div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:16px">Choose post type</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div class="media-type-tile" onclick="selectPostType('photo',this)"><div class="media-type-icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></div><div class="media-type-label">Photo</div><div class="media-type-sub">Share up to 10 photos</div></div>
+          <div class="media-type-tile" onclick="selectPostType('video',this)"><div class="media-type-icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg></div><div class="media-type-label">Video</div><div class="media-type-sub">Up to 60 seconds</div></div>
+          <div class="media-type-tile" onclick="selectPostType('text',this)"><div class="media-type-icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg></div><div class="media-type-label">Text</div><div class="media-type-sub">Share a thought or tip</div></div>
+          <div class="media-type-tile" onclick="selectPostType('spotdrop',this)"><div class="media-type-icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg></div><div class="media-type-label">Spot Drop</div><div class="media-type-sub">Nominate a hidden spot</div></div>
+        </div>
+      </div>
+      <div class="wizard-footer"><button class="wizard-next-btn" onclick="cpNext()">Continue →</button></div>
+    </div>
+    <!-- Step 2: media -->
+    <div class="wizard-step" id="cpStep2">
+      <div class="wizard-content">
+        <div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:12px">Select media</div>
+        <div style="display:flex;gap:8px;margin-bottom:14px">
+          <label style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--bg2);border:1px solid var(--border2);border-radius:12px;padding:12px;cursor:pointer;font-size:11px;color:var(--txt2)">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="var(--accent)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+            Choose Photo<input type="file" accept="image/*" multiple style="display:none" onchange="handleCpMediaSelect(event,'photo')">
+          </label>
+          <label style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--bg2);border:1px solid var(--border2);border-radius:12px;padding:12px;cursor:pointer;font-size:11px;color:var(--txt2)" id="cpVideoUpload">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="var(--accent)" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+            Choose Video<input type="file" accept="video/*" style="display:none" onchange="handleCpMediaSelect(event,'video')">
+          </label>
+        </div>
+        <div class="media-grid" id="cpMediaGrid"></div>
+        <div id="cpMediaPreviewWrap" style="display:none">
+          <div style="font-size:12px;color:var(--txt2);margin-bottom:8px" id="cpMediaCount">0 selected</div>
+          <div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:8px" id="cpSelectedPreview"></div>
+        </div>
+      </div>
+      <div class="wizard-footer"><button class="wizard-next-btn" onclick="cpNext()">Continue →</button></div>
+    </div>
+    <!-- Step 3: edit -->
+    <div class="wizard-step" id="cpStep3">
+      <div class="wizard-content">
+        <div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:12px">Edit</div>
+        <div id="cpEditPreview" style="width:100%;aspect-ratio:3/2;background:var(--bg2);border-radius:12px;overflow:hidden;margin-bottom:14px;display:flex;align-items:center;justify-content:center;color:var(--txt3)">
+          <span>Preview</span>
+        </div>
+        <div style="margin-bottom:10px">
+          <div style="font-size:11px;color:var(--txt2);font-weight:700;margin-bottom:6px;letter-spacing:.4px;text-transform:uppercase">Filters</div>
+          <div class="filter-preview-row" id="cpFilterRow">
+            <div class="filter-thumb" onclick="applyCpFilter('none',this)"><div class="filter-thumb-img selected" style="background:var(--bg3);display:flex;align-items:center;justify-content:center"></div><div class="filter-thumb-label">Original</div></div>
+            <div class="filter-thumb" onclick="applyCpFilter('warm',this)"><div class="filter-thumb-img" style="background:linear-gradient(135deg,#3a2a1a,#5a4a2a);display:flex;align-items:center;justify-content:center"></div><div class="filter-thumb-label">Trail</div></div>
+            <div class="filter-thumb" onclick="applyCpFilter('cool',this)"><div class="filter-thumb-img" style="background:linear-gradient(135deg,#1a2a3a,#2a4a5a);display:flex;align-items:center;justify-content:center"></div><div class="filter-thumb-label">Summit</div></div>
+            <div class="filter-thumb" onclick="applyCpFilter('dusk',this)"><div class="filter-thumb-img" style="background:linear-gradient(135deg,#3a2a1a,#8a4a2a);display:flex;align-items:center;justify-content:center"></div><div class="filter-thumb-label">Dusk</div></div>
+            <div class="filter-thumb" onclick="applyCpFilter('fog',this)"><div class="filter-thumb-img" style="background:linear-gradient(135deg,#2a2a2a,#4a4a4a);display:flex;align-items:center;justify-content:center"></div><div class="filter-thumb-label">Fog</div></div>
+            <div class="filter-thumb" onclick="applyCpFilter('teal',this)"><div class="filter-thumb-img" style="background:linear-gradient(135deg,#1a3a3a,#2a5a5a);display:flex;align-items:center;justify-content:center"></div><div class="filter-thumb-label">Creek</div></div>
+            <div class="filter-thumb" onclick="applyCpFilter('ember',this)"><div class="filter-thumb-img" style="background:linear-gradient(135deg,#3a1a1a,#6a2a1a);display:flex;align-items:center;justify-content:center"></div><div class="filter-thumb-label">Ember</div></div>
+          </div>
+        </div>
+        <div style="margin-bottom:8px"><label style="font-size:11px;color:var(--txt2);font-weight:700;letter-spacing:.4px;text-transform:uppercase">Brightness</label><input type="range" min="-100" max="100" value="0" style="width:100%;accent-color:var(--accent);margin-top:6px" id="cpBrightness"></div>
+        <div><label style="font-size:11px;color:var(--txt2);font-weight:700;letter-spacing:.4px;text-transform:uppercase">Contrast</label><input type="range" min="-100" max="100" value="0" style="width:100%;accent-color:var(--accent);margin-top:6px" id="cpContrast"></div>
+      </div>
+      <div class="wizard-footer"><button class="wizard-next-btn" onclick="cpNext()">Continue →</button></div>
+    </div>
+    <!-- Step 4: details -->
+    <div class="wizard-step" id="cpStep4">
+      <div class="wizard-content">
+        <div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:14px">Details</div>
+        <textarea class="wiz-textarea" id="cpCaption" rows="4" placeholder="Write a caption… (500 chars max)" oninput="updateCpCharCount(this)" maxlength="500"></textarea>
+        <div class="char-counter"><span id="cpCharCount">0</span>/500</div>
+        <input class="wiz-input" id="cpSpotSearch" placeholder="Tag a Spot..." oninput="searchCpSpot(this.value)" autocomplete="off">
+        <div id="cpSpotResults" style="background:var(--bg1);border:1px solid var(--border2);border-radius:10px;overflow:hidden;margin-top:-8px;margin-bottom:12px;display:none"></div>
+        <div id="cpSpotTagged" style="margin-bottom:12px;display:none">
+          <div style="display:flex;align-items:center;gap:6px"><div class="post-spot-pill" id="cpSpotTagPill">Spot</div><span style="font-size:10px;color:var(--txt3);cursor:pointer" onclick="clearCpSpotTag()">Remove</span></div>
+        </div>
+        <div style="font-size:13px;font-weight:700;color:var(--txt0);margin-bottom:10px">Share to</div>
+        <div class="share-to-row">
+          <div class="share-to-name">My Profile</div>
+          <div class="toggle-switch on" id="cpShareProfile" onclick="toggleShareTo('profile',this)"></div>
+        </div>
+        <div id="cpShareCommunitiesList"></div>
+      </div>
+      <div class="wizard-footer"><button class="wizard-next-btn" onclick="cpNext()">Preview →</button></div>
+    </div>
+    <!-- Step 5: preview -->
+    <div class="wizard-step" id="cpStep5">
+      <div class="wizard-content">
+        <div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:12px">Preview</div>
+        <div id="cpPreviewCard" style="border:1px solid var(--border2);border-radius:14px;overflow:hidden"></div>
+      </div>
+      <div class="wizard-footer">
+        <button class="wizard-next-btn" id="cpPostNowBtn" onclick="submitPost()">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          Post Now
+        </button>
+      </div>
+    </div>
+    <!-- Spot Drop special step -->
+    <div class="wizard-step" id="cpStepSpotDrop">
+      <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+        <div class="spotdrop-map-wrap" id="spotDropMapWrap">
+          <div id="spotDropMap" style="width:100%;height:100%"></div>
+          <div class="spotdrop-crosshair"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg></div>
+        </div>
+        <div class="spotdrop-form">
+          <input class="wiz-input" id="sdLocSearch" placeholder="Search location..." oninput="searchSdLocation(this.value)">
+          <div id="sdLocResults" style="display:none;background:var(--bg1);border:1px solid var(--border2);border-radius:10px;overflow:hidden;margin-top:-8px;margin-bottom:12px"></div>
+          <input class="wiz-input" id="sdSpotName" placeholder="Spot name…">
+          <select class="wiz-input" id="sdSpotType" style="cursor:pointer">
+            <option value="">Spot type…</option>
+            <option value="hiking">Hiking</option><option value="swimming">Swimming</option>
+            <option value="caves">Caves</option><option value="scenic">Scenic</option>
+            <option value="urban">Urban</option><option value="biking">Biking</option>
+            <option value="waterfall">Waterfall</option><option value="river">River</option>
+          </select>
+          <select class="wiz-input" id="sdLegalStatus" style="cursor:pointer">
+            <option value="legal">Legal Access</option>
+            <option value="caution">Caution / Gray Area</option>
+            <option value="illegal">Technically Illegal</option>
+          </select>
+          <textarea class="wiz-textarea" id="sdDescription" rows="3" placeholder="Describe the spot…"></textarea>
+          <textarea class="wiz-textarea" id="sdApproach" rows="3" placeholder="How to get there…"></textarea>
+          <label class="upload-zone" style="margin-bottom:0">
+            <div class="upload-zone-icon"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="var(--txt3)" stroke-width="1.8"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></div>
+            <div class="upload-zone-label">Add a photo of the spot</div>
+            <input type="file" accept="image/*" style="display:none" onchange="handleSdPhoto(event)">
+          </label>
+          <div id="sdPhotoPreview" style="display:none;margin-top:8px"><img style="width:100%;border-radius:10px;aspect-ratio:3/2;object-fit:cover"></div>
+        </div>
+      </div>
+      <div class="wizard-footer"><button class="wizard-next-btn" onclick="submitSpotDrop()">Drop This Spot</button></div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════
+       CREATE COMMUNITY WIZARD
+       ══════════════════════════════════════════════════ -->
+  <div class="comm-full-page" id="createCommunityPage" style="z-index:570">
+    <div class="cfp-nav">
+      <button class="cfp-back" onclick="closeCreateCommunity()">×</button>
+      <div class="cfp-title">New Community</div>
+      <div class="cfp-action" id="ccStepLabel" style="color:var(--txt3)">Step 1 of 5</div>
+    </div>
+    <div class="wizard-progress-bar"><div class="wizard-progress-fill" id="ccProgress" style="width:20%"></div></div>
+    <div class="wizard-step active" id="ccStep1">
+      <div class="wizard-content">
+        <div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:14px">Name your community</div>
+        <input class="wiz-input" id="ccName" placeholder="e.g. NorCal Cave Divers">
+        <textarea class="wiz-textarea" id="ccDesc" rows="4" placeholder="What is this community about?"></textarea>
+      </div>
+      <div class="wizard-footer"><button class="wizard-next-btn" onclick="ccNext()">Continue →</button></div>
+    </div>
+    <div class="wizard-step" id="ccStep2">
+      <div class="wizard-content">
+        <div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:14px">Cover photo</div>
+        <label class="upload-zone" id="ccCoverZone">
+          <div class="upload-zone-icon"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="var(--txt3)" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></div>
+          <div class="upload-zone-label">Add Cover Photo<br><span style="font-size:10px;color:var(--txt3)">Tap to select from your library</span></div>
+          <input type="file" accept="image/*" style="display:none" onchange="handleCcCover(event)">
+        </label>
+        <div id="ccCoverPreview" style="display:none;margin-top:12px"><img style="width:100%;height:180px;object-fit:cover;border-radius:14px"></div>
+      </div>
+      <div class="wizard-footer"><button class="wizard-next-btn" onclick="ccNext()">Continue →</button></div>
+    </div>
+    <div class="wizard-step" id="ccStep3">
+      <div class="wizard-content">
+        <div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:14px">Privacy</div>
+        <div class="privacy-tile" onclick="selectCcPrivacy('public',this)">
+          <div class="privacy-tile-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
+          <div><div class="privacy-tile-label">Public</div><div class="privacy-tile-desc">Anyone can find and join instantly</div></div>
+        </div>
+        <div class="privacy-tile" onclick="selectCcPrivacy('private',this)">
+          <div class="privacy-tile-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+          <div><div class="privacy-tile-label">Private</div><div class="privacy-tile-desc">Anyone can find it but must request to join</div></div>
+        </div>
+        <div class="privacy-tile" onclick="selectCcPrivacy('secret',this)">
+          <div class="privacy-tile-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></div>
+          <div><div class="privacy-tile-label">Secret</div><div class="privacy-tile-desc">Invisible to search — invite only</div></div>
+        </div>
+      </div>
+      <div class="wizard-footer"><button class="wizard-next-btn" onclick="ccNext()">Continue →</button></div>
+    </div>
+    <div class="wizard-step" id="ccStep4">
+      <div class="wizard-content">
+        <div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:14px">Focus</div>
+        <div style="font-size:12px;color:var(--txt2);margin-bottom:12px">What type of spots will this community focus on?</div>
+        <div id="ccFocusChips" style="display:flex;flex-wrap:wrap">
+          <div class="focus-chip" onclick="toggleCcFocus('Caves',this)">Caves</div>
+          <div class="focus-chip" onclick="toggleCcFocus('Hiking',this)">Hiking</div>
+          <div class="focus-chip" onclick="toggleCcFocus('Urban',this)">Urban Exploration</div>
+          <div class="focus-chip" onclick="toggleCcFocus('Swimming',this)">Swimming Holes</div>
+          <div class="focus-chip" onclick="toggleCcFocus('Waterfalls',this)">Waterfalls</div>
+          <div class="focus-chip" onclick="toggleCcFocus('Biking',this)">Biking</div>
+          <div class="focus-chip" onclick="toggleCcFocus('Mixed',this)">Mixed</div>
+          <div class="focus-chip" onclick="toggleCcFocus('Custom',this)">Custom</div>
+        </div>
+      </div>
+      <div class="wizard-footer"><button class="wizard-next-btn" onclick="ccNext()">Continue →</button></div>
+    </div>
+    <div class="wizard-step" id="ccStep5">
+      <div class="wizard-content">
+        <div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:14px">Community rules</div>
+        <div style="font-size:12px;color:var(--txt2);margin-bottom:12px">Shown to new members when they join.</div>
+        <textarea class="wiz-textarea" id="ccRules" rows="8" placeholder="1. Be respectful&#10;2. No spam&#10;3. Verify spots before posting&#10;…"></textarea>
+      </div>
+      <div class="wizard-footer"><button class="wizard-next-btn" onclick="submitCreateCommunity()" style="background:var(--accent)">Create Community</button></div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════
+       COMMUNITY SETTINGS PAGE
+       ══════════════════════════════════════════════════ -->
+  <div class="comm-full-page" id="commSettingsPage" style="z-index:580">
+    <div class="cfp-nav">
+      <button class="cfp-back" onclick="closeCommSettings()">←</button>
+      <div class="cfp-title">Community Settings</div>
+    </div>
+    <div class="cfp-body" id="commSettingsBody"></div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════
+       EDIT PROFILE PAGE
+       ══════════════════════════════════════════════════ -->
+  <div class="comm-full-page" id="editProfilePage" style="z-index:590">
+    <div class="cfp-nav">
+      <button class="cfp-back" onclick="closeEditProfile()">←</button>
+      <div class="cfp-title">Edit Profile</div>
+      <div class="cfp-action" onclick="saveEditProfile()">Save</div>
+    </div>
+    <div class="wizard-content">
+      <div style="display:flex;flex-direction:column;align-items:center;margin-bottom:20px">
+        <label style="cursor:pointer">
+          <div class="user-profile-avatar" id="editProfileAvatar" style="margin:0 auto 8px;background:var(--bg3)"></div>
+          <div style="font-size:11px;color:var(--accent);text-align:center">Change Photo</div>
+          <input type="file" accept="image/*" style="display:none" onchange="handleEditAvatar(event)">
+        </label>
+      </div>
+      <label style="font-size:11px;color:var(--txt2);font-weight:700;letter-spacing:.4px;text-transform:uppercase;display:block;margin-bottom:6px">Username</label>
+      <input class="wiz-input" id="editProfileUsername" placeholder="Username">
+      <label style="font-size:11px;color:var(--txt2);font-weight:700;letter-spacing:.4px;text-transform:uppercase;display:block;margin-bottom:6px">Bio</label>
+      <textarea class="wiz-textarea" id="editProfileBio" rows="3" placeholder="Tell the community about yourself…"></textarea>
+    </div>
+  </div>
+
+  <!-- Context menu overlay -->
+  <div id="commCtxOverlay" style="display:none;position:absolute;inset:0;z-index:9998" onclick="closeCtxMenu()"></div>
+  <div class="ctx-menu" id="commCtxMenu" style="display:none"></div>
+
+  <!-- ── BOTTOM NAV ─────────────────────────────────── -->
+  <nav class="bottom-nav">
+    <div id="nav-home" class="nav-item active" data-screen="home" onclick="showTab('home')" style="flex:1">
+      <div class="nav-icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></div>
+      <div class="nav-label">Home</div>
+    </div>
+    <div id="nav-map" class="nav-item" data-screen="map" onclick="showTab('map')" style="flex:1">
+      <div class="nav-icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg></div>
+      <div class="nav-label">Map</div>
+    </div>
+    <div id="nav-community" class="nav-item" data-screen="community" onclick="showTab('community')" style="flex:1;position:relative">
+      <div class="nav-icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+      <div class="nav-label">Community</div>
+      <div id="communityNavBadge" style="display:none;position:absolute;top:8px;right:18px;width:8px;height:8px;background:var(--red);border-radius:50%"></div>
+    </div>
+    <div id="nav-profile" class="nav-item" data-screen="profile" onclick="showTab('profile')" style="flex:1">
+      <div class="nav-icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div>
+      <div class="nav-label">Profile</div>
+    </div>
+    <div id="nav-explore" class="nav-item" data-screen="explore" onclick="showTab('explore')" style="flex:1">
+      <div class="nav-icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>
+      <div class="nav-label">Explore</div>
+    </div>
+  </nav>
+
+  <!-- ── COMPASS FULL-SCREEN PANEL ─────────────────── -->
+  <div id="compassPanel">
+    <div class="compass-panel-header">
+      <div class="compass-panel-title">Compass</div>
+      <div class="compass-panel-close" onclick="closeCompassPanel()">×</div>
+    </div>
+    <div class="compass-ring-wrap">
+      <div class="compass-ring-inner">
+        <!-- Fixed outer ring: N/S/E/W labels + tick marks, never rotates -->
+        <canvas id="compassOuterCanvas" width="280" height="280" style="position:absolute;top:0;left:0;pointer-events:none"></canvas>
+        <!-- Rotating inner rose: needle + inner rose, rotates via CSS -->
+        <canvas id="compassRingCanvas" width="280" height="280" style="position:absolute;top:0;left:0;transition:transform .08s linear;transform-origin:140px 140px"></canvas>
+      </div>
+      <!-- iOS permission button -->
+      <button id="compassPermBtn" onclick="_requestCompassPermission()"
+        style="display:none;position:absolute;bottom:12px;left:50%;transform:translateX(-50%);
+        background:var(--accent);color:#0f1a0a;border:none;border-radius:22px;
+        padding:10px 24px;font-size:14px;font-weight:700;cursor:pointer;font-family:var(--font)">
+        Enable Compass →
+      </button>
+    </div>
+    <div class="compass-readout">
+      <div class="compass-heading-val" id="compassHeadingVal">---°</div>
+      <div class="compass-cardinal" id="compassCardinalVal">TAP TO ENABLE</div>
+      <div class="compass-coords" id="compassCoordsVal">Location not available</div>
+      <div id="compassAltVal" style="font-size:12px;color:var(--txt3);margin-top:6px;font-feature-settings:'tnum'">Altitude: —</div>
+    </div>
+  </div>
+
+  <!-- ── SAVED POSTS PAGE ─────────────────────────── -->
+  <div id="savedPostsPage" style="position:fixed;inset:0;z-index:400;background:var(--bg0);display:none;flex-direction:column;overflow:hidden">
+    <div style="display:flex;align-items:center;padding:52px 16px 12px;border-bottom:1px solid var(--border);flex-shrink:0">
+      <div onclick="document.getElementById('savedPostsPage').style.display='none'" style="cursor:pointer;padding:4px 12px 4px 0;font-size:22px;color:var(--txt0);line-height:1">←</div>
+      <div style="flex:1;font-size:17px;font-weight:700;color:var(--txt0)">Saved Posts</div>
+      <div style="display:flex;gap:6px">
+        <div id="savedTabGrid" onclick="setSavedView('grid',this)" style="padding:6px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;background:var(--accent);color:#0f1a0a">Grid</div>
+        <div id="savedTabMap" onclick="setSavedView('map',this)" style="padding:6px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;background:var(--bg2);color:var(--txt2)">Map</div>
+      </div>
+    </div>
+    <div id="savedPostsGrid" style="flex:1;overflow-y:auto;display:grid;grid-template-columns:repeat(3,1fr);gap:2px;padding:2px"></div>
+    <div id="savedPostsMap" style="flex:1;display:none;position:relative"><div id="savedPostsMapEl" style="position:absolute;inset:0"></div></div>
+  </div>
+
+  <!-- ── FRIENDS MAP PAGE ───────────────────────── -->
+  <div id="friendsMapPage" style="position:fixed;inset:0;z-index:400;background:var(--bg0);display:none;flex-direction:column;overflow:hidden">
+    <div style="position:absolute;top:52px;left:14px;z-index:10;background:rgba(0,0,0,.5);border-radius:50%;width:38px;height:38px;display:flex;align-items:center;justify-content:center;cursor:pointer" onclick="document.getElementById('friendsMapPage').style.display='none'">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </div>
+    <div id="friendsMapEl" style="flex:1;position:relative"></div>
+    <div id="friendsMapLegend" style="flex-shrink:0;padding:12px 16px;background:var(--bg1);border-top:1px solid var(--border);display:flex;gap:8px;overflow-x:auto;align-items:center"></div>
+  </div>
+
+  <!-- ── CROP MODAL ───────────────────────────────── -->
+  <div id="cropModal" style="position:fixed;inset:0;z-index:700;background:rgba(0,0,0,.92);display:none;flex-direction:column;align-items:stretch;overflow:hidden">
+    <div style="display:flex;align-items:center;padding:52px 16px 12px;flex-shrink:0">
+      <div onclick="closeCropModal()" style="font-size:15px;font-weight:600;color:rgba(255,255,255,.7);cursor:pointer;padding:4px 12px 4px 0">Cancel</div>
+      <div style="flex:1;text-align:center;font-size:17px;font-weight:700;color:#fff">Crop Photo</div>
+      <div onclick="confirmCrop()" style="font-size:15px;font-weight:700;color:#B8E87A;cursor:pointer;padding:4px 0 4px 12px">Done</div>
+    </div>
+    <!-- Aspect ratio presets -->
+    <div id="cropAspectRow" style="display:flex;gap:8px;padding:0 16px 12px;flex-shrink:0;overflow-x:auto">
+      <div class="crop-aspect-btn active" data-ratio="free" onclick="setCropAspect('free',this)">Free</div>
+      <div class="crop-aspect-btn" data-ratio="1" onclick="setCropAspect('1',this)">Square</div>
+      <div class="crop-aspect-btn" data-ratio="0.8" onclick="setCropAspect('0.8',this)">Portrait 4:5</div>
+      <div class="crop-aspect-btn" data-ratio="3.2" onclick="setCropAspect('3.2',this)">Wide 16:5</div>
+    </div>
+    <!-- Canvas area -->
+    <div id="cropCanvasWrap" style="flex:1;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center">
+      <canvas id="cropCanvas" style="max-width:100%;max-height:100%;display:block"></canvas>
+      <!-- Crop overlay box -->
+      <div id="cropBox" style="position:absolute;border:2px dashed rgba(255,255,255,.85);pointer-events:none;box-shadow:0 0 0 9999px rgba(0,0,0,.5)"></div>
+    </div>
+  </div>
+
+  <!-- ── SETTINGS FULL-SCREEN OVERLAY ─────────────── -->
+  <div id="settingsFullOverlay">
+    <div class="settings-full-header">
+      <div class="settings-back-btn" onclick="closeSettingsFull()">←</div>
+      <div class="settings-full-title">Settings</div>
+    </div>
+    <div class="settings-full-body" id="settingsFullBody"></div>
+  </div>
+
+</div><!-- #app -->
+
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
