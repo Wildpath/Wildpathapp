@@ -249,12 +249,11 @@ function initMap(){
   if(!tok){
     const errEl=document.getElementById('mapError');
     if(errEl){errEl.classList.add('show');}
+    const tp=document.getElementById('mapbox-token-prompt');
+    if(tp)tp.style.display='flex';
     return; // do not try to create the map without a token
   }
   mapboxgl.accessToken = tok;
-  // Hide the token prompt — a valid token is present
-  const _tp=document.getElementById('mapbox-token-prompt');
-  if(_tp)_tp.style.display='none';
 
   const savedStyle=localStorage.getItem('wp_map_style')||'standard';
   const styleUrl=MAP_STYLES[savedStyle]?MAP_STYLES[savedStyle].url:MAP_STYLES.standard.url;
@@ -266,14 +265,11 @@ function initMap(){
     zoom:6,
     pitch:0,
     bearing:0,
-    attributionControl:true,
+    attributionControl:false,
     antialias:true,
     minZoom:3,
     maxZoom:22
   });
-
-  // Remove default controls — WildPath has its own UI
-  map.addControl(new mapboxgl.AttributionControl({compact:true}));
 
   map.on('load',()=>{
     console.log('Map loaded successfully');
@@ -1359,7 +1355,7 @@ function startNavigation(lat,lng,name){
 // SCREEN SWITCHER + LOCATE
 // ═══════════════════════════════════════════════════
 let _prevTab='';
-const _tabOrder=['home','map','community','profile','explore'];
+const _tabOrder=['home','map','community','profile'];
 function showTab(tabName) {
   if(tabName===currentScreen&&_prevTab!=='')return;
 
