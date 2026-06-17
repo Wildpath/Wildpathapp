@@ -281,20 +281,16 @@ function initMap(){
     _prefetchLandData();
     // Rivers always visible
     loadRiversAlways();
-    // OSM trails + peak labels
-    loadOsmTrails();
+    // Peak labels
     loadOsmPeaks();
   });
 
-  // Reload rivers / trails / peaks on map move (debounced)
+  // Reload rivers / peaks on map move (debounced)
   let _riverReloadTimer=null;
-  let _trailReloadTimer=null;
   let _peakReloadTimer=null;
   map.on('moveend',()=>{
     clearTimeout(_riverReloadTimer);
     _riverReloadTimer=setTimeout(loadRiversAlways,2000);
-    clearTimeout(_trailReloadTimer);
-    _trailReloadTimer=setTimeout(loadOsmTrails,1000);
     clearTimeout(_peakReloadTimer);
     _peakReloadTimer=setTimeout(loadOsmPeaks,2000);
   });
@@ -495,10 +491,7 @@ function setMapStyle(key){
     // 7. Rivers always visible
     _riversBounds=null; // force reload after style switch
     loadRiversAlways();
-    // 8. OSM trails + peaks (force reload)
-    _osmTrailsBounds=null;
-    _clearOsmTrails();
-    loadOsmTrails();
+    // 8. OSM peaks (force reload)
     _osmPeaksBounds=null;
     _clearOsmPeaks();
     loadOsmPeaks();
@@ -959,119 +952,6 @@ function buildLayersPanel(){
   note.style.cssText='padding:10px 12px;background:var(--bg2);border-radius:11px;border:1px solid var(--border);margin-top:6px';
   note.innerHTML=`<div style="font-size:11px;color:var(--txt2);font-weight:600">△ <strong style="color:var(--txt1)">Peaks & Summits</strong> are always visible on the map</div>`;
   list.appendChild(note);
-}
-
-// ═══════════════════════════════════════════════════
-// OSM TRAILS — Overpass API, glow + line + labels
-// ═══════════════════════════════════════════════════
-const _osmTrailCache=new Map(); // bbox string → GeoJSON FeatureCollection
-let _osmTrailsBounds=null;
-
-function _showTrailLoadingPill(show){
-  const el=document.getElementById('trailLoadingPill');
-  if(el)el.style.display=show?'flex':'none';
-}
-
-function _clearOsmTrails(){
-  ['osm-trails-glow','osm-trails-line','osm-trails-labels'].forEach(id=>{
-    try{if(map&&map.getLayer(id))map.removeLayer(id);}catch{}
-  });
-  try{if(map&&map.getSource('osm-trails-src'))map.removeSource('osm-trails-src');}catch{}
-}
-
-function _addOsmTrailLayers(geojson){
-  if(!map)return;
-  _clearOsmTrails();
-  try{
-    map.addSource('osm-trails-src',{type:'geojson',data:geojson});
-    // Glow layer — wide, low opacity
-    map.addLayer({
-      id:'osm-trails-glow',type:'line',source:'osm-trails-src',
-      layout:{'line-cap':'round','line-join':'round'},
-      paint:{
-        'line-color':'#B8E87A',
-        'line-width':['interpolate',['linear'],['zoom'],10,3,14,8],
-        'line-opacity':0.15,
-        'line-blur':3
-      }
-    });
-    // Main trail line
-    map.addLayer({
-      id:'osm-trails-line',type:'line',source:'osm-trails-src',
-      layout:{'line-cap':'round','line-join':'round'},
-      paint:{
-        'line-color':'#B8E87A',
-        'line-width':['interpolate',['linear'],['zoom'],10,1,14,2.5],
-        'line-opacity':0.85,
-        'line-dasharray':[2,1.5]
-      }
-    });
-    // Trail name labels at zoom 13+
-    map.addLayer({
-      id:'osm-trails-labels',type:'symbol',source:'osm-trails-src',
-      minzoom:13,
-      layout:{
-        'symbol-placement':'line',
-        'text-field':['coalesce',['get','name'],['get','highway']],
-        'text-font':['Open Sans Regular','Arial Unicode MS Regular'],
-        'text-size':10,
-        'text-max-angle':30,
-        'symbol-spacing':250,
-        'text-pitch-alignment':'viewport'
-      },
-      paint:{
-        'text-color':'#d4f5a0',
-        'text-halo-color':'rgba(0,0,0,0.7)',
-        'text-halo-width':1.2
-      }
-    });
-  }catch(e){console.warn('[Trails] Layer add failed:',e);}
-}
-
-async function loadOsmTrails(){
-  if(!map)return;
-  const zoom=map.getZoom();
-  if(zoom<9){_clearOsmTrails();return;}
-  const bounds=map.getBounds();
-  const bbox=`${bounds.getSouth().toFixed(3)},${bounds.getWest().toFixed(3)},${bounds.getNorth().toFixed(3)},${bounds.getEast().toFixed(3)}`;
-  if(_osmTrailsBounds===bbox)return;
-  _osmTrailsBounds=bbox;
-  // Check cache
-  if(_osmTrailCache.has(bbox)){
-    _addOsmTrailLayers(_osmTrailCache.get(bbox));
-    return;
-  }
-  _showTrailLoadingPill(true);
-  try{
-    const q=`[out:json][timeout:25];(way["highway"~"^(path|footway|track|bridleway)$"](${bbox});way["route"="hiking"](${bbox}););out geom tags;`;
-    const res=await fetch('https://overpass-api.de/api/interpreter',{
-      method:'POST',
-      body:'data='+encodeURIComponent(q),
-      headers:{'Content-Type':'application/x-www-form-urlencoded'},
-      signal:AbortSignal.timeout(25000)
-    });
-    if(!res.ok)throw new Error('HTTP '+res.status);
-    const data=await res.json();
-    const features=(data.elements||[])
-      .filter(el=>el.type==='way'&&el.geometry?.length>1)
-      .map(el=>({
-        type:'Feature',
-        geometry:{type:'LineString',coordinates:el.geometry.map(p=>[p.lon,p.lat])},
-        properties:{
-          highway:el.tags?.highway||'path',
-          name:el.tags?.name||null,
-          surface:el.tags?.surface||null
-        }
-      }));
-    const geojson={type:'FeatureCollection',features};
-    _osmTrailCache.set(bbox,geojson);
-    _addOsmTrailLayers(geojson);
-    console.log('[Trails] Loaded',features.length,'trail segments');
-  }catch(e){
-    console.warn('[Trails] Load failed:',e);
-  }finally{
-    _showTrailLoadingPill(false);
-  }
 }
 
 // ═══════════════════════════════════════════════════
