@@ -6885,7 +6885,8 @@ if(!window._spotMarkers)window._spotMarkers={};
 let _commFeedFilter='all', _commFeedSort='recent', _commSubTab='feed';
 let _currentCommunityId=null, _currentPostId=null, _currentProfileUserId=null;
 let _dmConvUserId=null;
-let _cpStep=1, _cpType=null, _cpMediaDataUrl=null, _cpFilter='none';
+let _cpStep=1, _cpType=null, _cpMediaDataUrl=null, _cpMediaFiles=[];
+let _cpTaggedSpotLat=null, _cpTaggedSpotLng=null, _cpSpotSearchTimer=null;
 let _cpTaggedSpotId=null, _cpTaggedSpotName='', _cpShareCommunities=[];
 let _ccStep=1, _ccCoverDataUrl=null, _ccPrivacy='public', _ccFocusTags=[];
 let _sdLat=37.5, _sdLng=-120.0, _sdPhotoDataUrl=null, _sdMap=null;
@@ -8342,8 +8343,9 @@ function openNewMessageOverlay(){
 let _cpSharedComms=[];
 function openCreatePost(targetCommunityId=null){
   if(isGuest()){showLoginScreen(()=>openCreatePost(targetCommunityId));return;}
-  _cpStep=1; _cpType=null; _cpMediaDataUrl=null; _cpFilter='none';
-  _cpTaggedSpotId=null; _cpTaggedSpotName=''; _cpShareCommunities=[];
+  _cpStep=1; _cpType=null; _cpMediaDataUrl=null; _cpMediaFiles=[];
+  _cpTaggedSpotId=null; _cpTaggedSpotName=''; _cpTaggedSpotLat=null; _cpTaggedSpotLng=null;
+  _cpShareCommunities=[];
   if(targetCommunityId)_cpShareCommunities=[targetCommunityId];
   const page=document.getElementById('createPostPage');
   if(!page)return;
@@ -8365,89 +8367,89 @@ function selectPostType(type,el){
   document.querySelectorAll('#createPostPage .media-type-tile').forEach(t=>t.classList.remove('selected'));
   el.classList.add('selected');
 }
+// _cpStep values: 1=type, 2=media, 3=details, 4=preview
+// HTML element map: 1→cpStep1, 2→cpStep2, 3→cpStep4, 4→cpStep5
+function _cpShowStep(logicalStep){
+  const idMap={1:'cpStep1',2:'cpStep2',3:'cpStep4',4:'cpStep5'};
+  document.querySelectorAll('#createPostPage .wizard-step').forEach(s=>s.classList.remove('active'));
+  document.getElementById(idMap[logicalStep])?.classList.add('active');
+  const total=_cpType==='text'?3:4;
+  const display=(_cpType==='text'&&logicalStep>=3)?logicalStep-1:logicalStep;
+  _updateCpProgress(display,total);
+  const title=document.getElementById('createPostTitle');
+  if(title)title.textContent=logicalStep<=2?'New Post':logicalStep===3?'Details':'Preview';
+  const stepLabel=document.getElementById('createPostStepLabel');
+  if(stepLabel)stepLabel.textContent=`Step ${display} of ${total}`;
+}
 function cpNext(){
   if(_cpStep===1){
     if(!_cpType){showToast('Choose a post type first');return;}
     if(_cpType==='spotdrop'){
-      // Go to spot drop special step
       document.querySelectorAll('#createPostPage .wizard-step').forEach(s=>s.classList.remove('active'));
       document.getElementById('cpStepSpotDrop')?.classList.add('active');
-      _updateCpProgress(2,5);
+      _updateCpProgress(2,4);
       _initSpotDropMap();
       return;
     }
-    _cpStep=2;
-    document.querySelectorAll('#createPostPage .wizard-step').forEach(s=>s.classList.remove('active'));
-    document.getElementById(`cpStep${_cpStep}`)?.classList.add('active');
-    _updateCpProgress(_cpStep,5);
-    // Show/hide video upload
-    const vid=document.getElementById('cpVideoUpload');
-    if(vid)vid.style.display=_cpType==='text'?'none':'flex';
-    if(_cpType==='text'){
-      _cpStep=4;
-      document.querySelectorAll('#createPostPage .wizard-step').forEach(s=>s.classList.remove('active'));
-      document.getElementById('cpStep4')?.classList.add('active');
-      _updateCpProgress(4,5);
-    }
+    if(_cpType==='text'){_cpStep=3;}else{_cpStep=2;}
   } else if(_cpStep===2){
+    if(!_cpMediaDataUrl){showToast('Select at least one photo or video');return;}
     _cpStep=3;
-    document.querySelectorAll('#createPostPage .wizard-step').forEach(s=>s.classList.remove('active'));
-    document.getElementById('cpStep3')?.classList.add('active');
-    _updateCpProgress(3,5);
-    _updateCpEditPreview();
   } else if(_cpStep===3){
     _cpStep=4;
-    document.querySelectorAll('#createPostPage .wizard-step').forEach(s=>s.classList.remove('active'));
-    document.getElementById('cpStep4')?.classList.add('active');
-    _updateCpProgress(4,5);
-  } else if(_cpStep===4){
-    _cpStep=5;
-    document.querySelectorAll('#createPostPage .wizard-step').forEach(s=>s.classList.remove('active'));
-    document.getElementById('cpStep5')?.classList.add('active');
-    _updateCpProgress(5,5);
-    _buildCpPreview();
+    _cpShowStep(4);
+    _buildCpPreview(); // preview only — nothing is saved here
+    return;
+  } else {
+    return;
   }
-  const title=document.getElementById('createPostTitle');
-  if(title)title.textContent=_cpStep<=3?'New Post':_cpStep===4?'Details':'Preview';
-  const stepLabel=document.getElementById('createPostStepLabel');
-  if(stepLabel)stepLabel.textContent=`Step ${Math.min(_cpStep,5)} of 5`;
+  _cpShowStep(_cpStep);
+}
+function cpBack(){
+  if(_cpStep===4){_cpStep=3;}
+  else if(_cpStep===3){_cpStep=(_cpType==='text')?1:2;}
+  else if(_cpStep===2){_cpStep=1;}
+  else{return;}
+  _cpShowStep(_cpStep);
 }
 function _updateCpProgress(step,total){
   const bar=document.getElementById('createPostProgress');
   if(bar)bar.style.width=`${(step/total)*100}%`;
 }
-function handleCpMediaSelect(e,type){
+function _readFileAsDataUrl(file){
+  return new Promise(resolve=>{const r=new FileReader();r.onload=e=>resolve({dataUrl:e.target.result,type:file.type.startsWith('video')?'video':'photo',name:file.name});r.readAsDataURL(file);});
+}
+function _renderCpMediaThumbs(){
+  const row=document.getElementById('cpThumbRow');
+  const count=document.getElementById('cpMediaCount');
+  const wrap=document.getElementById('cpMediaPreviewWrap');
+  if(!row)return;
+  if(!_cpMediaFiles.length){if(wrap)wrap.style.display='none';_cpMediaDataUrl=null;return;}
+  if(wrap)wrap.style.display='block';
+  if(count)count.textContent=`${_cpMediaFiles.length} selected`;
+  _cpMediaDataUrl=_cpMediaFiles[0].dataUrl;
+  row.innerHTML=_cpMediaFiles.map((f,i)=>`
+    <div style="position:relative;flex-shrink:0;width:82px;height:82px">
+      <${f.type==='video'?'video':'img'} src="${f.dataUrl}" style="width:82px;height:82px;object-fit:cover;border-radius:10px;display:block" ${f.type==='video'?'muted':''}>
+      <button onclick="removeCpMedia(${i})" style="position:absolute;top:3px;right:3px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,.75);border:none;color:#fff;font-size:13px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:var(--font)">×</button>
+    </div>`).join('');
+}
+function removeCpMedia(i){
+  _cpMediaFiles.splice(i,1);
+  _renderCpMediaThumbs();
+}
+function handleCpMediaSelect(e){
   const files=Array.from(e.target.files||[]);
   if(!files.length)return;
-  const file=files[0];
-  const reader=new FileReader();
-  reader.onload=ev=>{
-    _cpMediaDataUrl=ev.target.result;
-    const wrap=document.getElementById('cpMediaPreviewWrap');
-    const count=document.getElementById('cpMediaCount');
-    const preview=document.getElementById('cpSelectedPreview');
-    if(wrap)wrap.style.display='block';
-    if(count)count.textContent=`${files.length} selected`;
-    if(preview){
-      const tag=type==='video'?'video':'img';
-      preview.innerHTML=`<${tag} src="${_cpMediaDataUrl}" style="width:80px;height:80px;object-fit:cover;border-radius:8px;flex-shrink:0" ${type==='video'?'muted':''}>`;
-    }
-  };
-  reader.readAsDataURL(file);
+  _cpMediaFiles=[];
+  Promise.all(files.map(_readFileAsDataUrl)).then(results=>{_cpMediaFiles=results;_renderCpMediaThumbs();});
+  e.target.value='';
 }
-function applyCpFilter(f,el){
-  _cpFilter=f;
-  document.querySelectorAll('.filter-thumb-img').forEach(t=>t.classList.remove('selected'));
-  el?.classList.add('selected');
-  _updateCpEditPreview();
-}
-function _updateCpEditPreview(){
-  const prev=document.getElementById('cpEditPreview');
-  if(!prev)return;
-  if(_cpMediaDataUrl){
-    if(_cpType==='video') prev.innerHTML=`<video src="${_cpMediaDataUrl}" muted autoplay loop style="width:100%;height:100%;object-fit:cover"></video>`;
-    else prev.innerHTML=`<img src="${_cpMediaDataUrl}" style="width:100%;height:100%;object-fit:cover">`;
-  }
+function handleCpMediaAppend(e){
+  const files=Array.from(e.target.files||[]);
+  if(!files.length)return;
+  Promise.all(files.map(_readFileAsDataUrl)).then(results=>{_cpMediaFiles=[..._cpMediaFiles,...results];_renderCpMediaThumbs();});
+  e.target.value='';
 }
 function _buildCpPreview(){
   const card=document.getElementById('cpPreviewCard');
@@ -8465,21 +8467,59 @@ function searchCpSpot(q){
   if(!q.trim()){res.style.display='none';return;}
   const allS=[...spots,...userSpots];
   const matches=allS.filter(s=>s.name.toLowerCase().includes(q.toLowerCase())).slice(0,5);
-  if(!matches.length){res.style.display='none';return;}
-  res.style.display='block';
-  res.innerHTML=matches.map(s=>`<div style="padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px;color:var(--txt0)" onclick="selectCpSpot(${s.id},'${s.name}')">${s.name}</div>`).join('');
+  const spotHtml=matches.length
+    ?`<div style="font-size:10px;font-weight:700;color:var(--txt3);padding:6px 12px 2px;letter-spacing:.5px;text-transform:uppercase">WildPath Spots</div>`
+     +matches.map(s=>`<div onclick="selectCpSpot(${s.id},'${s.name.replace(/'/g,"\\'")}',${s.lat||0},${s.lng||0})" style="padding:9px 12px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:10px"><svg viewBox="0 0 24 24" width="13" height="13" fill="#B8E87A" style="flex-shrink:0"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg><div><div style="font-size:13px;font-weight:600;color:var(--txt0)">${s.name}</div><div style="font-size:11px;color:var(--txt3)">${s.typeLabel||'Spot'}</div></div></div>`).join('')
+    :'';
+  if(spotHtml){res.style.display='block';res.innerHTML=spotHtml;}else{res.style.display='none';}
+  clearTimeout(_cpSpotSearchTimer);
+  _cpSpotSearchTimer=setTimeout(()=>{
+    fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=8&countrycodes=us`,{headers:{'Accept-Language':'en'}})
+      .then(r=>r.json()).then(data=>{
+        const inp=document.getElementById('cpSpotSearch');
+        if(inp?.value!==q)return;
+        const nomHtml=data.map(d=>{
+          const name=(d.display_name||'').split(',').slice(0,3).join(', ');
+          return `<div onclick="selectCpLocation('${name.replace(/'/g,"\\'")}',${d.lat},${d.lon})" style="padding:9px 12px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:10px"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="rgba(255,255,255,.35)" stroke-width="2" style="flex-shrink:0"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg><div style="font-size:13px;color:var(--txt1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${name}</div></div>`;
+        }).join('');
+        if(!nomHtml&&!spotHtml){res.style.display='none';return;}
+        let full=spotHtml;
+        if(nomHtml)full+=`<div style="font-size:10px;font-weight:700;color:var(--txt3);padding:6px 12px 2px;letter-spacing:.5px;text-transform:uppercase">All Locations</div>`+nomHtml;
+        res.style.display='block';res.innerHTML=full;
+      }).catch(()=>{});
+  },350);
 }
-function selectCpSpot(id,name){
+function selectCpSpot(id,name,lat,lng){
   _cpTaggedSpotId=id; _cpTaggedSpotName=name;
+  _cpTaggedSpotLat=lat||null; _cpTaggedSpotLng=lng||null;
   const pill=document.getElementById('cpSpotTagPill');
   const tagged=document.getElementById('cpSpotTagged');
-  const search=document.getElementById('cpSpotSearch');
+  const hint=document.getElementById('cpCreateSpotHint');
   if(pill)pill.textContent=name;
   if(tagged)tagged.style.display='block';
-  if(search)search.value='';
+  if(hint)hint.style.display='none';
+  document.getElementById('cpSpotSearch').value='';
   document.getElementById('cpSpotResults').style.display='none';
 }
-function clearCpSpotTag(){_cpTaggedSpotId=null;_cpTaggedSpotName='';document.getElementById('cpSpotTagged').style.display='none';}
+function selectCpLocation(name,lat,lng){
+  _cpTaggedSpotId=null; _cpTaggedSpotName=name;
+  _cpTaggedSpotLat=parseFloat(lat); _cpTaggedSpotLng=parseFloat(lng);
+  const pill=document.getElementById('cpSpotTagPill');
+  const tagged=document.getElementById('cpSpotTagged');
+  const hint=document.getElementById('cpCreateSpotHint');
+  if(pill)pill.textContent=name;
+  if(tagged)tagged.style.display='block';
+  if(hint)hint.style.display='flex';
+  document.getElementById('cpSpotSearch').value='';
+  document.getElementById('cpSpotResults').style.display='none';
+}
+function clearCpSpotTag(){
+  _cpTaggedSpotId=null;_cpTaggedSpotName='';_cpTaggedSpotLat=null;_cpTaggedSpotLng=null;
+  const tagged=document.getElementById('cpSpotTagged');
+  const hint=document.getElementById('cpCreateSpotHint');
+  if(tagged)tagged.style.display='none';
+  if(hint)hint.style.display='none';
+}
 function _buildShareCommList(){
   const list=document.getElementById('cpShareCommunitiesList');
   if(!list)return;
@@ -8505,8 +8545,12 @@ function submitPost(){
   const newPost={
     id:_uid(),userId:_myUid(),username:_myName(),
     verified:_userVerified(_myUid()),
-    type:_cpType||'text',mediaUrl:_cpMediaDataUrl,caption,
+    type:_cpType||'text',
+    mediaUrl:_cpMediaDataUrl||null,
+    mediaUrls:_cpMediaFiles.map(f=>f.dataUrl),
+    caption,
     spotId:_cpTaggedSpotId||null,spotName:_cpTaggedSpotName||null,
+    spotLat:_cpTaggedSpotLat||null,spotLng:_cpTaggedSpotLng||null,
     spotType:taggedSpot?.typeLabel?.toLowerCase()||null,
     region:taggedSpot?.region||null,
     communityIds:_cpShareCommunities,
