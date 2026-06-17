@@ -2213,6 +2213,27 @@ function toggleFavorite(spotId){
 // ADD SPOT FORM
 // ═══════════════════════════════════════════════════
 let aspSelectedType=null, aspSelectedDiff='Easy', aspStarVal=5;
+let _aspPhotos=[]; // photo dataUrls for new spot submission
+
+function handleAspPhotos(e){
+  const files=Array.from(e.target.files||[]);
+  if(!files.length)return;
+  Promise.all(files.map(f=>new Promise(res=>{const r=new FileReader();r.onload=ev=>res(ev.target.result);r.readAsDataURL(f);}))).then(urls=>{
+    _aspPhotos=[..._aspPhotos,...urls];
+    _renderAspPhotoGrid();
+  });
+  e.target.value='';
+}
+function _renderAspPhotoGrid(){
+  const grid=document.getElementById('aspPhotoGrid');
+  if(!grid)return;
+  grid.innerHTML=_aspPhotos.map((url,i)=>`
+    <div style="position:relative;aspect-ratio:1;border-radius:10px;overflow:hidden;background:var(--bg3)">
+      <img src="${url}" style="width:100%;height:100%;object-fit:cover">
+      <button onclick="_removeAspPhoto(${i})" style="position:absolute;top:4px;right:4px;width:22px;height:22px;border-radius:50%;background:rgba(0,0,0,.7);border:none;color:#fff;font-size:14px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:var(--font)">×</button>
+    </div>`).join('');
+}
+function _removeAspPhoto(i){_aspPhotos.splice(i,1);_renderAspPhotoGrid();}
 
 function openAddSpot(){
   if(isGuest()){showLoginScreen(()=>openAddSpot());return;}
@@ -2243,6 +2264,9 @@ function closeAddSpot(){
   document.getElementById('addSpotOverlay').classList.remove('open');
   addSpotMode=false;
   if(map)map.getCanvas().style.cursor='';
+  _aspPhotos=[];
+  const grid=document.getElementById('aspPhotoGrid');
+  if(grid)grid.innerHTML='';
 }
 
 function startMapPinMode(){
@@ -2306,15 +2330,19 @@ function submitNewSpot(){
     approach:desc,gear:[],hazards:[],insiderTips:desc,
     accessibility:'Unknown',kidScore:3,dogFriendly:true,shade:'Unknown',
     crowdsByDay:[30,25,28,32,35,55,60],hiddenGem:true,
-    userSubmitted:true,submittedDate:Date.now()
+    userSubmitted:true,submittedDate:Date.now(),
+    photos:[..._aspPhotos],
+    heroGradient:_aspPhotos.length?undefined:`linear-gradient(160deg,#0f1410,#1e251e,#0a100a)`
   };
+  if(_aspPhotos.length)newSpot.heroGradient=`linear-gradient(160deg,#0f1410,#1e251e,#0a100a)`;
 
-  userSpots.push(newSpot);
-  localStorage.setItem('wp_user_spots',JSON.stringify(userSpots));
-  addSpotMarkerToMap(newSpot);
-  leafletMap.flyTo([lat,lng],14,{animate:true,duration:1.2});
+  submitSpotForReview(newSpot);
+  _aspPhotos=[];
   closeAddSpot();
-  showToast(`"${name}" added to map`);
+  if(isAdmin()){
+    addSpotMarkerToMap(newSpot);
+    leafletMap.flyTo([lat,lng],14,{animate:true,duration:1.2});
+  }
 }
 
 // ═══════════════════════════════════════════════════
@@ -5109,14 +5137,20 @@ function openAvatarPicker(){
 function handleAvatarUpload(e){
   const file=e.target.files&&e.target.files[0];
   if(!file)return;
-  const reader=new FileReader();
-  reader.onload=(ev)=>{
-    const data=ev.target.result;
-    localStorage.setItem('wp_avatar',data);
-    _applyAvatar(data);
+  // Open square crop modal — callback saves the cropped result
+  openCropModal(file,'square_locked',(croppedDataUrl)=>{
+    // Persist to both the per-user key and the legacy single key
+    const uid=String(_currentUser?.id||'demo_me');
+    localStorage.setItem('wp_avatar',croppedDataUrl);
+    localStorage.setItem('wp_avatar_'+uid,croppedDataUrl);
+    // Sync profile data too
+    const pd=getUserProfile(uid)||{};
+    pd.avatarUrl=croppedDataUrl;
+    setUserProfile(uid,pd);
+    _applyAvatar(croppedDataUrl);
     showToast('Profile photo updated');
-  };
-  reader.readAsDataURL(file);
+  });
+  e.target.value='';
 }
 function _applyAvatar(src){
   const img=document.getElementById('profileAvatarImg');
@@ -7366,9 +7400,83 @@ function openSpotFromPost(spotId){
 function sharePost(postId){showToast('Link copied!');}
 function bookmarkPost(postId,el){
   if(isGuest()){showLoginScreen();return;}
-  showToast('Saved to bookmarks');
-  const svg=el?.querySelector('svg');
-  if(svg)svg.setAttribute('fill','var(--accent)');
+  openSaveFolderSheet(postId,el);
+}
+
+// ── Save-to-folder system ───────────────────────────────────────
+function _getSavedFolders(){return JSON.parse(localStorage.getItem('wildpath-saved-folders')||'[]');}
+function _setSavedFolders(arr){localStorage.setItem('wildpath-saved-folders',JSON.stringify(arr));}
+
+function openSaveFolderSheet(postId,triggerEl){
+  const existing=document.getElementById('_saveFolderSheet');
+  if(existing)existing.remove();
+  const folders=_getSavedFolders();
+  const sheet=document.createElement('div');
+  sheet.id='_saveFolderSheet';
+  sheet.style.cssText='position:fixed;inset:0;z-index:9500;display:flex;flex-direction:column;justify-content:flex-end';
+  sheet.innerHTML=`
+    <div style="position:absolute;inset:0;background:rgba(0,0,0,.55)" onclick="document.getElementById('_saveFolderSheet').remove()"></div>
+    <div style="position:relative;background:var(--bg1);border-radius:20px 20px 0 0;padding:16px 16px calc(env(safe-area-inset-bottom,0px) + 16px);max-height:70vh;overflow-y:auto">
+      <div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:14px">Save to Folder</div>
+      <div style="display:flex;gap:8px;margin-bottom:14px">
+        <input id="_newFolderInput" placeholder="New folder name…" style="flex:1;height:40px;background:var(--bg2);border:1px solid var(--border2);border-radius:10px;color:var(--txt0);padding:0 12px;font-size:13px;outline:none;font-family:var(--font)">
+        <button onclick="_createAndSaveFolder('${postId}')" style="height:40px;padding:0 16px;background:var(--accent);color:#0f1a0a;border:none;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);white-space:nowrap">Create</button>
+      </div>
+      ${folders.length?folders.map(f=>`
+        <div onclick="_savePostToFolder('${postId}','${f.name.replace(/'/g,"\\'")}');document.getElementById('_saveFolderSheet').remove()" style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--border);cursor:pointer;-webkit-tap-highlight-color:transparent">
+          <div style="width:38px;height:38px;border-radius:10px;background:var(--bg3);display:flex;align-items:center;justify-content:center">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          </div>
+          <div>
+            <div style="font-size:14px;font-weight:600;color:var(--txt0)">${f.name}</div>
+            <div style="font-size:11px;color:var(--txt3)">${f.postIds.length} saved</div>
+          </div>
+        </div>`).join(''):'<div style="font-size:13px;color:var(--txt3);text-align:center;padding:20px 0">No folders yet — create one above</div>'}
+    </div>`;
+  document.body.appendChild(sheet);
+  if(triggerEl){const svg=triggerEl.querySelector('.feed-save-svg');if(svg){svg.setAttribute('fill','#B8E87A');svg.setAttribute('stroke','#B8E87A');}}
+}
+
+function _savePostToFolder(postId,folderName){
+  const folders=_getSavedFolders();
+  let folder=folders.find(f=>f.name===folderName);
+  if(!folder){folder={name:folderName,postIds:[]};folders.push(folder);}
+  if(!folder.postIds.includes(postId))folder.postIds.push(postId);
+  _setSavedFolders(folders);
+  // Also add to flat saved-posts list for backwards compat
+  const saved=JSON.parse(localStorage.getItem('wildpath-saved-posts')||'[]');
+  if(!saved.includes(postId))saved.push(postId);
+  localStorage.setItem('wildpath-saved-posts',JSON.stringify(saved));
+  showToast(`Saved to "${folderName}"`);
+}
+
+function _createAndSaveFolder(postId){
+  const inp=document.getElementById('_newFolderInput');
+  const name=(inp?.value||'').trim();
+  if(!name){showToast('Enter a folder name');return;}
+  _savePostToFolder(postId,name);
+  document.getElementById('_saveFolderSheet')?.remove();
+}
+
+function openSavedFolder(folderName){
+  const folders=_getSavedFolders();
+  const folder=folders.find(f=>f.name===folderName);
+  if(!folder)return;
+  const allPosts=[..._feedPosts,...getPosts()];
+  const posts=folder.postIds.map(id=>allPosts.find(p=>p.id===id)).filter(Boolean);
+  const grid=document.getElementById('savedPostsGrid');
+  const title=document.getElementById('savedPostsPageTitle');
+  if(title)title.textContent=folderName;
+  if(!grid)return;
+  if(!posts.length){grid.innerHTML='<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--txt3);font-size:13px">No posts in this folder</div>';return;}
+  grid.innerHTML=posts.map(p=>{
+    const thumb=p.photos?.[0]||p.mediaUrl||'';
+    const bg=p.spotGradient||p.heroGradient||'linear-gradient(160deg,#0d1a0d,#1a3a2a)';
+    const isGrad=thumb&&thumb.startsWith('gradient:');
+    const gradVal=isGrad?thumb.replace('gradient:',''):null;
+    const innerHtml=isGrad?`<div style="width:100%;height:100%;background:${gradVal}"></div>`:(thumb?`<img src="${thumb}" style="width:100%;height:100%;object-fit:cover">`:'');
+    return`<div onclick="openPostDetail('${p.id}')" style="aspect-ratio:1;position:relative;overflow:hidden;cursor:pointer;background:${bg}">${innerHtml}</div>`;
+  }).join('');
 }
 
 // ── Video intersection observer ────────────────────────────────
@@ -8213,6 +8321,15 @@ function openDmChat(userId){
   const username=profileData.username||'cave_ghost';
   const title=document.getElementById('dmChatTitle');
   if(title)title.textContent=username;
+  // Populate avatar in header
+  const avatarEl=document.getElementById('dmChatHeaderAvatar');
+  if(avatarEl){
+    if(profileData.avatarUrl){
+      avatarEl.innerHTML=`<img src="${profileData.avatarUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
+    } else {
+      avatarEl.textContent=username.slice(0,2).toUpperCase();
+    }
+  }
   _renderDmChat();
   page.classList.add('open');
 }
@@ -8254,8 +8371,14 @@ function _renderDmChat(){
         <div class="dm-msg-time">${_timeAgo(m.time)}</div>
       </div>`;
     }
+    if(m.mediaUrl){
+      const tag=m.mediaType==='video'
+        ?`<video src="${m.mediaUrl}" style="max-width:200px;max-height:200px;border-radius:12px;display:block" controls muted>`
+        :`<img src="${m.mediaUrl}" style="max-width:200px;max-height:200px;border-radius:12px;display:block;object-fit:cover">`;
+      return `<div style="display:flex;flex-direction:column;align-items:${sent?'flex-end':'flex-start'};align-self:${sent?'flex-end':'flex-start'};gap:4px">${tag}<div class="dm-msg-time" style="text-align:${sent?'right':'left'}">${_timeAgo(m.time)}</div></div>`;
+    }
     return `<div style="display:flex;flex-direction:column;align-items:${sent?'flex-end':'flex-start'}">
-      <div class="dm-bubble dm-bubble-${sent?'sent':'recv'}">${m.text}</div>
+      <div class="dm-bubble dm-bubble-${sent?'sent':'recv'}">${m.text||''}</div>
       <div class="dm-msg-time" style="text-align:${sent?'right':'left'}">${_timeAgo(m.time)}</div>
     </div>`;
   }).join('');
@@ -8299,6 +8422,98 @@ function sendDmSpotCard(spotId){
   setMessages(msgs);
   _renderDmChat();
 }
+function openDmMediaAttach(){
+  if(!_dmConvUserId)return;
+  const existing=document.getElementById('_dmAttachSheet');
+  if(existing){existing.remove();return;}
+  const sheet=document.createElement('div');
+  sheet.id='_dmAttachSheet';
+  sheet.style.cssText='position:fixed;inset:0;z-index:9400;display:flex;flex-direction:column;justify-content:flex-end';
+  sheet.innerHTML=`
+    <div style="position:absolute;inset:0;background:rgba(0,0,0,.5)" onclick="document.getElementById('_dmAttachSheet').remove()"></div>
+    <div style="position:relative;background:var(--bg1);border-radius:20px 20px 0 0;padding:16px 16px calc(env(safe-area-inset-bottom,0px)+16px)">
+      <div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:14px">Share</div>
+      <label style="display:flex;align-items:center;gap:14px;padding:14px;background:var(--bg2);border-radius:12px;cursor:pointer;margin-bottom:8px">
+        <div style="width:38px;height:38px;border-radius:10px;background:rgba(184,232,122,.12);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--accent)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+        </div>
+        <span style="font-size:15px;font-weight:600;color:var(--txt0)">Photo or Video</span>
+        <input type="file" accept="image/*,video/*" style="display:none" onchange="sendDmMedia(event)">
+      </label>
+      <div onclick="openDmSpotShare();document.getElementById('_dmAttachSheet').remove()" style="display:flex;align-items:center;gap:14px;padding:14px;background:var(--bg2);border-radius:12px;cursor:pointer;margin-bottom:8px">
+        <div style="width:38px;height:38px;border-radius:10px;background:rgba(184,232,122,.12);display:flex;align-items:center;justify-content:center">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+        </div>
+        <span style="font-size:15px;font-weight:600;color:var(--txt0)">Share a Spot</span>
+      </div>
+      <div onclick="openDmPostShare();document.getElementById('_dmAttachSheet').remove()" style="display:flex;align-items:center;gap:14px;padding:14px;background:var(--bg2);border-radius:12px;cursor:pointer;margin-bottom:8px">
+        <div style="width:38px;height:38px;border-radius:10px;background:rgba(184,232,122,.12);display:flex;align-items:center;justify-content:center">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--accent)" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+        </div>
+        <span style="font-size:15px;font-weight:600;color:var(--txt0)">Share a Post</span>
+      </div>
+    </div>`;
+  document.body.appendChild(sheet);
+}
+
+function sendDmMedia(e){
+  document.getElementById('_dmAttachSheet')?.remove();
+  const file=e.target.files?.[0];
+  if(!file||!_dmConvUserId)return;
+  if(file.type.startsWith('video/')&&file.size>VIDEO_MAX_BYTES){showToast('Video too large — choose a shorter clip');return;}
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    const dataUrl=ev.target.result;
+    const isVideo=file.type.startsWith('video/');
+    const key=_dmConvKey(_myUid(),_dmConvUserId);
+    const msgs=getMessages();
+    if(!msgs[key])msgs[key]=[];
+    msgs[key].push({id:_uid(),fromId:_myUid(),mediaUrl:dataUrl,mediaType:isVideo?'video':'photo',time:new Date().toISOString()});
+    setMessages(msgs);
+    _renderDmChat();
+  };
+  reader.readAsDataURL(file);
+}
+
+function openDmPostShare(){
+  const allPosts=getPosts().slice(0,12);
+  const existing=document.getElementById('_dmPostShareSheet');
+  if(existing)existing.remove();
+  const sheet=document.createElement('div');
+  sheet.id='_dmPostShareSheet';
+  sheet.style.cssText='position:fixed;inset:0;z-index:9450;display:flex;flex-direction:column;justify-content:flex-end';
+  sheet.innerHTML=`
+    <div style="position:absolute;inset:0;background:rgba(0,0,0,.6)" onclick="this.parentElement.remove()"></div>
+    <div style="position:relative;background:var(--bg1);border-radius:20px 20px 0 0;max-height:75vh;display:flex;flex-direction:column">
+      <div style="padding:16px;border-bottom:1px solid var(--border);flex-shrink:0;font-size:15px;font-weight:700;color:var(--txt0)">Share a Post</div>
+      <div style="overflow-y:auto;flex:1;padding:12px 16px">
+        ${allPosts.map(p=>`
+          <div onclick="sendDmPostCard('${p.id}');this.closest('#_dmPostShareSheet').remove()" style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer">
+            <div style="width:52px;height:52px;border-radius:10px;overflow:hidden;background:${p.heroGradient||'var(--bg3)'};flex-shrink:0">
+              ${p.mediaUrl?`<img src="${p.mediaUrl}" style="width:100%;height:100%;object-fit:cover" loading="lazy">`:''}
+            </div>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13px;font-weight:600;color:var(--txt0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">@${p.username||'explorer'}</div>
+              <div style="font-size:12px;color:var(--txt3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.caption||'(no caption)'}</div>
+            </div>
+          </div>`).join('')}
+      </div>
+    </div>`;
+  document.body.appendChild(sheet);
+}
+
+function sendDmPostCard(postId){
+  if(!_dmConvUserId)return;
+  const p=getPosts().find(x=>x.id===postId)||_feedPosts.find(x=>x.id===postId);
+  if(!p)return;
+  const key=_dmConvKey(_myUid(),_dmConvUserId);
+  const msgs=getMessages();
+  if(!msgs[key])msgs[key]=[];
+  msgs[key].push({id:_uid(),fromId:_myUid(),postCard:{id:p.id,mediaUrl:p.mediaUrl,caption:p.caption,spotId:p.spotId,spotName:p.spotName,username:p.username,gradient:p.heroGradient},time:new Date().toISOString()});
+  setMessages(msgs);
+  _renderDmChat();
+}
+
 function openNewDm(){openNewMessageOverlay();}
 function openNewMessageOverlay(){
   const overlay=document.createElement('div');
@@ -8416,8 +8631,22 @@ function _updateCpProgress(step,total){
   const bar=document.getElementById('createPostProgress');
   if(bar)bar.style.width=`${(step/total)*100}%`;
 }
+const VIDEO_MAX_BYTES=5*1024*1024; // 5 MB
 function _readFileAsDataUrl(file){
-  return new Promise(resolve=>{const r=new FileReader();r.onload=e=>resolve({dataUrl:e.target.result,type:file.type.startsWith('video')?'video':'photo',name:file.name});r.readAsDataURL(file);});
+  return new Promise((resolve,reject)=>{
+    if(file.type.startsWith('video/')){
+      console.log('[WildPath] video file size:',file.size,'bytes');
+      if(file.size>VIDEO_MAX_BYTES){
+        showToast('Video is too large for this prototype — choose a shorter clip or lower quality video');
+        reject(new Error('video_too_large'));
+        return;
+      }
+    }
+    const r=new FileReader();
+    r.onload=e=>resolve({dataUrl:e.target.result,type:file.type.startsWith('video')?'video':'photo',name:file.name});
+    r.onerror=()=>reject(new Error('read_failed'));
+    r.readAsDataURL(file);
+  });
 }
 function _renderCpMediaThumbs(){
   const row=document.getElementById('cpThumbRow');
@@ -8438,17 +8667,34 @@ function removeCpMedia(i){
   _cpMediaFiles.splice(i,1);
   _renderCpMediaThumbs();
 }
+function _cpSetMediaLoading(on){
+  const btn=document.getElementById('cpAddMediaBtn');
+  const next=document.querySelector('#cpStep2 .wizard-next-btn');
+  if(btn){btn.style.opacity=on?'0.5':'1';btn.style.pointerEvents=on?'none':'auto';}
+  if(next){next.disabled=on;next.textContent=on?'Processing…':'Continue →';}
+}
 function handleCpMediaSelect(e){
   const files=Array.from(e.target.files||[]);
   if(!files.length)return;
   _cpMediaFiles=[];
-  Promise.all(files.map(_readFileAsDataUrl)).then(results=>{_cpMediaFiles=results;_renderCpMediaThumbs();});
+  _cpSetMediaLoading(true);
+  Promise.allSettled(files.map(_readFileAsDataUrl)).then(results=>{
+    _cpMediaFiles=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
+    _renderCpMediaThumbs();
+    _cpSetMediaLoading(false);
+  });
   e.target.value='';
 }
 function handleCpMediaAppend(e){
   const files=Array.from(e.target.files||[]);
   if(!files.length)return;
-  Promise.all(files.map(_readFileAsDataUrl)).then(results=>{_cpMediaFiles=[..._cpMediaFiles,...results];_renderCpMediaThumbs();});
+  _cpSetMediaLoading(true);
+  Promise.allSettled(files.map(_readFileAsDataUrl)).then(results=>{
+    const good=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
+    _cpMediaFiles=[..._cpMediaFiles,...good];
+    _renderCpMediaThumbs();
+    _cpSetMediaLoading(false);
+  });
   e.target.value='';
 }
 function _buildCpPreview(){
@@ -10039,7 +10285,7 @@ function buildHomeFeed(){
           <svg class="feed-like-svg" viewBox="0 0 24 24" width="22" height="22" fill="${liked?'#ff4d6d':'none'}" stroke="${liked?'#ff4d6d':'var(--txt1)'}" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
           <span class="feed-like-count" style="font-size:13px;font-weight:600;color:var(--txt1)">${likeCount||''}</span>
         </div>
-        <div onclick="${post.spotId?`openDetail(${post.spotId})`:'showToast(\'No spot linked\')'}" style="display:flex;align-items:center;gap:5px;padding:4px 12px;cursor:pointer;-webkit-tap-highlight-color:transparent">
+        <div onclick="event.stopPropagation();openPostDetail('${post.id}')" style="display:flex;align-items:center;gap:5px;padding:4px 12px;cursor:pointer;-webkit-tap-highlight-color:transparent">
           <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="var(--txt1)" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
           <span style="font-size:13px;font-weight:600;color:var(--txt1)">${commentCount||''}</span>
         </div>
@@ -10138,23 +10384,7 @@ function _feedCardLike(idx,btn){
 function _feedCardSave(idx,btn){
   const post=_feedPosts[idx];
   if(!post)return;
-  const savedPosts=JSON.parse(localStorage.getItem('wildpath-saved-posts')||'[]');
-  const isSaved=savedPosts.includes(post.id);
-  if(isSaved){const i=savedPosts.indexOf(post.id);savedPosts.splice(i,1);}
-  else{savedPosts.push(post.id);}
-  localStorage.setItem('wildpath-saved-posts',JSON.stringify(savedPosts));
-  // Also save spotId for spot-based saved list
-  if(post.spotId){
-    const saved=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');
-    const isSavedSpot=saved.includes(post.spotId);
-    if(!isSaved&&!isSavedSpot)saved.push(post.spotId);
-    else if(isSaved&&isSavedSpot){const i=saved.indexOf(post.spotId);saved.splice(i,1);}
-    localStorage.setItem('wp_saved_spots',JSON.stringify(saved));
-  }
-  const svg=btn.querySelector('.feed-save-svg');
-  const nowSaved=!isSaved;
-  if(svg){svg.setAttribute('fill',nowSaved?'#B8E87A':'none');svg.setAttribute('stroke',nowSaved?'#B8E87A':'var(--txt1)');}
-  showToast(nowSaved?'Saved':'Removed from saved');
+  openSaveFolderSheet(post.id,btn);
 }
 
 function _feedCardShare(idx){
@@ -10905,13 +11135,8 @@ function _buildFriendsMap(){
     :'<div style="font-size:12px;color:var(--txt3)">Follow people to see their spots on this map</div>';
   }
   if(container._mapInit)return;
-  const token=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||'';
-  if(!token){
-    container.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--txt3);font-size:13px;text-align:center;padding:20px">Add a Mapbox token to see the Friends Map</div>';
-    return;
-  }
   container._mapInit=true;
-  mapboxgl.accessToken=token;
+  // reuse the already-set global token — no separate prompt needed
   try{
     const m=new mapboxgl.Map({container,style:'mapbox://styles/mapbox/dark-v11',center:[-121.5,38.5],zoom:5,interactive:true,attributionControl:false});
     m.on('load',()=>{
@@ -10960,27 +11185,43 @@ function openSavedPostsPage(){
   _renderSavedPostsGrid();
 }
 function _renderSavedPostsGrid(){
-  const savedIds=JSON.parse(localStorage.getItem('wildpath-saved-posts')||'[]');
-  const allPosts=getPosts();
-  const savedPosts=_feedPosts.filter(p=>savedIds.includes(p.id)).concat(allPosts.filter(p=>savedIds.includes(p.id)&&!_feedPosts.find(fp=>fp.id===p.id)));
+  const folders=_getSavedFolders();
   const grid=document.getElementById('savedPostsGrid');
   if(!grid)return;
   const cnt=document.getElementById('profileSavedCount');
-  if(cnt)cnt.textContent=savedIds.length+' post'+(savedIds.length!==1?'s':'');
-  if(!savedPosts.length){grid.innerHTML='<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--txt3);font-size:13px">No saved posts yet</div>';return;}
-  grid.innerHTML=savedPosts.map(p=>{
-    const thumb=p.photos?.[0]||p.mediaUrl||'';
-    const bg=p.spotGradient||p.heroGradient||'linear-gradient(160deg,#0d1a0d,#1a3a2a)';
-    // gradient: prefix means we render a div, not an img
-    const isGrad=thumb&&thumb.startsWith('gradient:');
-    const gradVal=isGrad?thumb.replace('gradient:',''):null;
-    const innerHtml=isGrad
-      ? `<div style="width:100%;height:100%;background:${gradVal}"></div>`
-      : (thumb?`<img src="${thumb}" style="width:100%;height:100%;object-fit:cover">`:'');
-    return`<div onclick="_openSavedPostDetail('${p.id}')" style="aspect-ratio:1;position:relative;overflow:hidden;cursor:pointer;background:${bg}">
-      ${innerHtml}
-    </div>`;
-  }).join('');
+  const totalSaved=JSON.parse(localStorage.getItem('wildpath-saved-posts')||'[]').length;
+  if(cnt)cnt.textContent=totalSaved+' post'+(totalSaved!==1?'s':'');
+  if(!folders.length){
+    // Fallback: show flat grid if no folders
+    const savedIds=JSON.parse(localStorage.getItem('wildpath-saved-posts')||'[]');
+    const allPosts=getPosts();
+    const savedPosts=_feedPosts.filter(p=>savedIds.includes(p.id)).concat(allPosts.filter(p=>savedIds.includes(p.id)&&!_feedPosts.find(fp=>fp.id===p.id)));
+    if(!savedPosts.length){grid.innerHTML='<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--txt3);font-size:13px">No saved posts yet — tap the bookmark on any post</div>';return;}
+    grid.innerHTML=savedPosts.map(p=>{
+      const thumb=p.photos?.[0]||p.mediaUrl||'';
+      const bg=p.spotGradient||p.heroGradient||'linear-gradient(160deg,#0d1a0d,#1a3a2a)';
+      const isGrad=thumb&&thumb.startsWith('gradient:');
+      const gradVal=isGrad?thumb.replace('gradient:',''):null;
+      const innerHtml=isGrad?`<div style="width:100%;height:100%;background:${gradVal}"></div>`:(thumb?`<img src="${thumb}" style="width:100%;height:100%;object-fit:cover">`:'');
+      return`<div onclick="openPostDetail('${p.id}')" style="aspect-ratio:1;position:relative;overflow:hidden;cursor:pointer;background:${bg}">${innerHtml}</div>`;
+    }).join('');
+    return;
+  }
+  // Show folder list view
+  grid.style.display='flex';
+  grid.style.flexDirection='column';
+  grid.style.gap='0';
+  grid.innerHTML=folders.map(f=>`
+    <div onclick="openSavedFolder('${f.name.replace(/'/g,"\\'")}');this.closest('.saved-folders-list')?.scrollTo(0,0)" style="display:flex;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid var(--border);cursor:pointer;-webkit-tap-highlight-color:transparent">
+      <div style="width:52px;height:52px;border-radius:14px;background:var(--bg3);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="var(--accent)" stroke-width="1.8"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      </div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:14px;font-weight:700;color:var(--txt0)">${f.name}</div>
+        <div style="font-size:12px;color:var(--txt3);margin-top:2px">${f.postIds.length} post${f.postIds.length!==1?'s':''}</div>
+      </div>
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--txt3)" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+    </div>`).join('');
 }
 function _openSavedPostDetail(postId){
   const p=_feedPosts.find(x=>x.id===postId)||getPosts().find(x=>x.id===postId);
@@ -11063,47 +11304,7 @@ function _showSpotListSheet(title,spotList){
 // OPEN COMMUNITY POST — tap on post in profile grid
 // ═══════════════════════════════════════════════════
 function openCommPost(postId){
-  const allPosts=getPosts();
-  const post=allPosts.find(p=>p.id===postId);
-  if(!post)return;
-  // If post has a spotId, open the detail page
-  if(post.spotId){
-    openDetail(post.spotId);
-    return;
-  }
-  // Otherwise show a simple overlay with post info
-  const existing=document.getElementById('_postViewSheet');
-  if(existing)existing.remove();
-  const sheet=document.createElement('div');
-  sheet.id='_postViewSheet';
-  sheet.style.cssText='position:absolute;inset:0;z-index:800;background:rgba(0,0,0,.82);display:flex;align-items:flex-end';
-  sheet.onclick=(e)=>{if(e.target===sheet)sheet.remove();};
-  const mediaHTML=post.mediaUrl&&post.type==='photo'
-    ?`<div style="height:260px;background:#000;overflow:hidden;border-radius:14px 14px 0 0"><img src="${post.mediaUrl}" style="width:100%;height:100%;object-fit:cover"></div>`
-    :`<div style="height:120px;background:var(--bg2);border-radius:14px 14px 0 0;display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--txt3)">text post</div>`;
-  const initials=(post.username||'WP').slice(0,2).toUpperCase();
-  const dateStr=post.createdAt?new Date(post.createdAt).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'';
-  sheet.innerHTML=`<div style="background:var(--bg1);border-radius:14px 14px 0 0;width:100%;max-height:80vh;overflow-y:auto">
-    ${mediaHTML}
-    <div style="padding:14px">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-        <div style="width:34px;height:34px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#B8E87A">${initials}</div>
-        <div>
-          <div style="font-size:13px;font-weight:700;color:var(--txt0)">@${post.username||'Explorer'}</div>
-          <div style="font-size:11px;color:var(--txt3)">${dateStr}</div>
-        </div>
-        <button onclick="document.getElementById('_postViewSheet').remove()" style="margin-left:auto;background:var(--bg2);border:1px solid var(--border);color:var(--txt1);border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px">×</button>
-      </div>
-      ${post.caption?`<div style="font-size:14px;color:var(--txt1);line-height:1.6;margin-bottom:12px">${post.caption}</div>`:''}
-      <div style="display:flex;gap:16px">
-        <div style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--txt2)">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
-          ${(post.likes||[]).length}
-        </div>
-      </div>
-    </div>
-  </div>`;
-  document.getElementById('app').appendChild(sheet);
+  openPostDetail(postId);
 }
 
 // ═══════════════════════════════════════════════════

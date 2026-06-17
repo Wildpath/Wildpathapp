@@ -356,7 +356,21 @@
             <span data-s="1"></span><span data-s="2"></span><span data-s="3"></span><span data-s="4"></span><span data-s="5"></span>
           </div>
         </div>
-        <button class="btn-submit-spot" onclick="submitNewSpot()">Add to Map</button>
+        <div class="form-group">
+          <label class="form-label">Photos <span style="color:var(--txt3);font-weight:400;font-size:11px">(encouraged, not required)</span></label>
+          <label style="display:flex;align-items:center;gap:10px;background:var(--bg2);border:1.5px dashed var(--border2);border-radius:12px;padding:14px;cursor:pointer;margin-bottom:10px">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--accent)" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+            <span style="font-size:13px;font-weight:600;color:var(--txt1)">Add Photos from Library</span>
+            <input type="file" accept="image/*" multiple style="display:none" onchange="handleAspPhotos(event)">
+          </label>
+          <label style="display:flex;align-items:center;gap:10px;background:var(--bg2);border:1px solid var(--border2);border-radius:12px;padding:14px;cursor:pointer;margin-bottom:10px">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--accent)" stroke-width="1.8"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            <span style="font-size:13px;font-weight:600;color:var(--txt1)">Take a Photo</span>
+            <input type="file" accept="image/*" capture="environment" style="display:none" onchange="handleAspPhotos(event)">
+          </label>
+          <div id="aspPhotoGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:4px"></div>
+        </div>
+        <button class="btn-submit-spot" onclick="submitNewSpot()">Submit for Review</button>
         <button class="btn-cancel-modal" onclick="closeAddSpot()">Cancel</button>
       </div>
     </div>
@@ -1513,14 +1527,15 @@
        DM CHAT PAGE
        ══════════════════════════════════════════════════ -->
   <div class="comm-full-page" id="dmChatPage" style="z-index:550">
-    <div class="cfp-nav">
+    <div class="cfp-nav" style="gap:10px">
       <button class="cfp-back" onclick="closeDmChat()">←</button>
-      <div class="cfp-title" id="dmChatTitle">Chat</div>
+      <div id="dmChatHeaderAvatar" style="width:34px;height:34px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#B8E87A;flex-shrink:0;overflow:hidden"></div>
+      <div class="cfp-title" id="dmChatTitle" style="text-align:left;flex:1">Chat</div>
     </div>
     <div class="dm-messages-area" id="dmMessagesArea"></div>
     <div class="dm-input-bar">
-      <div class="comm-hdr-icon" style="color:var(--txt2)" onclick="openDmSpotShare()">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+      <div class="comm-hdr-icon" style="color:var(--txt2)" onclick="openDmMediaAttach()">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
       </div>
       <input class="dm-input" id="dmChatInput" placeholder="Message…" onkeydown="if(event.key==='Enter')sendDmMessage()">
       <button class="dm-send-btn" onclick="sendDmMessage()">Send</button>
@@ -1554,11 +1569,16 @@
     <div class="wizard-step" id="cpStep2">
       <div class="wizard-content">
         <div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:14px">Add Media</div>
-        <label id="cpAddMediaBtn" style="display:flex;flex-direction:column;align-items:center;gap:8px;background:var(--bg2);border:2px dashed var(--border2);border-radius:14px;padding:28px 16px;cursor:pointer;font-size:13px;color:var(--txt2);text-align:center">
+        <label id="cpAddMediaBtn" style="display:flex;flex-direction:column;align-items:center;gap:8px;background:var(--bg2);border:2px dashed var(--border2);border-radius:14px;padding:22px 16px;cursor:pointer;font-size:13px;color:var(--txt2);text-align:center">
           <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="var(--accent)" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
           <span style="font-weight:600;color:var(--txt1)">Add Photos or Videos</span>
           <span style="font-size:11px">Tap to choose from your library</span>
           <input type="file" id="cpFileInput" accept="image/*,video/*" multiple style="display:none" onchange="handleCpMediaSelect(event)">
+        </label>
+        <label style="display:flex;align-items:center;justify-content:center;gap:8px;background:var(--bg2);border:1px solid var(--border2);border-radius:12px;padding:14px 16px;cursor:pointer;margin-top:10px">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--accent)" stroke-width="1.8"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+          <span style="font-size:13px;font-weight:600;color:var(--txt1)">Take Photo or Video</span>
+          <input type="file" accept="image/*,video/*" capture="environment" style="display:none" onchange="handleCpMediaAppend(event)">
         </label>
         <div id="cpMediaPreviewWrap" style="display:none;margin-top:16px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
@@ -1570,7 +1590,7 @@
           <div id="cpThumbRow" style="display:flex;gap:8px;overflow-x:auto;padding-bottom:8px;-webkit-overflow-scrolling:touch"></div>
         </div>
       </div>
-      <div class="wizard-footer"><button class="wizard-next-btn" onclick="cpNext()">Continue →</button></div>
+      <div class="wizard-footer"><button class="wizard-next-btn" id="cpStep2NextBtn" onclick="cpNext()">Continue →</button></div>
     </div>
     <!-- Step 4: details -->
     <div class="wizard-step" id="cpStep4">
@@ -1868,7 +1888,7 @@
 </div><!-- #app -->
 
 
-<script src="data.js?v=7"></script>
-<script src="app.js?v=7"></script>
+<script src="data.js?v=8"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>
