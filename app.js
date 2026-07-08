@@ -138,53 +138,19 @@ function sanitize(str){
     .replace(/'/g,'&#39;');
 }
 
-function _makeSalt(){return Math.random().toString(36).slice(2)+Date.now().toString(36);}
-// cyrb53-style hash — not cryptographic, but not reversible like btoa
-function _hashPw(pw,salt){
-  const str=salt+pw;
-  let h1=0xdeadbeef,h2=0x41c6ce57;
-  for(let i=0;i<str.length;i++){
-    const ch=str.charCodeAt(i);
-    h1=Math.imul(h1^ch,2654435761);
-    h2=Math.imul(h2^ch,1597334677);
-  }
-  h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909);
-  h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);
-  return (4294967296*(2097151&h2)+(h1>>>0)).toString(36);
-}
-function _setUserPassword(user,pw){
-  user.salt=_makeSalt();
-  user.passHash=_hashPw(pw,user.salt);
-  delete user.password;
-}
-function _verifyPw(user,pw){
-  if(user.passHash&&user.salt)return _hashPw(pw,user.salt)===user.passHash;
-  // Legacy btoa-stored account: verify once, then upgrade in place
-  if(user.password&&user.password===btoa(pw)){
-    _setUserPassword(user,pw);
-    const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
-    const u=users.find(x=>String(x.id)===String(user.id));
-    if(u){u.salt=user.salt;u.passHash=user.passHash;delete u.password;localStorage.setItem('wildpath-users',JSON.stringify(users));}
-    return true;
-  }
-  return false;
-}
-// Admin code is verified against a hash — plaintext never appears in source
-const ADMIN_CODE_SALT='wp_admin_salt_v1';
-const ADMIN_CODE_HASH='rsjs5rilio';
-function _isAdminCode(code){return _hashPw(code,ADMIN_CODE_SALT)===ADMIN_CODE_HASH;}
+
+// Passwords are handled entirely by Supabase Auth — nothing password-related
+// is stored in code or localStorage. Admin role comes from profiles.role.
 
 // ═══════════════════════════════════════════════════
 // SAVED STORE — single canonical key 'wildpath-saved'
 // { postIds:[], spotIds:[], folders:[{name,postIds}] }
 // ═══════════════════════════════════════════════════
 function _getSavedStore(){
-  try{
-    const s=JSON.parse(localStorage.getItem('wildpath-saved')||'{}');
-    return{postIds:s.postIds||[],spotIds:s.spotIds||[],folders:s.folders||[]};
-  }catch(e){return{postIds:[],spotIds:[],folders:[]};}
+  const s=_DB['wildpath-saved']||{};
+  return{postIds:s.postIds||[],spotIds:s.spotIds||[],folders:s.folders||[]};
 }
-function _setSavedStore(s){localStorage.setItem('wildpath-saved',JSON.stringify(s));}
+function _setSavedStore(s){_DB['wildpath-saved']=s;}
 function getSavedPostIds(){return _getSavedStore().postIds;}
 function setSavedPostIds(a){const s=_getSavedStore();s.postIds=a;_setSavedStore(s);}
 function getSavedSpotIds(){return _getSavedStore().spotIds;}
@@ -219,76 +185,339 @@ function _showMapNotice(text){
 // from legacy key names to canonical ones, then removes legacy
 // ═══════════════════════════════════════════════════
 function _migrateStorageKeys(){
+  // Phase 2: app data moved to Supabase. Purge all legacy localStorage data
+  // keys so only UI preferences remain on-device.
   try{
-    // Saved posts / spots / folders → wildpath-saved
-    const legacyPosts=localStorage.getItem('wildpath-saved-posts');
-    const legacySpots=localStorage.getItem('wp_saved_spots');
-    const legacyFolders=localStorage.getItem('wildpath-saved-folders');
-    if(legacyPosts||legacySpots||legacyFolders){
-      const s=_getSavedStore();
-      if(legacyPosts)JSON.parse(legacyPosts).forEach(id=>{if(!s.postIds.includes(id))s.postIds.push(id);});
-      if(legacySpots)JSON.parse(legacySpots).forEach(id=>{if(!s.spotIds.includes(id))s.spotIds.push(id);});
-      if(legacyFolders)JSON.parse(legacyFolders).forEach(f=>{if(!s.folders.find(x=>x.name===f.name))s.folders.push(f);});
-      _setSavedStore(s);
-      localStorage.removeItem('wildpath-saved-posts');
-      localStorage.removeItem('wp_saved_spots');
-      localStorage.removeItem('wildpath-saved-folders');
-    }
-    // Theme: wildpath-dark-mode / wildpath-light-mode → wp_theme
-    if(!localStorage.getItem('wp_theme')){
-      if(localStorage.getItem('wildpath-dark-mode')==='1')localStorage.setItem('wp_theme','dark');
-      else if(localStorage.getItem('wildpath-light-mode')==='1')localStorage.setItem('wp_theme','light');
-    }
-    localStorage.removeItem('wildpath-dark-mode');
-    localStorage.removeItem('wildpath-light-mode');
-    // Map style label duplicate
-    localStorage.removeItem('wildpath-map-style');
-    // Spot queues: wp_pending_spots → wildpath-pending-spots, wp_user_spots → wildpath-spots-approved
-    const oldPending=localStorage.getItem('wp_pending_spots');
-    if(oldPending&&!localStorage.getItem('wildpath-pending-spots'))localStorage.setItem('wildpath-pending-spots',oldPending);
-    localStorage.removeItem('wp_pending_spots');
-    const oldUserSpots=localStorage.getItem('wp_user_spots');
-    if(oldUserSpots&&!localStorage.getItem('wildpath-spots-approved'))localStorage.setItem('wildpath-spots-approved',oldUserSpots);
-    localStorage.removeItem('wp_user_spots');
-    // Mapbox token: wp_mapbox_token → mapbox-token
-    const legacyTok=localStorage.getItem('wp_mapbox_token');
-    if(legacyTok&&!localStorage.getItem('mapbox-token'))localStorage.setItem('mapbox-token',legacyTok);
-    localStorage.removeItem('wp_mapbox_token');
-    // Avatar: wp_avatar / wp_avatar_<uid> → profile.avatarUrl
-    const uid=localStorage.getItem('wildpath-current-user');
-    if(uid){
-      const legacyAv=localStorage.getItem('wp_avatar_'+uid)||localStorage.getItem('wp_avatar');
-      if(legacyAv&&typeof getUserProfile==='function'){
-        const prof=getUserProfile(uid)||{};
-        if(!prof.avatarUrl){prof.avatarUrl=legacyAv;setUserProfile(uid,prof);}
-      }
-    }
-    Object.keys(localStorage).filter(k=>k==='wp_avatar'||k.startsWith('wp_avatar_')).forEach(k=>localStorage.removeItem(k));
-  }catch(e){console.warn('Storage migration:',e);}
+    const dataKeys=['wildpath-posts','wildpath-communities','wildpath-community-members',
+      'wildpath-community-posts','wildpath-votes','wildpath-comments','wildpath-follows',
+      'wildpath-notifications','wildpath-messages','wildpath-spot-drops','wildpath-recent-searches',
+      'wildpath-user-profiles','wildpath-pending-members','wildpath-saved','wildpath-saved-posts',
+      'wildpath-saved-folders','wildpath-saved-hikes','wildpath-active-hike','wildpath-users',
+      'wildpath-current-user','wildpath-guest','wildpath-pending-spots','wildpath-spots-approved',
+      'wp_pending_spots','wp_user_spots','wp_saved_spots','wp_favs','wp_collections','wp_want_to_go',
+      'wp_journal','wp_personal_moments','wp_username','wp_mapbox_token','wp_avatar',
+      'wildpath-dark-mode','wildpath-light-mode','wildpath-map-style'];
+    dataKeys.forEach(k=>localStorage.removeItem(k));
+    Object.keys(localStorage).filter(k=>k.startsWith('wp_avatar_')||k.startsWith('wp_comments_')||k.startsWith('wp_community_spots_')||k.startsWith('wildpath-user-location-')).forEach(k=>localStorage.removeItem(k));
+  }catch(e){console.warn('Storage purge:',e);}
+}
+
+
+// ═══════════════════════════════════════════════════
+// SUPABASE SYNC LAYER
+// Hydrates the in-memory _DB from Supabase and writes
+// every mutation through to the backend. All reads in
+// the app stay synchronous against _DB.
+// ═══════════════════════════════════════════════════
+let _sbHydrated=false,_sbChannels=[];
+
+function _sbAdaptProfile(r){
+  return{username:r.username,avatarUrl:r.avatar_url||null,bio:r.bio||'',role:r.role||'explorer',fullName:r.full_name||''};
+}
+function _sbAdaptPost(r,likesMap){
+  const prof=r.profiles||{};
+  const spot=r.spot_id?[...spots,...userSpots].find(s=>String(s.id)===String(r.spot_id)):null;
+  return{
+    id:r.id,userId:r.user_id,
+    username:prof.username||(getUserProfile(r.user_id)||{}).username||'explorer',
+    verified:false,
+    type:r.video_url?'video':(r.photo_url?'photo':'text'),
+    mediaUrl:r.photo_url||r.video_url||null,
+    mediaUrls:r.photo_url?[r.photo_url]:[],
+    caption:r.caption||'',
+    spotId:r.spot_id||null,spotName:spot?spot.name:null,
+    lat:r.lat??spot?.lat??null,lng:r.lng??spot?.lng??null,
+    privacy:r.privacy||'public',
+    likes:(likesMap&&likesMap[r.id])||[],
+    communityIds:[],
+    createdAt:r.created_at
+  };
+}
+function _sbAdaptSpot(r){
+  const def=(typeof SPOT_TYPE_DEFS!=='undefined'&&SPOT_TYPE_DEFS[r.type])||{label:r.type,color:'#7AB87A',icon:r.type};
+  const legal=r.legal_status||'caution';
+  return{
+    id:r.id,name:r.name,lat:r.lat,lng:r.lng,type:r.type,
+    typeLabel:def.label,typeColor:def.color,icon:def.icon,
+    heroGradient:'linear-gradient(160deg,#0f1410,#1e251e,#0a100a)',
+    rating:0,reviews:0,distance:'',elevation:r.elevation_gain||'—',
+    legal,legalText:legal==='legal'?'Legal':legal==='illegal'?'Illegal':'Caution',
+    legalClass:'legal-'+(legal==='legal'?'legal':legal==='illegal'?'illegal':'caution'),
+    trailLength:r.hike_time||'—',difficulty:r.difficulty||'Moderate',
+    diffClass:'diff-'+String(r.difficulty||'moderate').toLowerCase(),
+    bestSeason:r.best_season||'Year-round',parkingCost:'—',entryFee:'—',
+    roadCondition:r.road_condition||'—',cellSignal:'—',
+    season:[1,1,1,1,1,1,1,1,1,1,1,1],
+    permitRequired:!!r.permit_url,
+    permitData:r.permit_url?{name:r.permit_name||'Permit',url:r.permit_url,cost:r.permit_cost||''}:null,
+    parkingCapacity:'—',parkingFillTime:'—',fourWD:false,
+    weather:[],crowd:30,campingText:'—',
+    reviews_data:[],similar:[],
+    approach:r.approach||'',gear:[],hazards:[],insiderTips:r.description||'',
+    description:r.description||'',
+    accessibility:'—',kidScore:3,dogFriendly:true,shade:'—',
+    crowdsByDay:[30,25,28,32,35,55,60],hiddenGem:true,
+    nearestTown:r.nearest_town||null,nearestHospital:r.nearest_hospital||null,
+    discoveredBy:r.discovered_by||null,submittedBy:r.submitted_by||null,
+    createdAt:r.created_at
+  };
+}
+
+// Upload a dataURL to a public bucket; resolves to the public URL
+async function _sbUploadDataUrl(bucket,dataUrl,ext){
+  const blob=await (await fetch(dataUrl)).blob();
+  const path=`${_myUid()}/${Date.now()}-${Math.random().toString(36).slice(2,8)}.${ext||'jpg'}`;
+  const {error}=await db.storage.from(bucket).upload(path,blob,{contentType:blob.type||'image/jpeg'});
+  if(error)throw error;
+  return db.storage.from(bucket).getPublicUrl(path).data.publicUrl;
+}
+
+// ── Hydration: pull everything the UI needs into _DB ──
+async function _sbHydrate(){
+  try{
+    await _sbLoadSpots();
+    await Promise.all([_sbLoadProfiles(),_sbLoadCommunities()]);
+    await Promise.all([_sbLoadPosts(),_sbLoadMessages(),_sbLoadFollows(),_sbLoadNotifications(),_sbLoadSaved()]);
+    _sbHydrated=true;
+    _sbSubscribeRealtime();
+    // Refresh whatever is on screen
+    try{refreshSpotMarkers();}catch(e){}
+    try{if(typeof buildHomeFeed==='function')buildHomeFeed();}catch(e){}
+    try{buildFeed();}catch(e){}
+    try{buildCommunitiesTab();}catch(e){}
+    try{buildProfile();}catch(e){}
+    try{_updateNotifBadge();}catch(e){}
+    console.log('[Supabase] hydrated');
+  }catch(e){
+    console.warn('[Supabase] hydrate failed:',e);
+    _showRetryToast('Could not load data from server','_sbHydrate()');
+  }
+}
+
+async function _sbLoadProfiles(){
+  const {data,error}=await db.from('profiles').select('*');
+  if(error)throw error;
+  const m={};
+  (data||[]).forEach(r=>{m[r.id]=_sbAdaptProfile(r);});
+  _cgSet(CK.profiles,m);
+}
+
+async function _sbLoadSpots(){
+  const {data,error}=await db.from('spots').select('*').eq('status','approved');
+  if(error)throw error;
+  userSpots.length=0;
+  (data||[]).forEach(r=>userSpots.push(_sbAdaptSpot(r)));
+}
+
+async function _sbLoadPosts(){
+  const {data,error}=await db.from('posts').select('*, profiles(username, avatar_url)')
+    .eq('privacy','public').order('created_at',{ascending:false}).limit(20);
+  if(error)throw error;
+  const rows=data||[];
+  const ids=rows.map(r=>r.id);
+  const likesMap={},commentsMap={};
+  if(ids.length){
+    try{
+      const {data:likeRows}=await db.from('likes').select('post_id,user_id').in('post_id',ids);
+      (likeRows||[]).forEach(l=>{(likesMap[l.post_id]=likesMap[l.post_id]||[]).push(l.user_id);});
+    }catch(e){}
+    try{
+      const {data:cRows}=await db.from('comments').select('*').in('post_id',ids).order('created_at');
+      (cRows||[]).forEach(c=>{
+        (commentsMap[c.post_id]=commentsMap[c.post_id]||[]).push({
+          id:c.id,postId:c.post_id,userId:c.user_id,
+          username:(getUserProfile(c.user_id)||{}).username||'explorer',
+          text:c.content,createdAt:c.created_at,parentId:null
+        });
+      });
+    }catch(e){}
+  }
+  setPosts(rows.map(r=>_sbAdaptPost(r,likesMap)));
+  _cgSet(CK.comments,commentsMap);
+}
+
+async function _sbLoadMessages(){
+  if(isGuest())return;
+  const me=_myUid();
+  const {data,error}=await db.from('messages').select('*')
+    .or(`sender_id.eq.${me},receiver_id.eq.${me}`).order('created_at');
+  if(error)throw error;
+  const map={};
+  (data||[]).forEach(r=>{map[_dmConvKey(r.sender_id,r.receiver_id)]=(map[_dmConvKey(r.sender_id,r.receiver_id)]||[]).concat([_sbAdaptMessage(r)]);});
+  setMessages(map);
+}
+function _sbAdaptMessage(r){
+  const m={id:r.id,fromId:r.sender_id,text:r.content||'',time:r.created_at};
+  if(r.media_url){m.mediaUrl=r.media_url;m.mediaType=/\.(mp4|mov|webm)(\?|$)/i.test(r.media_url)?'video':'photo';delete m.text;}
+  if(r.post_id){
+    const p=getPosts().find(x=>String(x.id)===String(r.post_id));
+    m.postCard=p?{id:p.id,mediaUrl:p.mediaUrl,caption:p.caption,spotId:p.spotId,spotName:p.spotName,username:p.username,gradient:null}:{id:r.post_id,caption:'Shared post'};
+  }
+  if(r.spot_id){
+    const s=[...spots,...userSpots].find(x=>String(x.id)===String(r.spot_id));
+    if(s)m.spotCard={id:s.id,name:s.name,typeLabel:s.typeLabel,heroGradient:s.heroGradient};
+  }
+  return m;
+}
+
+async function _sbLoadFollows(){
+  const {data,error}=await db.from('follows').select('follower_id,following_id');
+  if(error)throw error;
+  const map={};
+  (data||[]).forEach(r=>{(map[r.follower_id]=map[r.follower_id]||[]).push(String(r.following_id));});
+  setFollows(map);
+}
+
+async function _sbLoadNotifications(){
+  if(isGuest())return;
+  const {data,error}=await db.from('notifications').select('*')
+    .eq('user_id',_myUid()).order('created_at',{ascending:false}).limit(50);
+  if(error)throw error;
+  setNotifs((data||[]).map(r=>({
+    id:r.id,type:r.type,
+    fromUsername:(getUserProfile(r.from_user_id)||{}).username||'Someone',
+    message:r.message||'',read:!!r.read,createdAt:r.created_at
+  })));
+}
+
+async function _sbLoadSaved(){
+  if(isGuest())return;
+  const {data,error}=await db.from('saved_spots').select('*').eq('user_id',_myUid());
+  if(error)throw error;
+  const spotIds=[],folders={};
+  (data||[]).forEach(r=>{
+    spotIds.push(r.spot_id);
+    const f=r.folder_name||'General';
+    (folders[f]=folders[f]||[]).push(r.spot_id);
+  });
+  _setSavedStore({postIds:[],spotIds,folders:Object.entries(folders).map(([name,ids])=>({name,postIds:ids}))});
+}
+
+async function _sbLoadCommunities(){
+  const {data,error}=await db.from('communities').select('*');
+  if(error)throw error;
+  setCommunities((data||[]).map(r=>({
+    id:r.id,name:r.name,desc:r.description||'',coverDataUrl:r.cover_url||null,
+    privacy:r.privacy||'public',focus:r.focus?[r.focus]:[],rules:r.rules||'',
+    adminId:String(r.created_by||''),memberCount:r.members_count||0,createdAt:r.created_at
+  })));
+  try{
+    const {data:mem}=await db.from('community_members').select('community_id,user_id');
+    const map={};
+    (mem||[]).forEach(r=>{(map[r.community_id]=map[r.community_id]||[]).push(String(r.user_id));});
+    _cgSet(CK.members,map);
+  }catch(e){}
+  try{
+    const {data:cp}=await db.from('community_posts').select('*').order('created_at',{ascending:false});
+    const map={};
+    (cp||[]).forEach(r=>{(map[r.community_id]=map[r.community_id]||[]).push(r.id);});
+    _cgSet(CK.cposts,map);
+  }catch(e){}
+}
+
+// ── Write-through helpers (fire-and-forget with console warning) ──
+function _sbTry(promise,label){
+  Promise.resolve(promise).then(({error}={})=>{if(error)console.warn('[Supabase] '+label+':',error.message);})
+    .catch(e=>console.warn('[Supabase] '+label+':',e));
+}
+function _sbToggleLike(postId,on){
+  if(isGuest())return;
+  if(on)_sbTry(db.from('likes').insert({post_id:postId,user_id:_myUid()}),'like');
+  else _sbTry(db.from('likes').delete().eq('post_id',postId).eq('user_id',_myUid()),'unlike');
+}
+function _sbToggleFollow(uid,on){
+  if(isGuest())return;
+  if(on)_sbTry(db.from('follows').insert({follower_id:_myUid(),following_id:uid}),'follow');
+  else _sbTry(db.from('follows').delete().eq('follower_id',_myUid()).eq('following_id',uid),'unfollow');
+}
+function _sbNotify(toUid,type,message){
+  if(isGuest()||!toUid||String(toUid)===String(_myUid()))return;
+  if(!/^[0-9a-f-]{36}$/i.test(String(toUid)))return; // only real user ids
+  _sbTry(db.from('notifications').insert({user_id:toUid,type,from_user_id:_myUid(),message}),'notify');
+}
+
+// ── Realtime: messages, notifications, posts ──
+function _sbSubscribeRealtime(){
+  _sbChannels.forEach(ch=>{try{db.removeChannel(ch);}catch(e){}});
+  _sbChannels=[];
+  if(!isGuest()){
+    const me=_myUid();
+    _sbChannels.push(db.channel('rt-messages')
+      .on('postgres_changes',{event:'INSERT',schema:'public',table:'messages',filter:`receiver_id=eq.${me}`},payload=>{
+        const r=payload.new;
+        const key=_dmConvKey(r.sender_id,r.receiver_id);
+        const map=getMessages();
+        (map[key]=map[key]||[]).push(_sbAdaptMessage(r));
+        setMessages(map);
+        try{if(typeof _dmConvUserId!=='undefined'&&_dmConvUserId&&_dmConvKey(me,_dmConvUserId)===key)_renderDmChat();}catch(e){}
+        try{_renderCommDmInbox('');}catch(e){}
+      }).subscribe());
+    _sbChannels.push(db.channel('rt-notifications')
+      .on('postgres_changes',{event:'INSERT',schema:'public',table:'notifications',filter:`user_id=eq.${me}`},payload=>{
+        const r=payload.new;
+        const notifs=getNotifs();
+        notifs.unshift({id:r.id,type:r.type,fromUsername:(getUserProfile(r.from_user_id)||{}).username||'Someone',message:r.message||'',read:false,createdAt:r.created_at});
+        setNotifs(notifs.slice(0,50));
+        try{_updateNotifBadge();}catch(e){}
+      }).subscribe());
+  }
+  _sbChannels.push(db.channel('rt-posts')
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'posts'},payload=>{
+      const r=payload.new;
+      if(r.privacy!=='public')return;
+      if(String(r.user_id)===String(_myUid()))return; // own posts added locally on submit
+      const posts=getPosts();
+      if(posts.find(p=>String(p.id)===String(r.id)))return;
+      posts.unshift(_sbAdaptPost(r,null));
+      setPosts(posts);
+      try{buildFeed();}catch(e){}
+      try{if(typeof buildHomeFeed==='function')buildHomeFeed();}catch(e){}
+    }).subscribe());
 }
 
 // ═══════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════
-window.onload=()=>{
+let _guestMode=false,_sbSession=null;
+window.onload=async()=>{
   _migrateStorageKeys();
-  // Always auto-login as demo user — no login screen required
-  const uid=localStorage.getItem('wildpath-current-user');
-  if(uid){
-    const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
-    _currentUser=users.find(u=>String(u.id)===String(uid))||null;
+  try{
+    const {data}=await db.auth.getSession();
+    _sbSession=data?.session||null;
+  }catch(e){console.warn('[Supabase] getSession failed:',e);}
+  if(_sbSession){
+    await _sbLoadCurrentUser(_sbSession.user);
+    _hideLoginScreen();
+    _launchApp();
+    _sbHydrate();
+  } else {
+    _currentUser=null;
+    _showLoginScreen();
   }
-  if(!_currentUser){
-    // Auto-create a demo account so all features are accessible
-    _currentUser={id:'demo_me',username:'explorer',fullName:'Explorer',role:'user',email:'explorer@wildpath.app',createdAt:new Date().toISOString()};
-    const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
-    if(!users.find(u=>u.id==='demo_me'))users.push(_currentUser);
-    localStorage.setItem('wildpath-users',JSON.stringify(users));
-    localStorage.setItem('wildpath-current-user','demo_me');
-  }
-  _hideLoginScreen();
-  _launchApp();
 };
+
+// Load (or lazily create) the profiles row for the signed-in auth user
+async function _sbLoadCurrentUser(authUser){
+  let prof=null;
+  try{
+    const {data}=await db.from('profiles').select('*').eq('id',authUser.id).maybeSingle();
+    prof=data;
+    if(!prof){
+      const uname=(authUser.user_metadata?.username||authUser.email?.split('@')[0]||'explorer').slice(0,24);
+      const {data:ins}=await db.from('profiles').insert({id:authUser.id,username:uname}).select().single();
+      prof=ins;
+    }
+  }catch(e){console.warn('[Supabase] profile load failed:',e);}
+  _currentUser={
+    id:authUser.id,
+    email:authUser.email||'',
+    username:prof?.username||authUser.email?.split('@')[0]||'explorer',
+    fullName:prof?.full_name||'',
+    role:prof?.role||'explorer',
+    createdAt:prof?.created_at||new Date().toISOString()
+  };
+  if(prof)setUserProfile(authUser.id,_sbAdaptProfile(prof));
+}
 
 function _showLoginScreen(){
   const ls=document.getElementById('loginScreen');
@@ -316,51 +545,61 @@ function loginShowSignUp(){
   document.getElementById('loginTabSignIn').style.cssText='flex:1;text-align:center;padding:9px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;color:rgba(255,255,255,0.5);transition:all .2s';
   const e=document.getElementById('loginSignUpError');if(e)e.style.display='none';
 }
+async function _sbSignIn(email,pw,showErr){
+  try{
+    const {data,error}=await db.auth.signInWithPassword({email,password:pw});
+    if(error){showErr(error.message||'Sign in failed.');return false;}
+    _sbSession=data.session;_guestMode=false;
+    await _sbLoadCurrentUser(data.user);
+    _hideLoginScreen();
+    if(!_appInitialized)_launchApp();else{buildProfile();showToast('Welcome back, '+_currentUser.username+'!');}
+    _sbHydrate();
+    return true;
+  }catch(e){showErr('Could not reach the server — check your connection.');return false;}
+}
+async function _sbSignUp(username,email,pw,showErr){
+  try{
+    const {data,error}=await db.auth.signUp({email,password:pw,options:{data:{username}}});
+    if(error){showErr(error.message||'Sign up failed.');return false;}
+    if(!data.session){
+      showErr('Account created — check your email to confirm, then sign in.');
+      return false;
+    }
+    _sbSession=data.session;_guestMode=false;
+    try{await db.from('profiles').insert({id:data.user.id,username});}catch(e){console.warn('profile insert:',e);}
+    await _sbLoadCurrentUser(data.user);
+    _hideLoginScreen();
+    if(!_appInitialized)_launchApp();else{buildProfile();showToast('Welcome to WildPath!');}
+    _sbHydrate();
+    return true;
+  }catch(e){showErr('Could not reach the server — check your connection.');return false;}
+}
 function doLogin(){
   const email=(document.getElementById('loginEmail')?.value||'').trim().toLowerCase();
   const pw=document.getElementById('loginPassword')?.value||'';
   const errEl=document.getElementById('loginSignInError');
-  if(!email||!pw){if(errEl){errEl.textContent='Enter your email and password.';errEl.style.display='block';}return;}
-  const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
-  const user=users.find(u=>u.email.toLowerCase()===email);
-  if(!user){if(errEl){errEl.textContent='No account found with that email.';errEl.style.display='block';}return;}
-  if(!_verifyPw(user,pw)){if(errEl){errEl.textContent='Incorrect email or password.';errEl.style.display='block';}return;}
-  localStorage.setItem('wildpath-current-user',user.id);
-  localStorage.removeItem('wildpath-guest');
-  _currentUser=user;
-  _hideLoginScreen();
-  if(!_appInitialized){_launchApp();}else{buildProfile();showToast('Welcome back, '+user.username+'!');}
+  const showErr=m=>{if(errEl){errEl.textContent=m;errEl.style.display='block';}};
+  if(!email||!pw){showErr('Enter your email and password.');return;}
+  _sbSignIn(email,pw,showErr);
 }
 function doSignup(){
   const username=(document.getElementById('signupUsername')?.value||'').trim();
   const email=(document.getElementById('signupEmail')?.value||'').trim().toLowerCase();
   const pw=document.getElementById('signupPassword')?.value||'';
   const confirm=document.getElementById('signupConfirm')?.value||'';
-  const adminCode=(document.getElementById('signupAdminCode')?.value||'').trim();
   const errEl=document.getElementById('loginSignUpError');
   const showErr=msg=>{if(errEl){errEl.textContent=msg;errEl.style.display='block';}};
-  if(!username||!email||!pw||!confirm){showErr('All fields except admin code are required.');return;}
+  if(!username||!email||!pw||!confirm){showErr('All fields are required.');return;}
   if(pw!==confirm){showErr('Passwords do not match.');return;}
   if(pw.length<6){showErr('Password must be at least 6 characters.');return;}
-  const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
-  if(users.find(u=>u.email.toLowerCase()===email)){showErr('Email already in use.');return;}
-  const role=_isAdminCode(adminCode)?'admin':'explorer';
-  const newUser={id:Date.now(),username,email,role,avatar:null,savedSpots:[],submittedSpots:[],createdAt:new Date().toISOString()};
-  _setUserPassword(newUser,pw);
-  users.push(newUser);
-  localStorage.setItem('wildpath-users',JSON.stringify(users));
-  localStorage.setItem('wildpath-current-user',newUser.id);
-  localStorage.removeItem('wildpath-guest');
-  _currentUser=newUser;
-  _hideLoginScreen();
-  if(!_appInitialized){_launchApp();}else{buildProfile();showToast(role==='admin'?'Admin account created!':'Welcome to WildPath!');}
+  _sbSignUp(username,email,pw,showErr);
 }
 function continueAsGuest(){
-  localStorage.setItem('wildpath-guest','true');
-  localStorage.removeItem('wildpath-current-user');
+  _guestMode=true;_sbSession=null;
   _currentUser={id:'guest',username:'Guest',role:'guest',email:''};
   _hideLoginScreen();
-  if(!_appInitialized){_launchApp();}
+  if(!_appInitialized)_launchApp();
+  _sbHydrate(); // guests still see public spots and posts (RLS allows anon reads)
 }
 
 function _launchApp(){
@@ -1979,7 +2218,6 @@ function _buildProfileLoginForm(){
           <input class="login-input-new" id="profileSignupEmail" type="email" placeholder="Email address" autocomplete="email" onkeydown="if(event.key==='Enter')doProfileSignUp()">
           <input class="login-input-new" id="profileSignupPassword" type="password" placeholder="Password" autocomplete="new-password" onkeydown="if(event.key==='Enter')doProfileSignUp()">
           <input class="login-input-new" id="profileSignupConfirm" type="password" placeholder="Confirm password" autocomplete="new-password" onkeydown="if(event.key==='Enter')doProfileSignUp()">
-          <input class="login-input-new" id="profileSignupAdminCode" type="text" placeholder="Admin code (optional)">
           <div class="admin-code-hint" style="margin-bottom:10px">Have an admin code? Enter it for admin access.</div>
           <button class="login-btn-new" type="button" onclick="doProfileSignUp()">Create Account</button>
         </div>
@@ -6666,32 +6904,29 @@ function _sfToggleShareLoc(){
   }
 }
 function _sfChangeUsername(){
+  if(isGuest()){showLoginScreen();return;}
   const newName=prompt('Enter new username:');
-  if(!newName||!newName.trim()){return;}
-  if(_currentUser){
-    _currentUser.username=newName.trim();
-    const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
-    const u=users.find(x=>String(x.id)===String(_currentUser.id));
-    if(u)u.username=newName.trim();
-    localStorage.setItem('wildpath-users',JSON.stringify(users));
+  if(!newName||!newName.trim())return;
+  const uname=newName.trim().replace('@','').slice(0,24);
+  db.from('profiles').update({username:uname}).eq('id',_myUid()).then(({error})=>{
+    if(error){showToast(error.message.includes('duplicate')?'Username already taken':'Could not update username');return;}
+    _currentUser.username=uname;
+    const prof=getUserProfile(_myUid())||{};prof.username=uname;setUserProfile(_myUid(),prof);
     showToast('Username updated');
     buildProfile();
-  }
+  });
 }
 function _sfChangePassword(){
-  const cur=prompt('Enter current password:');
-  if(!cur)return;
-  const nw=prompt('Enter new password:');
-  if(!nw||nw.length<6){showToast('Password must be at least 6 characters');return;}
-  showToast('Password updated');
+  if(isGuest()){showLoginScreen();return;}
+  const nw=prompt('Enter new password (6+ characters):');
+  if(!nw||nw.length<6){if(nw!==null)showToast('Password must be at least 6 characters');return;}
+  db.auth.updateUser({password:nw}).then(({error})=>{
+    showToast(error?('Could not update: '+error.message):'Password updated');
+  });
 }
 function _sfSignOut(){
-  localStorage.removeItem('wildpath-current-user');
-  localStorage.removeItem('wildpath-guest');
-  _currentUser=null;
-  showToast('Signed out');
   closeSettingsFull();
-  _showLoginScreen();
+  signOut();
 }
 function _sfOpenLegal(){
   const overlay=document.createElement('div');
@@ -6855,7 +7090,6 @@ function _attachPlanCardSwipe(di){
 // ═══════════════════════════════════════════════════════════════
 // AUTH SYSTEM — inline Profile-tab login only (no overlay screens)
 // ═══════════════════════════════════════════════════════════════
-// Admin code verification is hash-based — see _isAdminCode() near top of file
 let _currentUser = null;
 let _appInitialized = false;
 let _loginCallback = null;
@@ -6863,11 +7097,10 @@ let _loginCallback = null;
 // ── Pending spots submitted by explorer users ──
 let _pendingSpots = JSON.parse(localStorage.getItem('wildpath-pending-spots')||'[]');
 
-function _saveUsers(users){
-  localStorage.setItem('wildpath-users', JSON.stringify(users));
-}
+function _saveUsers(users){/* Phase 2: users live in Supabase profiles */}
 function _getUsers(){
-  return JSON.parse(localStorage.getItem('wildpath-users')||'[]');
+  const m=_cgGet(CK.profiles)||{};
+  return Object.entries(m).map(([id,p])=>({id,username:p.username,fullName:p.fullName||'',email:'',role:p.role||'explorer'}));
 }
 
 // Profile tab inline login panel toggles
@@ -6900,52 +7133,22 @@ function _showLoginError(id, msg){
 
 // Profile-tab sign in
 function doProfileSignIn(){
-  try{
-    const email=(document.getElementById('profileLoginEmail')?.value||'').trim().toLowerCase();
-    const pw=document.getElementById('profileLoginPassword')?.value||'';
-    if(!email||!pw){_showLoginError('profileLoginError','Enter your email and password.');return;}
-    const users=_getUsers();
-    const user=users.find(u=>u.email.toLowerCase()===email);
-    if(!user){_showLoginError('profileLoginError','No account found with that email.');return;}
-    if(!_verifyPw(user,pw)){_showLoginError('profileLoginError','Incorrect password.');return;}
-    localStorage.setItem('wildpath-current-user',user.id);
-    localStorage.removeItem('wildpath-guest');
-    _currentUser=user;
-    showToast('Welcome back, '+user.username+'!');
-    _launchApp();
-  }catch(e){
-    console.error('doProfileSignIn:',e);
-    _showLoginError('profileLoginError','Something went wrong.');
-  }
+  const email=(document.getElementById('profileLoginEmail')?.value||'').trim().toLowerCase();
+  const pw=document.getElementById('profileLoginPassword')?.value||'';
+  if(!email||!pw){_showLoginError('profileLoginError','Enter your email and password.');return;}
+  _sbSignIn(email,pw,m=>_showLoginError('profileLoginError',m));
 }
 
 // Profile-tab sign up
 function doProfileSignUp(){
-  try{
-    const username=(document.getElementById('profileSignupUsername')?.value||'').trim();
-    const email=(document.getElementById('profileSignupEmail')?.value||'').trim().toLowerCase();
-    const pw=document.getElementById('profileSignupPassword')?.value||'';
-    const confirm=document.getElementById('profileSignupConfirm')?.value||'';
-    const adminCode=(document.getElementById('profileSignupAdminCode')?.value||'').trim();
-    if(!username||!email||!pw||!confirm){_showLoginError('profileSignupError','All fields are required.');return;}
-    if(pw!==confirm){_showLoginError('profileSignupError','Passwords do not match.');return;}
-    if(pw.length<6){_showLoginError('profileSignupError','Password must be 6+ characters.');return;}
-    const users=_getUsers();
-    if(users.find(u=>u.email.toLowerCase()===email)){_showLoginError('profileSignupError','Email already in use.');return;}
-    const role=_isAdminCode(adminCode)?'admin':'explorer';
-    const newUser={id:Date.now(),username,email,role,avatar:null,savedSpots:[],submittedSpots:[],createdAt:new Date().toISOString()};
-    _setUserPassword(newUser,pw);
-    users.push(newUser);
-    _saveUsers(users);
-    localStorage.setItem('wildpath-current-user',newUser.id);
-    localStorage.removeItem('wildpath-guest');
-    _currentUser=newUser;
-    showToast(role==='admin'?'Admin account created!':'Welcome to WildPath!');
-    _launchApp();
-  }catch(e){
-    console.error('doProfileSignUp:',e);
-    _showLoginError('profileSignupError','Something went wrong.');
-  }
+  const username=(document.getElementById('profileSignupUsername')?.value||'').trim();
+  const email=(document.getElementById('profileSignupEmail')?.value||'').trim().toLowerCase();
+  const pw=document.getElementById('profileSignupPassword')?.value||'';
+  const confirm=document.getElementById('profileSignupConfirm')?.value||'';
+  if(!username||!email||!pw||!confirm){_showLoginError('profileSignupError','All fields are required.');return;}
+  if(pw!==confirm){_showLoginError('profileSignupError','Passwords do not match.');return;}
+  if(pw.length<6){_showLoginError('profileSignupError','Password must be 6+ characters.');return;}
+  _sbSignUp(username,email,pw,m=>_showLoginError('profileSignupError',m));
 }
 
 // Legacy stubs
@@ -6954,15 +7157,12 @@ function doSignUp(){doProfileSignUp();}
 function doGuestMode(){}
 
 function signOut(){
-  localStorage.removeItem('wildpath-current-user');
-  localStorage.removeItem('wildpath-guest');
-  _currentUser={id:'guest',username:'Guest',role:'guest',email:''};
-  buildProfile();
+  db.auth.signOut().catch(()=>{});
+  _sbSession=null;_guestMode=false;
+  _currentUser=null;
+  Object.keys(_DB).forEach(k=>delete _DB[k]);
   showToast('Signed out');
-  setTimeout(()=>{
-    _appInitialized=false;
-    _showLoginScreen();
-  },400);
+  setTimeout(()=>{_showLoginScreen();},400);
 }
 
 // ── Admin UI helpers ──────────────────────────────
@@ -6977,8 +7177,8 @@ function _applyAdminUI(){
 }
 
 function isAdmin(){return _currentUser&&_currentUser.role==='admin';}
-function isGuest(){return false;} // All users have full access — no login wall
-function isLoggedIn(){return _currentUser&&_currentUser.role!=='guest';}
+function isGuest(){return _guestMode||!_currentUser||_currentUser.id==='guest';}
+function isLoggedIn(){return !!_currentUser&&_currentUser.id!=='guest'&&!_guestMode;}
 
 // ── Route gated actions to login screen ────────────────────────
 function promptSignIn(cb){
@@ -7196,8 +7396,11 @@ const CK={
 };
 
 // ── Data helpers ───────────────────────────────────────────────
-function _cgGet(k){try{return JSON.parse(localStorage.getItem(k)||'null');}catch{return null;}}
-function _cgSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}
+// Phase 2: all app data lives in memory (_DB), hydrated from Supabase.
+// localStorage is ONLY for UI preferences (theme, map style, units).
+const _DB={};
+function _cgGet(k){return _DB[k]??null;}
+function _cgSet(k,v){_DB[k]=v;}
 function getPosts(){return _cgGet(CK.posts)||[];}
 function setPosts(v){_cgSet(CK.posts,v);}
 function getCommunities(){return _cgGet(CK.communities)||[];}
@@ -7239,164 +7442,22 @@ function _verifiedBadge(){
   return `<span class="verified-badge"><svg viewBox="0 0 10 10"><polyline points="2,5 4.5,7.5 8,3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
 }
 function _userVerified(uid){
-  const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
-  const u=users.find(x=>String(x.id)===String(uid));
-  return u?.verified||false;
+  return (getUserProfile(uid)||{}).role==='admin';
 }
 function _avatarHtml(username,size=32,photoUrl=null){
   const initials=(username||'?').slice(0,2).toUpperCase();
   const colors=['#2d5a3a','#3a2d5a','#5a3a2d','#2d4a5a','#5a2d4a'];
   const ci=username?username.charCodeAt(0)%colors.length:0;
-  if(photoUrl&&photoUrl.startsWith('data:')){
+  if(photoUrl&&(photoUrl.startsWith('data:')||photoUrl.startsWith('http'))){
     return `<div class="post-avatar" style="width:${size}px;height:${size}px;font-size:${Math.floor(size*0.35)}px"><img src="${photoUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:50%"></div>`;
   }
   return `<div class="post-avatar" style="width:${size}px;height:${size}px;font-size:${Math.floor(size*0.35)}px;background:${colors[ci]}">${initials}</div>`;
 }
 
 // ── Seed demo data ─────────────────────────────────────────────
-function _seedCommunityData(){
-  // Always ensure demo users exist in wildpath-users (runs even for existing sessions)
-  const _demoUserList=[
-    {id:'demo1',username:'peak_wanderer',fullName:'Peak Wanderer',email:'peak@wildpath.app',role:'user',verified:true,createdAt:'2025-06-01T00:00:00.000Z'},
-    {id:'demo2',username:'trailhawk_kai',fullName:'Kai Trailhawk',email:'kai@wildpath.app',role:'user',verified:false,createdAt:'2025-06-01T00:00:00.000Z'},
-    {id:'demo3',username:'cave_ghost',fullName:'Cave Ghost',email:'cave@wildpath.app',role:'user',verified:true,createdAt:'2025-06-01T00:00:00.000Z'},
-    {id:'demo4',username:'swim_seeker',fullName:'Swim Seeker',email:'swim@wildpath.app',role:'user',verified:false,createdAt:'2025-06-01T00:00:00.000Z'},
-    {id:'demo5',username:'ruins_reader',fullName:'Ruins Reader',email:'ruins@wildpath.app',role:'user',verified:false,createdAt:'2025-06-01T00:00:00.000Z'},
-    {id:'demo6',username:'ridge_runner',fullName:'Ridge Runner',email:'ridge@wildpath.app',role:'user',verified:false,createdAt:'2025-06-01T00:00:00.000Z'}
-  ];
-  (function(){
-    const eu=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
-    const eid=new Set(eu.map(u=>u.id));
-    const toAdd=_demoUserList.filter(u=>!eid.has(u.id));
-    if(toAdd.length)localStorage.setItem('wildpath-users',JSON.stringify([...eu,...toAdd]));
-  })();
-
-  // Always ensure DMs exist for the current user (fixes sessions where guest was used)
-  (function(){
-    const myId=_myUid()||'guest';
-    const existing=getMessages();
-    const hasMyDms=Object.keys(existing).some(k=>k.includes(myId));
-    if(!hasMyDms){
-      const k1=_dmConvKey(myId,'demo2'), k2=_dmConvKey(myId,'demo1'), k3=_dmConvKey(myId,'demo4');
-      const patched={...existing};
-      patched[k1]=[
-        {id:'m1',fromId:'demo2',text:'Hey! Loved your recent cave photos',time:new Date(Date.now()-3600000).toISOString()},
-        {id:'m2',fromId:myId,text:'Thanks! That place was incredible',time:new Date(Date.now()-3500000).toISOString()},
-        {id:'m3',fromId:'demo2',text:'Where was that exactly? I want to go',time:new Date(Date.now()-3400000).toISOString()},
-        {id:'m4',fromId:myId,text:'Moaning Caverns — check the app map, it\'s on there',time:new Date(Date.now()-3300000).toISOString()}
-      ];
-      patched[k2]=[
-        {id:'m5',fromId:'demo1',text:'Great trail report on the Dipsea, super helpful!',time:new Date(Date.now()-2*86400000).toISOString()},
-        {id:'m6',fromId:myId,text:'Glad it helped — it was a mess out there last week',time:new Date(Date.now()-2*86400000+3600000).toISOString()}
-      ];
-      patched[k3]=[
-        {id:'m7',fromId:'demo4',text:'Did you ever find that waterfall off the main trail?',time:new Date(Date.now()-5*86400000).toISOString()},
-        {id:'m8',fromId:myId,text:'Not yet, got rained out last time. Trying again next weekend',time:new Date(Date.now()-5*86400000+1800000).toISOString()},
-        {id:'m9',fromId:'demo4',text:'I can come! Let me know when you are heading out',time:new Date(Date.now()-5*86400000+3600000).toISOString()}
-      ];
-      setMessages(patched);
-    }
-  })();
-
-  // Re-seed if fewer than 10 posts (handles fresh install and upgraded demo data)
-  if(getPosts().length>=10&&getCommunities().length>0)return;
-
-  const demoComms=[
-    {id:'comm1',name:'NorCal Cave Divers',desc:'For those who explore the underground waterways and caves of Northern California.',coverGrad:'linear-gradient(135deg,#1a2a4a,#2a4a6a)',privacy:'public',focusTags:['Caves','Swimming'],rules:'1. Always dive with a buddy\n2. No solo cave dives\n3. Share safety reports',adminId:'demo1',createdAt:new Date(Date.now()-864e7).toISOString(),memberCount:847},
-    {id:'comm2',name:'Bay Area Hikers',desc:'Trails, peaks, and scenic spots across the Bay Area and Coast Range.',coverGrad:'linear-gradient(135deg,#1a3a1a,#2a5a2a)',privacy:'public',focusTags:['Hiking','Scenic'],rules:'1. Leave no trace\n2. Share accurate trail conditions\n3. Be kind to all hikers',adminId:'demo2',createdAt:new Date(Date.now()-2592e6*5).toISOString(),memberCount:3241},
-    {id:'comm3',name:'Hidden Swimming Holes CA',desc:'Secret swimming spots, waterfalls, and cold plunge pools throughout California.',coverGrad:'linear-gradient(135deg,#1a3a4a,#2a5a6a)',privacy:'public',focusTags:['Swimming','Waterfalls'],rules:'1. Keep locations vague in public posts\n2. Pack out all trash\n3. Respect private property',adminId:'demo3',createdAt:new Date(Date.now()-2592e6*12).toISOString(),memberCount:5102},
-    {id:'comm4',name:'Urban Explorers SF',desc:'Discovering the hidden, forgotten, and off-limits spaces of San Francisco.',coverGrad:'linear-gradient(135deg,#2a1a3a,#4a2a5a)',privacy:'private',focusTags:['Urban'],rules:'1. Never share exact access points\n2. Respect other urbex crews\n3. Zero damage policy',adminId:'demo4',createdAt:new Date(Date.now()-2592e6*8).toISOString(),memberCount:423}
-  ];
-
-  const demoPosts=[
-    {id:'post1',userId:'demo2',username:'trailhawk_kai',verified:false,type:'photo',mediaUrl:'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=800&q=80',caption:'Found this absolutely unreal viewpoint on the Marin Headlands trail yesterday. The fog was rolling in from the ocean — pure magic. This spot never gets old no matter how many times I visit.',spotId:1,spotName:'McWay Falls Overlook',spotType:'scenic',region:'Big Sur, CA',communityIds:['comm2'],likes:['demo1','demo3','demo4'],createdAt:new Date(Date.now()-7200000).toISOString(),privacy:'public'},
-    {id:'post2',userId:'demo3',username:'cave_ghost',verified:true,type:'photo',mediaUrl:'https://images.unsplash.com/photo-1520637836862-4d197d17c38a?w=800&q=80',caption:'Lava Beds cave system is on another level. Spent 3 hours underground and barely scratched the surface. The crystal formations in the lower chambers are something you have to see in person.',spotId:3,spotName:'Lava Beds Lava Tube',spotType:'caves',region:'Modoc County, CA',communityIds:['comm1'],likes:['demo2'],createdAt:new Date(Date.now()-18e6).toISOString(),privacy:'public'},
-    {id:'post3',userId:'demo4',username:'swim_seeker',verified:false,type:'text',mediaUrl:null,caption:'PSA for anyone heading to the McCloud River Falls this weekend — water levels are HIGH right now after the recent rains. The lower falls are perfectly swimmable but the upper pools are moving fast. Stay safe out there',spotId:2,spotName:'McCloud River Falls',spotType:'swimming',region:'Shasta County, CA',communityIds:['comm3'],likes:['demo1','demo2','demo3'],createdAt:new Date(Date.now()-36e6).toISOString(),privacy:'public'},
-    {id:'post4',userId:'demo1',username:'peak_wanderer',verified:true,type:'photo',mediaUrl:'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=800&q=80',caption:'Sierra Nevada at golden hour. No filter needed when the light does this. Camped here for three nights and watched this exact scene play out each evening.',spotId:4,spotName:'Crater Lake Vista',spotType:'scenic',region:'Sierra Nevada, CA',communityIds:['comm2'],likes:['demo2','demo3'],createdAt:new Date(Date.now()-86400000).toISOString(),privacy:'public'},
-    {id:'post5',userId:'demo5',username:'ruins_reader',verified:false,type:'spotdrop',mediaUrl:'https://images.unsplash.com/photo-1548013146-72479768bada?w=800&q=80',caption:'Nominating this abandoned mill site for the map. Full approach directions in the post.',spotId:null,spotName:'Old Sutro Tunnels',spotType:'urban',region:'San Francisco, CA',communityIds:['comm4'],likes:['demo1'],createdAt:new Date(Date.now()-172800000).toISOString(),privacy:'public',
-      spotdrop:{name:'Old Sutro Tunnels',lat:37.779,lng:-122.514,type:'urban',legal:'caution',description:'Series of tunnels beneath the old Sutro Baths site. Accessible at low tide only.',approach:'From the Sutro Baths parking area, follow the coastal trail north for 0.3 miles. At low tide a rocky path opens to the tunnel entrance.',photo:'https://images.unsplash.com/photo-1548013146-72479768bada?w=800&q=80',votes:7,submittedBy:'ruins_reader'}},
-    // Extra posts to fill the grid
-    {id:'post6',userId:'demo6',username:'ridge_runner',verified:false,type:'photo',mediaUrl:'https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?w=800&q=80',caption:'Took the long way around the ridge. Earned every step of this view. Six hours in and I would do it all over again.',spotId:1,spotName:'Sutro Baths',spotType:'scenic',region:'San Francisco, CA',communityIds:['comm2'],likes:['demo1','demo5'],createdAt:new Date(Date.now()-3*86400000).toISOString(),privacy:'public'},
-    {id:'post7',userId:'demo1',username:'peak_wanderer',verified:true,type:'photo',mediaUrl:'https://images.unsplash.com/photo-1471958680802-1345a694ba6d?w=800&q=80',caption:'First light on the granite. Got up at 3am to make this shot happen. 100% worth the sleep deprivation.',spotId:4,spotName:'Crater Lake Vista',spotType:'scenic',region:'Sierra Nevada, CA',communityIds:['comm2'],likes:['demo2','demo3','demo4','demo6'],createdAt:new Date(Date.now()-4*86400000).toISOString(),privacy:'public'},
-    {id:'post8',userId:'demo3',username:'cave_ghost',verified:true,type:'photo',mediaUrl:'https://images.unsplash.com/photo-1418985991508-e47386d96a71?w=800&q=80',caption:'The swimming hole at the base of the falls. Water is cold enough to take your breath away — literally. Best natural cold plunge in NorCal.',spotId:2,spotName:'McCloud River Falls',spotType:'swimming',region:'Shasta County, CA',communityIds:['comm3'],likes:['demo4','demo5'],createdAt:new Date(Date.now()-5*86400000).toISOString(),privacy:'public'},
-    {id:'post9',userId:'demo5',username:'ruins_reader',verified:false,type:'photo',mediaUrl:'https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=800&q=80',caption:'Found this place after two years of searching. Old industrial ruin right on the bay. The graffiti inside goes back decades — layer upon layer of city history.',spotId:null,spotName:null,spotType:'urban',region:'San Francisco Bay Area',communityIds:['comm4'],likes:['demo1','demo2'],createdAt:new Date(Date.now()-6*86400000).toISOString(),privacy:'public'},
-    {id:'post10',userId:'demo4',username:'swim_seeker',verified:false,type:'photo',mediaUrl:'https://images.unsplash.com/photo-1439066615861-d1af74d74000?w=800&q=80',caption:'Hidden waterfall about a mile off trail. No signs, no crowds, just the sound of rushing water and complete silence otherwise. This is why I explore.',spotId:null,spotName:'Secret Falls',spotType:'waterfall',region:'Humboldt County, CA',communityIds:['comm3'],likes:['demo1','demo2','demo3','demo5'],createdAt:new Date(Date.now()-7*86400000).toISOString(),privacy:'public'},
-    {id:'post11',userId:'demo6',username:'ridge_runner',verified:false,type:'photo',mediaUrl:'https://images.unsplash.com/photo-1470770841072-f978cf4d019e?w=800&q=80',caption:'Winter camping hit different this year. Woke up to fresh snow on the tent, frozen boots, and a view that made all of it irrelevant.',spotId:null,spotName:null,spotType:'hiking',region:'Trinity Alps, CA',communityIds:['comm2'],likes:['demo1'],createdAt:new Date(Date.now()-8*86400000).toISOString(),privacy:'public'},
-    {id:'post12',userId:'demo2',username:'trailhawk_kai',verified:false,type:'text',mediaUrl:null,caption:'Trail report for the Dipsea: muddy in the first mile, good traction from mile 2 onward. Some downed trees after the storm but passable. Allow an extra 20 minutes.',spotId:null,spotName:'Dipsea Trail',spotType:'hiking',region:'Marin County, CA',communityIds:['comm2'],likes:['demo3','demo4'],createdAt:new Date(Date.now()-9*86400000).toISOString(),privacy:'public'}
-  ];
-
-  // Seed votes
-  const votes={'post5_demo1':1,'post5_demo2':1,'post5_demo3':1,'post5_demo4':1};
-  setVotes(votes);
-
-  // Seed comments
-  const comments={
-    'post1':[
-      {id:'c1',postId:'post1',userId:'demo1',username:'peak_wanderer',verified:true,text:'This view is insane! What time did you get there?',createdAt:new Date(Date.now()-6e6).toISOString(),parentId:null},
-      {id:'c2',postId:'post1',userId:'demo3',username:'cave_ghost',verified:true,text:'Golden hour hits different from up there',createdAt:new Date(Date.now()-5e6).toISOString(),parentId:null},
-      {id:'c3',postId:'post1',userId:'demo2',username:'trailhawk_kai',verified:false,text:'Got there around 5:30pm, perfect timing!',createdAt:new Date(Date.now()-4.5e6).toISOString(),parentId:'c1'}
-    ],
-    'post2':[
-      {id:'c4',postId:'post2',userId:'demo5',username:'ruins_reader',verified:false,text:'Which entrance did you use? The main gate or the back access?',createdAt:new Date(Date.now()-15e6).toISOString(),parentId:null},
-      {id:'c5',postId:'post2',userId:'demo3',username:'cave_ghost',verified:true,text:'The north entrance behind the visitor center. Less obvious but way more dramatic.',createdAt:new Date(Date.now()-14e6).toISOString(),parentId:'c4'}
-    ],
-    'post7':[
-      {id:'c6',postId:'post7',userId:'demo2',username:'trailhawk_kai',verified:false,text:'This is unreal. What lens did you use?',createdAt:new Date(Date.now()-3.5*86400000).toISOString(),parentId:null},
-      {id:'c7',postId:'post7',userId:'demo4',username:'swim_seeker',verified:false,text:'I need to get out to the Sierra this summer. Been too long.',createdAt:new Date(Date.now()-3.2*86400000).toISOString(),parentId:null}
-    ],
-    'post10':[
-      {id:'c8',postId:'post10',userId:'demo1',username:'peak_wanderer',verified:true,text:'Drop the coordinates??? Just kidding — respect the loc.',createdAt:new Date(Date.now()-6.5*86400000).toISOString(),parentId:null}
-    ]
-  };
-  Object.entries(comments).forEach(([pid,arr])=>setComments(pid,arr));
-
-  // Seed follows
-  const follows={'guest':['demo1','demo2','demo3'],'demo1':['demo2','demo3','demo6'],'demo2':['demo1','demo4']};
-  setFollows(follows);
-
-  // Seed notifications
-  const notifs=[
-    {id:'n1',type:'like',fromUserId:'demo1',fromUsername:'peak_wanderer',message:'liked your photo',read:false,createdAt:new Date(Date.now()-3600000).toISOString()},
-    {id:'n2',type:'follow',fromUserId:'demo3',fromUsername:'cave_ghost',message:'started following you',read:false,createdAt:new Date(Date.now()-7200000).toISOString()},
-    {id:'n3',type:'comment',fromUserId:'demo2',fromUsername:'trailhawk_kai',message:'commented: "This view is insane!"',read:false,createdAt:new Date(Date.now()-86400000).toISOString()},
-    {id:'n4',type:'join',fromUserId:'demo6',fromUsername:'ridge_runner',message:'joined Bay Area Hikers',read:false,createdAt:new Date(Date.now()-2*86400000).toISOString()},
-    {id:'n5',type:'like',fromUserId:'demo4',fromUsername:'swim_seeker',message:'liked your trail report',read:true,createdAt:new Date(Date.now()-3*86400000).toISOString()},
-    {id:'n6',type:'spotdrop',fromUserId:'demo5',fromUsername:'ruins_reader',message:'nominated a new spot near you',read:true,createdAt:new Date(Date.now()-4*86400000).toISOString()}
-  ];
-  setNotifs(notifs);
-
-  // Seed DMs — 3 conversations (keyed to current user)
-  const _seedMyId=_myUid()||'guest';
-  const msgs={};
-  const conv1=_dmConvKey(_seedMyId,'demo2');
-  msgs[conv1]=[
-    {id:'m1',fromId:'demo2',text:'Hey! Loved your recent cave photos',time:new Date(Date.now()-3600000).toISOString()},
-    {id:'m2',fromId:_seedMyId,text:'Thanks! That place was incredible',time:new Date(Date.now()-3500000).toISOString()},
-    {id:'m3',fromId:'demo2',text:'Where was that exactly? I want to go',time:new Date(Date.now()-3400000).toISOString()},
-    {id:'m4',fromId:_seedMyId,text:'Moaning Caverns — check the app map, it\'s on there',time:new Date(Date.now()-3300000).toISOString()}
-  ];
-  const conv2=_dmConvKey(_seedMyId,'demo1');
-  msgs[conv2]=[
-    {id:'m5',fromId:'demo1',text:'Great trail report on the Dipsea, super helpful!',time:new Date(Date.now()-2*86400000).toISOString()},
-    {id:'m6',fromId:_seedMyId,text:'Glad it helped — it was a mess out there last week',time:new Date(Date.now()-2*86400000+3600000).toISOString()}
-  ];
-  const conv3=_dmConvKey(_seedMyId,'demo4');
-  msgs[conv3]=[
-    {id:'m7',fromId:'demo4',text:'Did you ever find that waterfall off the main trail?',time:new Date(Date.now()-5*86400000).toISOString()},
-    {id:'m8',fromId:_seedMyId,text:'Not yet, got rained out last time. Trying again next weekend',time:new Date(Date.now()-5*86400000+1800000).toISOString()},
-    {id:'m9',fromId:'demo4',text:'I can come! Let me know when you are heading out',time:new Date(Date.now()-5*86400000+3600000).toISOString()}
-  ];
-  setMessages(msgs);
-
-  // Seed members
-  demoComms.forEach(c=>{
-    setMembers(c.id,['demo1','demo2','demo3','demo4','demo6']);
-    setCPosts(c.id,demoPosts.filter(p=>p.communityIds?.includes(c.id)).map(p=>p.id));
-  });
-
-  setCommunities(demoComms);
-  setPosts(demoPosts);
-}
+// Phase 2: no demo seeding — all users, posts, DMs, and communities
+// come from Supabase. Kept as a no-op so old call sites are safe.
+function _seedCommunityData(){}
 
 // ── Community screen setup ─────────────────────────────────────
 let _seeded=false;
@@ -8675,7 +8736,7 @@ function _renderCommDmInbox(filter){
     const initials=username.slice(0,2).toUpperCase();
     const colors=['#2d5a3a','#3a2d5a','#5a3a2d','#2d4a5a','#5a2d4a'];
     const ci=username.charCodeAt(0)%colors.length;
-    const avatarContent=profileData.avatarUrl&&profileData.avatarUrl.startsWith('data:')
+    const avatarContent=profileData.avatarUrl
       ?`<img src="${profileData.avatarUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`
       :initials;
     return `<div class="comm-unified-row" onclick="openDmChat('${otherUid}')">
@@ -12514,7 +12575,7 @@ function filterFeedSendSearch(query){
   function userRow(uid,username,fullName,avatarUrl){
     const initials=(username||'??').slice(0,2).toUpperCase();
     const ci=(username||'').charCodeAt(0)%colors.length;
-    const avatarContent=avatarUrl&&avatarUrl.startsWith('data:')?`<img src="${avatarUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`:(initials);
+    const avatarContent=avatarUrl?`<img src="${avatarUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`:(initials);
     return `<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,.06);-webkit-tap-highlight-color:transparent" onclick="sendFeedPostAsDm('${uid}')">
       <div style="width:40px;height:40px;border-radius:50%;background:${colors[ci]};display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:#fff;flex-shrink:0;overflow:hidden">${avatarContent}</div>
       <div style="flex:1;min-width:0">
