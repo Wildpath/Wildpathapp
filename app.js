@@ -57,7 +57,7 @@ let activeFilters=new Set();
 let hiddenGemFilterActive=false;
 let addSpotMode=false, addSpotTempLat=null, addSpotTempLng=null;
 let waypointMarkers=[], parkingMarker=null;
-let userSpots=JSON.parse(localStorage.getItem('wp_user_spots')||'[]');
+let userSpots=JSON.parse(localStorage.getItem('wildpath-spots-approved')||'[]');
 let favorites=new Set(JSON.parse(localStorage.getItem('wp_favs')||'[]'));
 
 const landLayerCache={nationalForest:{on:false},blm:{on:false},stateParks:{on:false},private:{on:false}};
@@ -243,6 +243,13 @@ function _migrateStorageKeys(){
     localStorage.removeItem('wildpath-light-mode');
     // Map style label duplicate
     localStorage.removeItem('wildpath-map-style');
+    // Spot queues: wp_pending_spots → wildpath-pending-spots, wp_user_spots → wildpath-spots-approved
+    const oldPending=localStorage.getItem('wp_pending_spots');
+    if(oldPending&&!localStorage.getItem('wildpath-pending-spots'))localStorage.setItem('wildpath-pending-spots',oldPending);
+    localStorage.removeItem('wp_pending_spots');
+    const oldUserSpots=localStorage.getItem('wp_user_spots');
+    if(oldUserSpots&&!localStorage.getItem('wildpath-spots-approved'))localStorage.setItem('wildpath-spots-approved',oldUserSpots);
+    localStorage.removeItem('wp_user_spots');
     // Mapbox token: wp_mapbox_token → mapbox-token
     const legacyTok=localStorage.getItem('wp_mapbox_token');
     if(legacyTok&&!localStorage.getItem('mapbox-token'))localStorage.setItem('mapbox-token',legacyTok);
@@ -540,13 +547,19 @@ function _buildSpotsGeoJSON(){
   const savedSet=new Set(getSavedSpotIds());
   const myUid=String(_myUid&&_myUid()||'guest');
   const postedSet=new Set(getPosts().filter(p=>String(p.userId)===myUid&&p.spotId).map(p=>p.spotId));
-  return{type:'FeatureCollection',features:filtered.map(s=>{
+  const features=filtered.map(s=>{
     // Pin color: yellow=visited/posted, red=saved, white=public
     let pinColor='#FFFFFF';
     if(postedSet.has(s.id))pinColor='#F5C842';
     else if(savedSet.has(s.id))pinColor='#E05252';
     return{type:'Feature',geometry:{type:'Point',coordinates:[s.lng,s.lat]},properties:{id:s.id,name:s.name,type:s.type,color:pinColor}};
-  })};
+  });
+  // My own pending submissions — visible only to me, marked Pending Review
+  getPendingSpots().filter(s=>String(s._submitterUid)===myUid&&s.lat&&s.lng).forEach(s=>{
+    features.push({type:'Feature',geometry:{type:'Point',coordinates:[s.lng,s.lat]},
+      properties:{id:s.id,name:s.name+' — Pending Review',type:s.type,color:'#D4874A',pending:1}});
+  });
+  return{type:'FeatureCollection',features};
 }
 
 function _initSpotLayers(){
@@ -2181,8 +2194,11 @@ function _showPendingSpots(){
     </div>
     ${pending.map(s=>`
       <div class="pending-spot-row">
+        ${(s.photos&&s.photos.length)?`<div style="display:flex;gap:6px;overflow-x:auto;margin-bottom:10px;-webkit-overflow-scrolling:touch">${s.photos.map(u=>`<img src="${u}" style="width:76px;height:76px;object-fit:cover;border-radius:10px;flex-shrink:0">`).join('')}</div>`:''}
         <div class="pending-spot-name">${sanitize(s.name)}</div>
         <div class="pending-spot-meta">${sanitize(s.typeLabel||s.type)} · Submitted by ${sanitize(s._submittedBy)||'Unknown'}</div>
+        <div style="font-size:11px;color:var(--txt3);margin-top:4px">${(+s.lat).toFixed(5)}, ${(+s.lng).toFixed(5)}</div>
+        ${s.reviews_data?.[0]?.text?`<div style="font-size:12px;color:var(--txt2);margin-top:6px;line-height:1.5">${sanitize(s.reviews_data[0].text)}</div>`:''}
         <div class="pending-spot-btns">
           <button class="pending-approve" onclick="approveSpot(${s._pendingId});this.closest('.pending-spot-row').remove();showToast('Approved!')">Approve</button>
           <button class="pending-reject" onclick="rejectSpot(${s._pendingId});this.closest('.pending-spot-row').remove();showToast('Rejected')">Reject</button>
@@ -2230,7 +2246,7 @@ function _manageDeleteSpot(spotId, btn){
   const sIdx=spots.findIndex(s=>s.id===spotId);
   if(sIdx>=0)spots.splice(sIdx,1);
   const uIdx=userSpots.findIndex(s=>s.id===spotId);
-  if(uIdx>=0){userSpots.splice(uIdx,1);localStorage.setItem('wp_user_spots',JSON.stringify(userSpots));}
+  if(uIdx>=0){userSpots.splice(uIdx,1);localStorage.setItem('wildpath-spots-approved',JSON.stringify(userSpots));}
   const row=document.getElementById(`manageRow_${spotId}`);
   if(row)row.remove();
   // Update header count
@@ -2557,10 +2573,7 @@ function submitNewSpot(){
   submitSpotForReview(newSpot);
   _aspPhotos=[];
   closeAddSpot();
-  if(isAdmin()){
-    addSpotMarkerToMap(newSpot);
-    leafletMap.flyTo([lat,lng],14,{animate:true,duration:1.2});
-  }
+  leafletMap.flyTo([lat,lng],14,{animate:true,duration:1.2});
 }
 
 // ═══════════════════════════════════════════════════
@@ -2812,7 +2825,9 @@ let _terrainRotateResumeTimer=null;
 let _terrainUserInteracting=false;
 
 function openDetail(spotIdOrObj){
-  const allS=[...spots,...userSpots];
+  const myUid=String(_myUid?_myUid():'guest');
+  const myPending=getPendingSpots().filter(s=>String(s._submitterUid)===myUid);
+  const allS=[...spots,...userSpots,...myPending];
   const spot=typeof spotIdOrObj==='object'?spotIdOrObj:allS.find(s=>s.id===spotIdOrObj)||allS[0];
   if(!spot)return;
   _detailSpotId=spot.id;
@@ -2822,9 +2837,12 @@ function openDetail(spotIdOrObj){
   // Called first so elements are ready; mini map needs container visible
   setTimeout(()=>_populateDetailNewElements(spot),60);
 
-  // ── Header: name ──
+  // ── Header: name (+ Pending Review badge for unapproved submissions) ──
   const nameEl=document.getElementById('detailName');
-  if(nameEl)nameEl.textContent=spot.name;
+  if(nameEl){
+    nameEl.textContent=spot.name;
+    if(spot._pendingId)nameEl.innerHTML=sanitize(spot.name)+' <span style="display:inline-block;vertical-align:middle;background:rgba(212,135,74,.18);border:1px solid rgba(212,135,74,.45);color:#D4874A;font-size:10px;font-weight:700;letter-spacing:.5px;padding:3px 9px;border-radius:12px;text-transform:uppercase">Pending Review</span>';
+  }
 
   // ── Permit suggestion chip ──
   const permitChip=document.getElementById('detailPermitChip');
@@ -6843,7 +6861,7 @@ let _appInitialized = false;
 let _loginCallback = null;
 
 // ── Pending spots submitted by explorer users ──
-let _pendingSpots = JSON.parse(localStorage.getItem('wp_pending_spots')||'[]');
+let _pendingSpots = JSON.parse(localStorage.getItem('wildpath-pending-spots')||'[]');
 
 function _saveUsers(users){
   localStorage.setItem('wildpath-users', JSON.stringify(users));
@@ -6975,10 +6993,10 @@ function switchToProfile(el){switchScreen('profile',el);}
 
 // ── Admin: Pending spots management ──────────────
 function getPendingSpots(){
-  return JSON.parse(localStorage.getItem('wp_pending_spots')||'[]');
+  return JSON.parse(localStorage.getItem('wildpath-pending-spots')||'[]');
 }
 function savePendingSpots(arr){
-  localStorage.setItem('wp_pending_spots',JSON.stringify(arr));
+  localStorage.setItem('wildpath-pending-spots',JSON.stringify(arr));
 }
 function approveSpot(spotId){
   const pending=getPendingSpots();
@@ -6988,7 +7006,7 @@ function approveSpot(spotId){
   spot.approved=true;
   spot._pendingId=undefined;
   userSpots.push(spot);
-  localStorage.setItem('wp_user_spots',JSON.stringify(userSpots));
+  localStorage.setItem('wildpath-spots-approved',JSON.stringify(userSpots));
   pending.splice(idx,1);
   savePendingSpots(pending);
   refreshSpotMarkers();
@@ -7000,26 +7018,20 @@ function rejectSpot(spotId){
   if(idx===-1)return;
   pending.splice(idx,1);
   savePendingSpots(pending);
+  try{refreshSpotMarkers();}catch(e){}
   showToast('Spot rejected.');
 }
 
-// Override addUserSpot to send to pending queue for explorers
+// Every submission goes to the pending queue — nothing goes live without admin approval
 function submitSpotForReview(spot){
-  if(isAdmin()){
-    // Admins publish immediately
-    userSpots.push(spot);
-    localStorage.setItem('wp_user_spots',JSON.stringify(userSpots));
-    refreshSpotMarkers();
-    showToast('Spot published!');
-  } else {
-    // Explorers go to pending queue
-    const pending=getPendingSpots();
-    spot._pendingId=Date.now();
-    spot._submittedBy=_currentUser?.username||'Unknown';
-    pending.push(spot);
-    savePendingSpots(pending);
-    showToast('Spot submitted for review!');
-  }
+  const pending=getPendingSpots();
+  spot._pendingId=Date.now();
+  spot._submittedBy=_currentUser?.username||'Unknown';
+  spot._submitterUid=String(_myUid?_myUid():'guest');
+  pending.push(spot);
+  savePendingSpots(pending);
+  refreshSpotMarkers(); // submitter sees it on their own map with Pending badge
+  showToast(isAdmin()?'Spot queued — approve it in Admin Review':'Spot submitted for review!');
 }
 
 // Guest mode: route to Profile tab inline login
@@ -7110,7 +7122,7 @@ function saveAdminEdit(){
         found=true; break;
       }
     }
-    if(found)localStorage.setItem('wp_user_spots',JSON.stringify(userSpots));
+    if(found)localStorage.setItem('wildpath-spots-approved',JSON.stringify(userSpots));
   }
 
   closeAdminEdit();
@@ -7138,7 +7150,7 @@ function adminDeleteSpot(){
   const uIdx=userSpots.findIndex(s=>s.id===spot.id);
   if(uIdx>=0){
     userSpots.splice(uIdx,1);
-    localStorage.setItem('wp_user_spots',JSON.stringify(userSpots));
+    localStorage.setItem('wildpath-spots-approved',JSON.stringify(userSpots));
   }
 
   // Remove marker from map
@@ -7860,9 +7872,10 @@ function _renderCommunityDetail(cid){
     :`<div style="width:100%;height:100%;${c.coverGrad||'background:linear-gradient(135deg,#1a3a2a,#2d5a3a)'};"></div>`;
 
   hdr.innerHTML=`
-    <div class="comm-detail-cover">
+    <div class="comm-detail-cover" ${isAdminOfComm?`onclick="if(event.target.closest('.cfp-back')||event.target.closest('.comm-detail-settings'))return;document.getElementById('commCoverTapInput').click()" style="cursor:pointer"`:''}>
       ${coverHtml}
       <div class="comm-detail-cover-grad"></div>
+      ${isAdminOfComm?`<div style="position:absolute;top:54px;right:60px;width:34px;height:34px;border-radius:50%;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;pointer-events:none"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#fff" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></div><input type="file" id="commCoverTapInput" accept="image/*" style="display:none" onchange="_handleCoverTapUpload(event,'${cid}')">`:''}
       <button class="cfp-back" onclick="closeCommunityDetail()" style="position:absolute;top:54px;left:14px;background:rgba(0,0,0,.45);width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px;border:none;cursor:pointer">←</button>
       ${isAdminOfComm?`<div class="comm-detail-settings" onclick="openCommSettings('${cid}')"><svg viewBox='0 0 24 24' width='18' height='18' fill='none' stroke='currentColor' stroke-width='2'><circle cx='12' cy='12' r='3'/><path d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z'/></svg></div>`:''}
       <div class="comm-detail-cover-name">${sanitize(c.name)}</div>
@@ -9280,7 +9293,7 @@ function approveSpotDrop(postId){
     approved:true,_submittedBy:sd.submittedBy
   };
   userSpots.push(newSpot);
-  localStorage.setItem('wp_user_spots',JSON.stringify(userSpots));
+  localStorage.setItem('wildpath-spots-approved',JSON.stringify(userSpots));
   try{refreshSpotMarkers();}catch{}
   post.spotdrop.approved=true;
   post.spotId=newSpot.id;
@@ -9561,6 +9574,19 @@ function _handleEditCommCover(e,cid){
       img.src=dataUrl;
     }
   }).catch(()=>showToast('Could not read photo'));
+}
+function _handleCoverTapUpload(e,cid){
+  const file=e.target.files?.[0];if(!file)return;
+  compressImage(file).then(dataUrl=>{
+    const comms=getCommunities();
+    const c=comms.find(x=>x.id===cid);
+    if(!c)return;
+    c.coverDataUrl=dataUrl;
+    setCommunities(comms);
+    _renderCommunityDetail(cid);
+    showToast('Cover photo updated');
+  }).catch(()=>showToast('Could not read photo'));
+  e.target.value='';
 }
 function _setEditPrivacy(p,cid){
   const overlay=document.getElementById('editCommOverlay');
@@ -11039,18 +11065,9 @@ function _initFeedCardMap(containerId,lat,lng,spotName){
   if(_feedMapsInited.has(containerId))return;
   const el=document.getElementById(containerId);
   if(!el)return;
-  const token=localStorage.getItem('mapbox-token')||'';
-  if(!token||!token.startsWith('pk.')){
-    el.innerHTML=`<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0d1a0d;gap:10px">
-      <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="rgba(184,232,122,.4)" stroke-width="1.5"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
-      <div style="font-size:12px;font-weight:700;color:rgba(255,255,255,.5);text-align:center;padding:0 16px">${spotName||'Location'}</div>
-      <div style="font-size:10px;color:rgba(255,255,255,.25)">Add Mapbox token to enable maps</div>
-    </div>`;
-    return;
-  }
+  // Reuse the app-wide token already set on mapboxgl — never prompt separately
   _feedMapsInited.add(containerId);
   try{
-    mapboxgl.accessToken=token;
     const m=new mapboxgl.Map({
       container:el,
       style:'mapbox://styles/mapbox/dark-v11',
@@ -11190,9 +11207,8 @@ function _renderFeedPost(idx){
   // Comment count
   const commCountEl=document.getElementById('feedCommentCount');
   if(commCountEl){
-    const cKey=post.spotId?`wp_comments_spot_${post.spotId}`:`wp_comments_post_${post.id}`;
-    const c=JSON.parse(localStorage.getItem(cKey)||'[]').length;
-    commCountEl.textContent=c;
+    // Post comments are always post-scoped — never depend on spot link
+    commCountEl.textContent=getComments(post.id).length;
   }
 
   // Save state
@@ -11702,8 +11718,7 @@ function _buildFriendsMap(){
   }
   if(container._mapInit)return;
   container._mapInit=true;
-  const tok=localStorage.getItem('mapbox-token')||MAPBOX_TOKEN_DEFAULT||'';
-  mapboxgl.accessToken=tok||mapboxgl.accessToken;
+  // Reuse the app-wide mapboxgl.accessToken — never a separate check or prompt
   try{
     const m=new mapboxgl.Map({container,style:'mapbox://styles/mapbox/outdoors-v12',center:[-121.5,38.5],zoom:5,interactive:true,attributionControl:false});
     container._mapInst=m;
@@ -11888,10 +11903,8 @@ function setSavedView(view,el){
 function _initSavedPostsMap(){
   const container=document.getElementById('savedPostsMapEl');
   if(!container||container._mapInit)return;
-  const token=localStorage.getItem('mapbox-token')||'';
-  if(!token){container.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--txt3);font-size:13px;text-align:center;padding:20px">Add a Mapbox token to enable map view</div>';return;}
   container._mapInit=true;
-  mapboxgl.accessToken=token;
+  // Reuse the app-wide mapboxgl.accessToken — never a separate check or prompt
   const savedIds=getSavedPostIds();
   const posts=_feedPosts.filter(p=>savedIds.includes(p.id)&&p.lat&&p.lng);
   try{
@@ -12406,13 +12419,11 @@ function _buildActivityList(){
     });
   });
 
-  // Collect comments on my posts
+  // Collect comments on my posts — post-scoped, never spot-keyed
   myPosts.forEach(post=>{
-    const key=`wp_comments_spot_${post.spotId||post.id}`;
-    const comments=JSON.parse(localStorage.getItem(key)||'[]');
-    comments.forEach(c=>{
+    getComments(post.id).forEach(c=>{
       if(String(c.userId)===myUid)return;
-      events.push({type:'comment',username:c.username||'Someone',text:c.text||'',time:c.date,avatar:null});
+      events.push({type:'comment',username:c.username||'Someone',text:c.text||'',time:c.createdAt||c.date,avatar:null});
     });
   });
 
