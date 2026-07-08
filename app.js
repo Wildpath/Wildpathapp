@@ -7956,18 +7956,23 @@ function joinCommunity(cid,btn){
   const uid=String(_myUid());
   const members=getMembers(cid);
   if(members.includes(uid))return; // already a member
-  // Check if already pending
-  const pending=getPendingMembers(cid);
-  if(pending.includes(uid)){showToast('Your request is still pending approval');return;}
-  // All joins require admin approval — add to pending
-  pending.push(uid);
-  setPendingMembers(cid,pending);
-  showToast('Join request sent — waiting for admin approval');
-  if(btn){btn.textContent='Request Pending';btn.style.opacity='0.6';btn.style.pointerEvents='none';}
-  // Notify community admin
-  const adminNotifs=_cgGet('wp_notifs_'+c.adminId)||[];
-  adminNotifs.unshift({id:'jreq_'+uid+'_'+cid,type:'join_request',fromUid:uid,commId:cid,commName:c.name,createdAt:new Date().toISOString(),read:false});
-  _cgSet('wp_notifs_'+c.adminId,adminNotifs);
+  if(c.privacy==='private'){
+    const pending=getPendingMembers(cid);
+    if(pending.includes(uid)){showToast('Your request is still pending approval');return;}
+    pending.push(uid);
+    setPendingMembers(cid,pending);
+    _sbNotify(c.adminId,'join_request','requested to join '+c.name);
+    showToast('Join request sent — waiting for admin approval');
+    if(btn){btn.textContent='Request Pending';btn.style.opacity='0.6';btn.style.pointerEvents='none';}
+    return;
+  }
+  members.push(uid);
+  setMembers(cid,members);
+  c.memberCount=(c.memberCount||0)+1;
+  setCommunities(comms);
+  _sbTry(db.from('community_members').insert({community_id:cid,user_id:uid}),'join community');
+  if(btn){btn.textContent='Member';btn.classList.add('joined');}
+  showToast('Joined '+c.name+'!');
 }
 
 function showAllCommunities(){
@@ -8377,6 +8382,7 @@ function ctxBanMember(uid){closeCtxMenu();showToast('Member removed from communi
 function ctxReportPost(id){closeCtxMenu();showToast('Post reported — thank you');}
 
 function leaveCommunity(cid){
+  _sbTry(db.from('community_members').delete().eq('community_id',cid).eq('user_id',_myUid()),'leave community');
   const members=getMembers(cid).filter(m=>m!==String(_myUid()));
   setMembers(cid,members);
   const comms=getCommunities();
@@ -9352,6 +9358,10 @@ function submitPost(){
       const posts=getPosts();
       posts.unshift(_sbAdaptPost(data,null));
       setPosts(posts);
+      for(const cid of (_cpShareCommunities||[])){
+        _sbTry(db.from('community_posts').insert({community_id:cid,user_id:_myUid(),content:caption,photo_url:photo_url}),'community share');
+        const cp=getCPosts(cid);cp.unshift(data.id);setCPosts(cid,cp);
+      }
       if(btn){btn.innerHTML='Posted!';btn.style.background='#4CAF50';}
       setTimeout(()=>{
         if(btn){btn.disabled=false;}
@@ -9519,21 +9529,35 @@ function toggleCcFocus(tag,el){
   else _ccFocusTagsList.push(tag);
 }
 function submitCreateCommunity(){
+  if(isGuest()){showLoginScreen();return;}
   const name=(document.getElementById('ccName')?.value||'').trim();
   const desc=(document.getElementById('ccDesc')?.value||'').trim();
   const rules=(document.getElementById('ccRules')?.value||'').trim();
   if(!name){showToast('Enter a community name');return;}
-  const newComm={
-    id:'comm_'+_uid(),name,desc,rules,
-    coverDataUrl:_ccCoverDataUrl,privacy:_ccPrivacy,
-    focusTags:_ccFocusTagsList,
-    adminId:String(_myUid()),createdAt:new Date().toISOString(),memberCount:1
-  };
-  const comms=getCommunities();comms.push(newComm);setCommunities(comms);
-  setMembers(newComm.id,[String(_myUid())]);
-  closeCreateCommunity();
-  openCommunityDetail(newComm.id);
-  showToast(`"${name}" created!`);
+  (async()=>{
+    try{
+      let cover_url=null;
+      if(_ccCoverDataUrl){
+        try{cover_url=await _sbUploadDataUrl('community-covers',_ccCoverDataUrl,'jpg');}catch(e){console.warn('cover upload:',e);}
+      }
+      const {data,error}=await db.from('communities').insert({
+        name,description:desc,rules,cover_url,privacy:_ccPrivacy,
+        focus:_ccFocusTagsList[0]||null,created_by:_myUid(),members_count:1
+      }).select().single();
+      if(error)throw error;
+      await db.from('community_members').insert({community_id:data.id,user_id:_myUid(),role:'admin'}).then(()=>{},()=>{});
+      const newComm={id:data.id,name,desc,rules,coverDataUrl:cover_url,privacy:_ccPrivacy,
+        focusTags:_ccFocusTagsList,adminId:String(_myUid()),createdAt:data.created_at,memberCount:1};
+      const comms=getCommunities();comms.push(newComm);setCommunities(comms);
+      setMembers(newComm.id,[String(_myUid())]);
+      closeCreateCommunity();
+      openCommunityDetail(newComm.id);
+      showToast(`"${name}" created!`);
+    }catch(e){
+      console.warn('[Supabase] community create:',e);
+      showToast('Could not create community — check connection');
+    }
+  })();
 }
 
 // ── Community Settings ─────────────────────────────────────────
@@ -9733,14 +9757,17 @@ function _handleEditCommCover(e,cid){
 }
 function _handleCoverTapUpload(e,cid){
   const file=e.target.files?.[0];if(!file)return;
-  compressImage(file).then(dataUrl=>{
-    const comms=getCommunities();
-    const c=comms.find(x=>x.id===cid);
-    if(!c)return;
-    c.coverDataUrl=dataUrl;
-    setCommunities(comms);
-    _renderCommunityDetail(cid);
-    showToast('Cover photo updated');
+  compressImage(file).then(async dataUrl=>{
+    try{
+      const url=await _sbUploadDataUrl('community-covers',dataUrl,'jpg');
+      const {error}=await db.from('communities').update({cover_url:url}).eq('id',cid);
+      if(error)throw error;
+      const comms=getCommunities();
+      const c=comms.find(x=>x.id===cid);
+      if(c){c.coverDataUrl=url;setCommunities(comms);}
+      _renderCommunityDetail(cid);
+      showToast('Cover photo updated');
+    }catch(err){console.warn('[Supabase] cover:',err);showToast('Could not upload cover');}
   }).catch(()=>showToast('Could not read photo'));
   e.target.value='';
 }
@@ -9769,6 +9796,17 @@ function _saveEditCommunity(cid){
   overlay?.remove();
   _renderCommunityDetail(cid);
   showToast('Community updated');
+  (async()=>{
+    try{
+      const upd={name,description:desc,rules,privacy};
+      if(coverDataUrl&&coverDataUrl.startsWith('data:')){
+        upd.cover_url=await _sbUploadDataUrl('community-covers',coverDataUrl,'jpg');
+        c.coverDataUrl=upd.cover_url;setCommunities(comms);
+      }
+      const {error}=await db.from('communities').update(upd).eq('id',cid);
+      if(error)throw error;
+    }catch(e){console.warn('[Supabase] community update:',e);}
+  })();
 }
 
 // ── Spot detail communities section ────────────────────────────
