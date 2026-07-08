@@ -5638,17 +5638,39 @@ function openAvatarPicker(){
 function handleAvatarUpload(e){
   const file=e.target.files&&e.target.files[0];
   if(!file)return;
-  // Open square crop modal — callback saves the cropped result
-  openCropModal(file,'square_locked',(croppedDataUrl)=>{
-    // Canonical avatar store: profile.avatarUrl
-    const uid=String(_currentUser?.id||'demo_me');
-    const pd=getUserProfile(uid)||{};
-    pd.avatarUrl=croppedDataUrl;
-    setUserProfile(uid,pd);
-    _applyAvatar(croppedDataUrl);
-    showToast('Profile photo updated');
+  if(isGuest()){showLoginScreen();return;}
+  // Crop square, downscale to 200x200, upload to avatars bucket
+  openCropModal(file,'square_locked',async(croppedDataUrl)=>{
+    try{
+      const small=await _resizeDataUrl(croppedDataUrl,200);
+      const url=await _sbUploadDataUrl('avatars',small,'jpg');
+      const {error}=await db.from('profiles').update({avatar_url:url}).eq('id',_myUid());
+      if(error)throw error;
+      const pd=getUserProfile(_myUid())||{};
+      pd.avatarUrl=url;
+      setUserProfile(_myUid(),pd);
+      _applyAvatar(url);
+      showToast('Profile photo updated');
+    }catch(err){
+      console.warn('[Supabase] avatar:',err);
+      showToast('Could not upload photo — check connection');
+    }
   });
   e.target.value='';
+}
+// Downscale a dataURL to an exact square size (for avatars)
+function _resizeDataUrl(dataUrl,size){
+  return new Promise(resolve=>{
+    const img=new Image();
+    img.onload=()=>{
+      const c=document.createElement('canvas');
+      c.width=size;c.height=size;
+      c.getContext('2d').drawImage(img,0,0,size,size);
+      resolve(c.toDataURL('image/jpeg',0.85));
+    };
+    img.onerror=()=>resolve(dataUrl);
+    img.src=dataUrl;
+  });
 }
 function _applyAvatar(src){
   const img=document.getElementById('profileAvatarImg');
@@ -5671,16 +5693,21 @@ function closeUsernameEdit(){
   if(modal)modal.style.display='none';
 }
 function saveUsername(){
+  if(isGuest()){showLoginScreen();return;}
   const inp=document.getElementById('usernameEditInput');
   const usernameEl=document.getElementById('profileUsername');
   const shareEl=document.getElementById('shareProfileUsername');
   if(!inp||!inp.value.trim())return;
-  const val='@'+inp.value.trim().replace('@','');
-  if(usernameEl)usernameEl.textContent=val;
-  if(shareEl)shareEl.textContent=val;
-  localStorage.setItem('wp_username',val);
-  closeUsernameEdit();
-  showToast('Username saved');
+  const uname=inp.value.trim().replace('@','').slice(0,24);
+  db.from('profiles').update({username:uname}).eq('id',_myUid()).then(({error})=>{
+    if(error){showToast(error.message&&error.message.includes('duplicate')?'Username already taken':'Could not update username');return;}
+    if(_currentUser)_currentUser.username=uname;
+    const prof=getUserProfile(_myUid())||{};prof.username=uname;setUserProfile(_myUid(),prof);
+    if(usernameEl)usernameEl.textContent='@'+uname;
+    if(shareEl)shareEl.textContent='@'+uname;
+    closeUsernameEdit();
+    showToast('Username saved');
+  });
 }
 // Restore profile on load
 (()=>{
@@ -5688,7 +5715,7 @@ function saveUsername(){
     const av=(getUserProfile(String(_myUid()))||{}).avatarUrl;
     if(av)_applyAvatar(av);
   },150);
-  const un=localStorage.getItem('wp_username');
+  const un=null; // username comes from the profiles table via buildProfile
   if(un){
     setTimeout(()=>{
       const el=document.getElementById('profileUsername');
@@ -7803,11 +7830,15 @@ function openSaveFolderSheet(postId,triggerEl){
 }
 
 function _savePostToFolder(postId,folderName){
+  if(isGuest()){showLoginScreen();return;}
   const folders=_getSavedFolders();
   let folder=folders.find(f=>f.name===folderName);
   if(!folder){folder={name:folderName,postIds:[]};folders.push(folder);}
   if(!folder.postIds.includes(postId))folder.postIds.push(postId);
   _setSavedFolders(folders);
+  // Persist: folders are backed by saved_spots — save the post's tagged spot
+  const post=getPosts().find(p=>String(p.id)===String(postId));
+  if(post?.spotId)_sbTry(db.from('saved_spots').upsert({user_id:_myUid(),spot_id:post.spotId,folder_name:folderName}),'save to folder');
   // Also add to flat saved-posts list for backwards compat
   const saved=getSavedPostIds();
   if(!saved.includes(postId))saved.push(postId);
@@ -8511,8 +8542,8 @@ function toggleFollow(uid,btn){
   if(!f[myId])f[myId]=[];
   const suid=String(uid);
   const idx=f[myId].indexOf(suid);
-  if(idx>-1){f[myId].splice(idx,1);}
-  else{f[myId].push(suid); _addNotif(uid,'follow',_myName(),'started following you');}
+  if(idx>-1){f[myId].splice(idx,1);_sbToggleFollow(suid,false);}
+  else{f[myId].push(suid);_sbToggleFollow(suid,true);_addNotif(uid,'follow',_myName(),'started following you');}
   setFollows(f);
   const following=f[myId].includes(suid);
   if(btn){btn.textContent=following?'Following':'Follow';btn.classList.toggle('following',following);}
@@ -8640,11 +8671,18 @@ function saveEditProfile(){
 }
 function handleEditAvatar(e){
   const file=e.target.files?.[0];if(!file)return;
-  compressImage(file,512).then(url=>{
-    const av=document.getElementById('editProfileAvatar');
-    if(av)av.innerHTML=`<img src="${url}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
-    const existing=getUserProfile(_myUid())||{};
-    setUserProfile(_myUid(),{...existing,avatarUrl:url});
+  if(isGuest()){showLoginScreen();return;}
+  compressImage(file,200).then(async dataUrl=>{
+    try{
+      const url=await _sbUploadDataUrl('avatars',dataUrl,'jpg');
+      const {error}=await db.from('profiles').update({avatar_url:url}).eq('id',_myUid());
+      if(error)throw error;
+      const av=document.getElementById('editProfileAvatar');
+      if(av)av.innerHTML=`<img src="${url}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
+      const existing=getUserProfile(_myUid())||{};
+      setUserProfile(_myUid(),{...existing,avatarUrl:url});
+      _applyAvatar(url);
+    }catch(err){console.warn('[Supabase] avatar:',err);showToast('Could not upload photo');}
   }).catch(()=>showToast('Could not read photo'));
 }
 
@@ -9909,9 +9947,11 @@ function toggleFollowUser(uid,btn){
   const idx=follows[myUid].indexOf(targetUid);
   if(idx>=0){
     follows[myUid].splice(idx,1);
+    _sbToggleFollow(targetUid,false);
     if(btn){btn.textContent='Follow';btn.style.borderColor='var(--accent)';btn.style.color='var(--accent)';btn.style.background='rgba(196,149,106,.12)';}
   } else {
     follows[myUid].push(targetUid);
+    _sbToggleFollow(targetUid,true);
     if(btn){btn.textContent='Following';btn.style.borderColor='var(--border2)';btn.style.color='var(--txt2)';btn.style.background='transparent';}
   }
   setFollows(follows);
@@ -10616,10 +10656,12 @@ function toggleDetailBookmark(){
     saved.splice(idx,1);
     const pi=pinned.indexOf(_detailSpotId);
     if(pi>=0)pinned.splice(pi,1);
+    _sbTry(db.from('saved_spots').delete().eq('user_id',_myUid()).eq('spot_id',_detailSpotId),'unsave spot');
     showToast('Removed from saved');
   } else {
     saved.push(_detailSpotId);
     if(!pinned.includes(_detailSpotId))pinned.push(_detailSpotId);
+    _sbTry(db.from('saved_spots').upsert({user_id:_myUid(),spot_id:_detailSpotId,folder_name:'General'}),'save spot');
     showToast('Saved!');
   }
   setSavedSpotIds(saved);
