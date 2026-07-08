@@ -191,6 +191,30 @@ function getSavedSpotIds(){return _getSavedStore().spotIds;}
 function setSavedSpotIds(a){const s=_getSavedStore();s.spotIds=a;_setSavedStore(s);}
 
 // ═══════════════════════════════════════════════════
+// ERROR FEEDBACK — retry toast + inline map notice
+// ═══════════════════════════════════════════════════
+function _showRetryToast(msg,retryJs){
+  document.getElementById('_retryToast')?.remove();
+  const el=document.createElement('div');
+  el.id='_retryToast';
+  el.style.cssText='position:absolute;bottom:calc(var(--nav-h) + 14px);left:50%;transform:translateX(-50%);z-index:9600;background:rgba(30,25,20,.96);border:1px solid var(--border2);border-radius:22px;padding:9px 16px;display:flex;align-items:center;gap:10px;font-size:12px;color:var(--txt1);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:0 6px 20px rgba(0,0,0,.5);white-space:nowrap;max-width:92%';
+  el.innerHTML=`<span style="overflow:hidden;text-overflow:ellipsis">${msg}</span>
+    <span onclick="document.getElementById('_retryToast').remove();${retryJs}" style="color:var(--accent);font-weight:700;cursor:pointer;flex-shrink:0">Tap to retry</span>
+    <span onclick="document.getElementById('_retryToast').remove()" style="color:var(--txt3);cursor:pointer;flex-shrink:0;padding-left:2px">×</span>`;
+  document.getElementById('app').appendChild(el);
+  setTimeout(()=>{if(document.getElementById('_retryToast')===el)el.remove();},10000);
+}
+function _showMapNotice(text){
+  document.getElementById('_mapNotice')?.remove();
+  const el=document.createElement('div');
+  el.id='_mapNotice';
+  el.style.cssText='position:absolute;bottom:calc(var(--nav-h) + 14px);left:50%;transform:translateX(-50%);z-index:9500;background:rgba(30,25,20,.92);border:1px solid var(--border2);border-radius:20px;padding:7px 14px;font-size:11px;color:var(--txt2);backdrop-filter:blur(12px);pointer-events:none;white-space:nowrap';
+  el.textContent=text;
+  document.getElementById('app').appendChild(el);
+  setTimeout(()=>el.remove(),4000);
+}
+
+// ═══════════════════════════════════════════════════
 // STORAGE KEY MIGRATION — runs once per load, moves data
 // from legacy key names to canonical ones, then removes legacy
 // ═══════════════════════════════════════════════════
@@ -758,6 +782,8 @@ async function _prefetchLandData(){
   if(blm){_blmGeoJSON=blm; if(landLayerCache.blm?.on)showLandType('blm');}
   if(nf) {_nfGeoJSON=nf;  if(landLayerCache.nationalForest?.on)showLandType('nationalForest');}
   if(sp) {_spGeoJSON=sp;  if(landLayerCache.stateParks?.on)showLandType('stateParks');}
+  const failed=[!blm&&'BLM',!nf&&'National Forest',!sp&&'State Parks'].filter(Boolean);
+  if(failed.length)_showRetryToast(failed.join(' + ')+' boundaries failed to load','_prefetchLandData()');
 }
 
 // Called on map load + after every style switch
@@ -840,7 +866,10 @@ async function showLandType(type){
       }
     }catch(e){console.warn(`[WildPath] ${type} on-demand fetch failed`);}
   }
-  if(!data||!data.features)return;
+  if(!data||!data.features){
+    _showRetryToast((LAND_STYLES[type]?.label||type)+' layer failed to load',`showLandType('${type}')`);
+    return;
+  }
   const src=map.getSource(`land-${type}`);
   if(src)src.setData(data);
   const fillId=`land-${type}-fill`, lineId=`land-${type}-line`, outlineId=`land-${type}-outline`;
@@ -1213,6 +1242,8 @@ async function loadOsmPeaks(){
     console.log('[Peaks] Loaded',features.length,'OSM peaks');
   }catch(e){
     console.warn('[Peaks] Load failed:',e);
+    _osmPeaksBounds=null; // allow retry on next map move
+    _showMapNotice('Peaks unavailable — data server busy');
   }
 }
 
@@ -3201,13 +3232,7 @@ async function loadDetailTrails(spot){
     const r=0.018; // ~2km in degrees
     const bbox=`${spot.lat-r},${spot.lng-r},${spot.lat+r},${spot.lng+r}`;
     const q=`[out:json][timeout:15];way["highway"~"path|footway|track"](${bbox});out geom tags;`;
-    const res=await fetch('https://overpass-api.de/api/interpreter',{
-      method:'POST',body:'data='+encodeURIComponent(q),
-      headers:{'Content-Type':'application/x-www-form-urlencoded'},
-      signal:AbortSignal.timeout(15000)
-    });
-    if(!res.ok)return;
-    const data=await res.json();
+    const data=await _overpassFetchRetry(q,15000);
     const features=[];
     (data.elements||[]).forEach(el=>{
       if(el.type==='way'&&el.geometry?.length>1){
@@ -3239,7 +3264,9 @@ async function loadDetailTrails(spot){
       _detailTrailSourceIds.push(lbSrc);
       _detailTrailLayerIds.push(labelId);
     }
-  }catch(e){/* silent */}
+  }catch(e){
+    _showMapNotice('Trails unavailable — trail server busy, reopen spot to retry');
+  }
 }
 
 function removeDetailTrails(){
@@ -3633,9 +3660,13 @@ async function fetchLiveWeather(spot){
         <a href="https://www.airnow.gov/?city=&state=CA&country=USA" target="_blank" rel="noopener" style="font-size:11px;color:var(--txt2);text-decoration:none;background:rgba(255,255,255,.05);border:1px solid var(--border2);border-radius:8px;padding:4px 10px">Air Quality ↗</a>
       </div>`;
   }catch(e){
-    // Silently fall back — static data already shown before this call
-    if(document.getElementById('weatherWidget'))
-      document.getElementById('weatherWidget').querySelector('div:first-child').textContent='5-Day Forecast at Trailhead';
+    const w=document.getElementById('weatherWidget');
+    if(w)w.innerHTML=`<div style="font-size:11px;color:var(--txt2);font-weight:700;letter-spacing:.8px;text-transform:uppercase;margin-bottom:10px">5-Day Forecast at Trailhead</div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:8px;padding:18px;background:rgba(255,255,255,.03);border-radius:10px">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="var(--txt3)" stroke-width="1.6"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
+        <div style="font-size:12px;color:var(--txt2)">Weather unavailable</div>
+        <div onclick="var _ws=[...spots,...userSpots].find(s=>s.id===_detailSpotId);if(_ws)fetchLiveWeather(_ws)" style="font-size:11px;color:var(--accent);font-weight:700;cursor:pointer">Tap to retry</div>
+      </div>`;
   }
 }
 
@@ -4856,7 +4887,10 @@ async function nominatimSearchInto(query,drop,isHome){
     }).join('');
     drop.innerHTML=html+nomHtml;
     if(html||nomHtml)drop.classList.add('open');
-  }catch{}
+  }catch(e){
+    drop.innerHTML=html+`<div class="search-no-results" style="color:var(--txt3)">Place search unavailable — check connection</div>`;
+    drop.classList.add('open');
+  }
 }
 
 function _nominatimIcon(type,cls){
@@ -9071,7 +9105,10 @@ function searchCpSpot(q){
         let full=spotHtml;
         if(nomHtml)full+=`<div style="font-size:10px;font-weight:700;color:var(--txt3);padding:6px 12px 2px;letter-spacing:.5px;text-transform:uppercase">All Locations</div>`+nomHtml;
         res.style.display='block';res.innerHTML=full;
-      }).catch(()=>{});
+      }).catch(()=>{
+        res.style.display='block';
+        res.innerHTML+=`<div style="padding:9px 12px;font-size:11px;color:var(--txt3)">Place search unavailable — check connection</div>`;
+      });
   },350);
 }
 function selectCpSpot(id,name,lat,lng){
@@ -9182,7 +9219,10 @@ function searchSdLocation(q){
       if(!data.length){res.style.display='none';return;}
       res.style.display='block';
       res.innerHTML=data.map(d=>`<div style="padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;color:var(--txt0)" onclick="selectSdLocation(${d.lat},${d.lon},'${(d.display_name||'').slice(0,40)}')">${(d.display_name||'').slice(0,60)}</div>`).join('');
-    }).catch(()=>{});
+    }).catch(()=>{
+      res.style.display='block';
+      res.innerHTML='<div style="padding:10px 12px;font-size:11px;color:var(--txt3)">Location search unavailable — check connection</div>';
+    });
 }
 function selectSdLocation(lat,lon,name){
   _sdLat=parseFloat(lat); _sdLng=parseFloat(lon);
@@ -12230,7 +12270,10 @@ function filterCreateLocationNew(query){
           drop.style.display='none';
         }
       })
-      .catch(()=>{});
+      .catch(()=>{
+        drop.style.display='block';
+        drop.innerHTML=(typeof spotItems!=='undefined'&&spotItems?spotItems:'')+'<div style="padding:10px 12px;font-size:11px;color:var(--txt3)">Place search unavailable — check connection</div>';
+      });
   },350);
 }
 
