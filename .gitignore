@@ -7,8 +7,15 @@
 
 # Backups
 *.bak
-*.bak2
-*.bak3
+*.bak[0-9]
+*.orig
+*.tmp
+
+# Windows
+Thumbs.db
+
+# Logs
+*.log
 
 # Editor
 .vscode/
