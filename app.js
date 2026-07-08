@@ -8743,12 +8743,15 @@ function markNotifRead(id){
   setNotifs(notifs);
   _renderNotifications();
   _updateNotifBadge();
+  if(!isGuest())_sbTry(db.from('notifications').update({read:true}).eq('id',id).eq('user_id',_myUid()),'mark notif read');
 }
 function markAllNotifsRead(){
+  const unreadIds=getNotifs().filter(n=>!n.read).map(n=>n.id);
   setNotifs(getNotifs().map(n=>({...n,read:true})));
   _renderNotifications();
   _updateNotifBadge();
   showToast('All notifications marked as read');
+  if(!isGuest()&&unreadIds.length)_sbTry(db.from('notifications').update({read:true}).eq('user_id',_myUid()).in('id',unreadIds),'mark all notifs read');
 }
 
 // ── DM System ──────────────────────────────────────────────────
