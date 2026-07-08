@@ -127,6 +127,56 @@ function compressImage(file,maxDim=1080,quality=0.8){
 }
 
 // ═══════════════════════════════════════════════════
+// SECURITY HELPERS — sanitize, password hashing, admin code
+// ═══════════════════════════════════════════════════
+// Escape HTML special chars — use on ALL user-typed text before innerHTML
+function sanitize(str){
+  if(str==null)return '';
+  return String(str)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;')
+    .replace(/'/g,'&#39;');
+}
+
+function _makeSalt(){return Math.random().toString(36).slice(2)+Date.now().toString(36);}
+// cyrb53-style hash — not cryptographic, but not reversible like btoa
+function _hashPw(pw,salt){
+  const str=salt+pw;
+  let h1=0xdeadbeef,h2=0x41c6ce57;
+  for(let i=0;i<str.length;i++){
+    const ch=str.charCodeAt(i);
+    h1=Math.imul(h1^ch,2654435761);
+    h2=Math.imul(h2^ch,1597334677);
+  }
+  h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909);
+  h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);
+  return (4294967296*(2097151&h2)+(h1>>>0)).toString(36);
+}
+function _setUserPassword(user,pw){
+  user.salt=_makeSalt();
+  user.passHash=_hashPw(pw,user.salt);
+  delete user.password;
+}
+function _verifyPw(user,pw){
+  if(user.passHash&&user.salt)return _hashPw(pw,user.salt)===user.passHash;
+  // Legacy btoa-stored account: verify once, then upgrade in place
+  if(user.password&&user.password===btoa(pw)){
+    _setUserPassword(user,pw);
+    const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
+    const u=users.find(x=>String(x.id)===String(user.id));
+    if(u){u.salt=user.salt;u.passHash=user.passHash;delete u.password;localStorage.setItem('wildpath-users',JSON.stringify(users));}
+    return true;
+  }
+  return false;
+}
+// Admin code is verified against a hash — plaintext never appears in source
+const ADMIN_CODE_SALT='wp_admin_salt_v1';
+const ADMIN_CODE_HASH='rsjs5rilio';
+function _isAdminCode(code){return _hashPw(code,ADMIN_CODE_SALT)===ADMIN_CODE_HASH;}
+
+// ═══════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════
 window.onload=()=>{
@@ -182,7 +232,7 @@ function doLogin(){
   const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
   const user=users.find(u=>u.email.toLowerCase()===email);
   if(!user){if(errEl){errEl.textContent='No account found with that email.';errEl.style.display='block';}return;}
-  if(user.password!==btoa(pw)){if(errEl){errEl.textContent='Incorrect email or password.';errEl.style.display='block';}return;}
+  if(!_verifyPw(user,pw)){if(errEl){errEl.textContent='Incorrect email or password.';errEl.style.display='block';}return;}
   localStorage.setItem('wildpath-current-user',user.id);
   localStorage.removeItem('wildpath-guest');
   _currentUser=user;
@@ -202,8 +252,9 @@ function doSignup(){
   if(pw.length<6){showErr('Password must be at least 6 characters.');return;}
   const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
   if(users.find(u=>u.email.toLowerCase()===email)){showErr('Email already in use.');return;}
-  const role=adminCode==='WildPath2026Admin'?'admin':'explorer';
-  const newUser={id:Date.now(),username,email,password:btoa(pw),role,avatar:null,savedSpots:[],submittedSpots:[],createdAt:new Date().toISOString()};
+  const role=_isAdminCode(adminCode)?'admin':'explorer';
+  const newUser={id:Date.now(),username,email,role,avatar:null,savedSpots:[],submittedSpots:[],createdAt:new Date().toISOString()};
+  _setUserPassword(newUser,pw);
   users.push(newUser);
   localStorage.setItem('wildpath-users',JSON.stringify(users));
   localStorage.setItem('wildpath-current-user',newUser.id);
@@ -2038,8 +2089,8 @@ function _showPendingSpots(){
     </div>
     ${pending.map(s=>`
       <div class="pending-spot-row">
-        <div class="pending-spot-name">${s.name}</div>
-        <div class="pending-spot-meta">${s.typeLabel||s.type} · Submitted by ${s._submittedBy||'Unknown'}</div>
+        <div class="pending-spot-name">${sanitize(s.name)}</div>
+        <div class="pending-spot-meta">${sanitize(s.typeLabel||s.type)} · Submitted by ${sanitize(s._submittedBy)||'Unknown'}</div>
         <div class="pending-spot-btns">
           <button class="pending-approve" onclick="approveSpot(${s._pendingId});this.closest('.pending-spot-row').remove();showToast('Approved!')">Approve</button>
           <button class="pending-reject" onclick="rejectSpot(${s._pendingId});this.closest('.pending-spot-row').remove();showToast('Rejected')">Reject</button>
@@ -2562,7 +2613,7 @@ function spotCardHTML(s,badge,showGem){
   return`<div class="spot-card-h" onclick="goToSpot(${s.id})">
     <div class="spot-card-thumb" style="background:${s.heroGradient}"></div>
     <div class="spot-card-info">
-      <div class="spot-card-name">${s.name}${showGem?'<span class="gem-badge">Hidden Gem</span>':''}</div>
+      <div class="spot-card-name">${sanitize(s.name)}${showGem?'<span class="gem-badge">Hidden Gem</span>':''}</div>
       <div class="spot-card-meta">${s.rating} · ${s.distance}</div>
       <span class="spot-card-type" style="background:${s.typeColor}22;color:${s.typeColor}">${s.typeLabel}</span>
       ${badge?`<span style="font-size:10px;color:var(--txt3);margin-left:6px">${badge}</span>`:''}
@@ -4513,7 +4564,7 @@ function liveSearchSpots(query){
     return `<div class="search-result-item" onclick="selectSearchResult(${s.id})">
       <div class="search-result-icon">${_getSpotIcon(s.type,s.typeColor)}</div>
       <div class="search-result-info">
-        <div class="search-result-name">${s.name}</div>
+        <div class="search-result-name">${sanitize(s.name)}</div>
         <div class="search-result-meta">${s.typeLabel}${dist?' · '+dist:''}</div>
       </div>
     </div>`;
@@ -4639,7 +4690,7 @@ function renderHomeSpots(filter){
       <div class="nearby-card-img" style="background:${s.heroGradient||'var(--bg3)'}">
       </div>
       <div class="nearby-card-body">
-        <div class="nearby-card-name">${s.name}</div>
+        <div class="nearby-card-name">${sanitize(s.name)}</div>
         <div class="nearby-card-dist">${s.typeLabel} · ${s._realDistStr||s.distance||''}</div>
       </div>
     </div>
@@ -4713,7 +4764,7 @@ async function nominatimSearchInto(query,drop,isHome){
     <div class="search-result-item" onclick="${isHome?'goToSpotFromHome':'selectSearchResult'}(${s.id})">
       <div class="search-result-icon">${_getSpotIcon(s.type,s.typeColor)}</div>
       <div class="search-result-info">
-        <div class="search-result-name">${s.name}</div>
+        <div class="search-result-name">${sanitize(s.name)}</div>
         <div class="search-result-meta">${s.typeLabel} · ${s._realDistStr||s.distance||''}</div>
       </div>
     </div>`).join('');
@@ -5450,7 +5501,7 @@ function buildCollections(){
   el.innerHTML=collections.map((c,idx)=>`
     <div class="collection-row" onclick="openCollectionDetail(${idx})">
       <div class="collection-icon"><i class="ti ti-folder" style="font-size:22px;color:var(--accent)"></i></div>
-      <div class="collection-name">${c.name}</div>
+      <div class="collection-name">${sanitize(c.name)}</div>
       <div class="collection-count">${c.spotIds.length} spots</div>
       <div style="color:var(--txt3);font-size:18px;margin-left:8px">›</div>
     </div>`).join('');
@@ -6692,7 +6743,7 @@ function _attachPlanCardSwipe(di){
 // ═══════════════════════════════════════════════════════════════
 // AUTH SYSTEM — inline Profile-tab login only (no overlay screens)
 // ═══════════════════════════════════════════════════════════════
-const ADMIN_SECRET_CODE = 'WildPath2026Admin';
+// Admin code verification is hash-based — see _isAdminCode() near top of file
 let _currentUser = null;
 let _appInitialized = false;
 let _loginCallback = null;
@@ -6744,7 +6795,7 @@ function doProfileSignIn(){
     const users=_getUsers();
     const user=users.find(u=>u.email.toLowerCase()===email);
     if(!user){_showLoginError('profileLoginError','No account found with that email.');return;}
-    if(user.password!==btoa(pw)){_showLoginError('profileLoginError','Incorrect password.');return;}
+    if(!_verifyPw(user,pw)){_showLoginError('profileLoginError','Incorrect password.');return;}
     localStorage.setItem('wildpath-current-user',user.id);
     localStorage.removeItem('wildpath-guest');
     _currentUser=user;
@@ -6769,8 +6820,9 @@ function doProfileSignUp(){
     if(pw.length<6){_showLoginError('profileSignupError','Password must be 6+ characters.');return;}
     const users=_getUsers();
     if(users.find(u=>u.email.toLowerCase()===email)){_showLoginError('profileSignupError','Email already in use.');return;}
-    const role=adminCode===ADMIN_SECRET_CODE?'admin':'explorer';
-    const newUser={id:Date.now(),username,email,password:btoa(pw),role,avatar:null,savedSpots:[],submittedSpots:[],createdAt:new Date().toISOString()};
+    const role=_isAdminCode(adminCode)?'admin':'explorer';
+    const newUser={id:Date.now(),username,email,role,avatar:null,savedSpots:[],submittedSpots:[],createdAt:new Date().toISOString()};
+    _setUserPassword(newUser,pw);
     users.push(newUser);
     _saveUsers(users);
     localStorage.setItem('wildpath-current-user',newUser.id);
@@ -7380,7 +7432,7 @@ function buildPostCard(post,compact=false){
   const myLiked=(post.likes||[]).includes(_myUid());
   const likeCount=(post.likes||[]).length;
   const commentCount=getComments(post.id).length;
-  const spotPill=post.spotName?`<div class="post-spot-pill" onclick="event.stopPropagation();openSpotFromPost(${post.spotId})">${post.spotName}</div>`:'';
+  const spotPill=post.spotName?`<div class="post-spot-pill" onclick="event.stopPropagation();openSpotFromPost(${post.spotId})">${sanitize(post.spotName)}</div>`:'';
 
   let mediaHtml='';
   if(post.type==='photo'&&post.mediaUrl){
@@ -7398,12 +7450,12 @@ function buildPostCard(post,compact=false){
         <div class="reddit-spotdrop-map-pin"></div>
       </div>
       <div class="reddit-spotdrop-info">
-        <div style="font-size:13px;font-weight:700;color:var(--txt0)">${sd.name||'Unknown Spot'}</div>
+        <div style="font-size:13px;font-weight:700;color:var(--txt0)">${sanitize(sd.name)||'Unknown Spot'}</div>
         <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">
           <span class="post-type-badge">${sd.type||'spot'}</span>
           <span class="post-type-badge" style="color:${sd.legal==='legal'?'var(--green)':sd.legal==='illegal'?'var(--red)':'var(--yellow)'}">${sd.legal==='legal'?'Legal':sd.legal==='illegal'?'Illegal':'Caution'}</span>
         </div>
-        ${sd.approach?`<div style="font-size:11px;color:var(--txt2);margin-top:6px;line-height:1.4">${sd.approach.slice(0,120)}${sd.approach.length>120?'…':''}</div>`:''}
+        ${sd.approach?`<div style="font-size:11px;color:var(--txt2);margin-top:6px;line-height:1.4">${sanitize(sd.approach.slice(0,120))}${sd.approach.length>120?'…':''}</div>`:''}
         ${votes>=10&&_isAdmin()?`<button class="reddit-approve-btn" onclick="event.stopPropagation();approveSpotDrop('${post.id}')">Add to WildPath Map</button>`:''}
         ${votes>=10&&!_isAdmin()?`<div style="font-size:10px;color:var(--accent);margin-top:4px;font-weight:700">Nominated for the map! (${votes} votes)</div>`:''}
       </div>
@@ -7411,7 +7463,7 @@ function buildPostCard(post,compact=false){
   }
 
   const captionTrunc=post.caption&&post.caption.length>140?post.caption.slice(0,140)+'…':post.caption||'';
-  const captionHtml=post.type!=='spotdrop'&&post.caption?`<div class="post-caption">${captionTrunc}${post.caption.length>140?`<span class="post-seemore" onclick="event.stopPropagation();openPostDetail('${post.id}')"> See more</span>`:''}</div>`:'';
+  const captionHtml=post.type!=='spotdrop'&&post.caption?`<div class="post-caption">${sanitize(captionTrunc)}${post.caption.length>140?`<span class="post-seemore" onclick="event.stopPropagation();openPostDetail('${post.id}')"> See more</span>`:''}</div>`:'';
 
   return `<div class="post-card" onclick="openPostDetail('${post.id}')">
     <div class="post-card-hdr" onclick="event.stopPropagation()">
@@ -7419,7 +7471,7 @@ function buildPostCard(post,compact=false){
         ${_avatarHtml(post.username,32,avatarUrl)}
       </div>
       <div class="post-meta" onclick="openUserProfile('${post.userId}')">
-        <div class="post-username">${post.username}${verif?_verifiedBadge():''}</div>
+        <div class="post-username">${sanitize(post.username)}${verif?_verifiedBadge():''}</div>
         <div class="post-time">${_timeAgo(post.createdAt)}</div>
       </div>
       ${spotPill}
@@ -7530,7 +7582,7 @@ function openSaveFolderSheet(postId,triggerEl){
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           </div>
           <div>
-            <div style="font-size:14px;font-weight:600;color:var(--txt0)">${f.name}</div>
+            <div style="font-size:14px;font-weight:600;color:var(--txt0)">${sanitize(f.name)}</div>
             <div style="font-size:11px;color:var(--txt3)">${f.postIds.length} saved</div>
           </div>
         </div>`).join(''):'<div style="font-size:13px;color:var(--txt3);text-align:center;padding:20px 0">No folders yet — create one above</div>'}
@@ -7624,7 +7676,7 @@ function _commCardHtml(c){
     :`<div style="width:100%;height:100%;${c.coverGrad||'background:var(--bg3)'};"></div>`;
   return `<div class="comm-card" onclick="openCommunityDetail('${c.id}')">
     <div class="comm-card-cover">${coverHtml}</div>
-    <div class="comm-card-name">${c.name}</div>
+    <div class="comm-card-name">${sanitize(c.name)}</div>
     <div class="comm-card-members">${_fmt(c.memberCount)} members</div>
   </div>`;
 }
@@ -7643,7 +7695,7 @@ function buildDiscoverList(){
     return `<div class="comm-discover-row">
       <div class="comm-discover-cover">${coverHtml}</div>
       <div class="comm-discover-info">
-        <div class="comm-discover-name">${c.name}</div>
+        <div class="comm-discover-name">${sanitize(c.name)}</div>
         <div class="comm-discover-desc">${c.desc||''}</div>
         <div class="comm-discover-members">${_fmt(c.memberCount||0)} members</div>
       </div>
@@ -7719,7 +7771,7 @@ function _renderCommunityDetail(cid){
       <div class="comm-detail-cover-grad"></div>
       <button class="cfp-back" onclick="closeCommunityDetail()" style="position:absolute;top:54px;left:14px;background:rgba(0,0,0,.45);width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px;border:none;cursor:pointer">←</button>
       ${isAdminOfComm?`<div class="comm-detail-settings" onclick="openCommSettings('${cid}')"><svg viewBox='0 0 24 24' width='18' height='18' fill='none' stroke='currentColor' stroke-width='2'><circle cx='12' cy='12' r='3'/><path d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z'/></svg></div>`:''}
-      <div class="comm-detail-cover-name">${c.name}</div>
+      <div class="comm-detail-cover-name">${sanitize(c.name)}</div>
     </div>
     <div class="comm-stats-row">
       <div class="comm-stat-item"><div class="comm-stat-val">${allPosts.length}</div><div class="comm-stat-label">Posts</div></div>
@@ -7738,10 +7790,10 @@ function _renderCommunityDetail(cid){
 
   body.innerHTML=`
     ${joinHtml}
-    ${c.desc?`<div class="comm-desc-section"><div style="font-size:13px;color:var(--txt2);line-height:1.5">${c.desc}</div></div>`:''}
+    ${c.desc?`<div class="comm-desc-section"><div style="font-size:13px;color:var(--txt2);line-height:1.5">${sanitize(c.desc)}</div></div>`:''}
     ${c.rules?`<div class="comm-rules-card" onclick="this.querySelector('.comm-rules-body').classList.toggle('open');this.querySelector('.comm-rules-arrow').textContent=this.querySelector('.comm-rules-body').classList.contains('open')?'▲':'▼'">
       <div class="comm-rules-hdr"><span>Community Rules</span><span class="comm-rules-arrow">▼</span></div>
-      <div class="comm-rules-body"><pre style="font-family:inherit;font-size:12px;white-space:pre-wrap;color:var(--txt2)">${c.rules}</pre></div>
+      <div class="comm-rules-body"><pre style="font-family:inherit;font-size:12px;white-space:pre-wrap;color:var(--txt2)">${sanitize(c.rules)}</pre></div>
     </div>`:''}
     <div class="comm-post-to" onclick="openCreatePostForCommunity('${cid}')">
       <div style="width:36px;height:36px;background:rgba(184,232,122,.1);border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--accent)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></div>
@@ -7949,25 +8001,25 @@ function _redditPostHtml(post){
 
   let contentHtml='';
   if(post.type==='photo'&&post.mediaUrl){
-    contentHtml=`<img class="reddit-post-img" src="${post.mediaUrl}" loading="lazy" onerror="this.style.display='none'"><div class="reddit-post-body">${post.caption||''}</div>`;
+    contentHtml=`<img class="reddit-post-img" src="${post.mediaUrl}" loading="lazy" onerror="this.style.display='none'"><div class="reddit-post-body">${sanitize(post.caption)}</div>`;
   } else if(post.type==='text'){
-    contentHtml=`<div class="reddit-post-title">${(post.caption||'').slice(0,80)}</div><div class="reddit-post-body">${(post.caption||'').slice(80)}</div>`;
+    contentHtml=`<div class="reddit-post-title">${sanitize((post.caption||'').slice(0,80))}</div><div class="reddit-post-body">${sanitize((post.caption||'').slice(80))}</div>`;
   } else if(post.type==='spotdrop'&&post.spotdrop){
     const sd=post.spotdrop;
     contentHtml=`<div class="reddit-spotdrop-map" style="height:130px">
       <div style="width:100%;height:100%;background:linear-gradient(135deg,#1a3a2a,#2d5a3a);display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--txt2)">${(sd.lat||37.5).toFixed(4)}, ${(sd.lng||-120).toFixed(4)}</div>
     </div>
     <div class="reddit-spotdrop-info">
-      <div style="font-size:12px;font-weight:700;color:var(--txt0)">${sd.name}</div>
+      <div style="font-size:12px;font-weight:700;color:var(--txt0)">${sanitize(sd.name)}</div>
       <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:3px">
-        <span class="post-type-badge">${sd.type}</span>
+        <span class="post-type-badge">${sanitize(sd.type)}</span>
         <span class="post-type-badge" style="color:${sd.legal==='legal'?'var(--green)':sd.legal==='illegal'?'var(--red)':'var(--yellow)'}">${sd.legal==='legal'?'Legal':sd.legal==='illegal'?'Illegal':'Caution'}</span>
       </div>
-      ${sd.approach?`<div style="font-size:10px;color:var(--txt2);margin-top:4px;line-height:1.4">${sd.approach.slice(0,100)}…</div>`:''}
+      ${sd.approach?`<div style="font-size:10px;color:var(--txt2);margin-top:4px;line-height:1.4">${sanitize(sd.approach.slice(0,100))}…</div>`:''}
       ${votes>=10&&_isAdmin()?`<button class="reddit-approve-btn" onclick="approveSpotDrop('${post.id}')">Add to WildPath Map</button>`:''}
     </div>`;
   } else {
-    contentHtml=`<div class="reddit-post-body">${post.caption||''}</div>`;
+    contentHtml=`<div class="reddit-post-body">${sanitize(post.caption)}</div>`;
   }
 
   const longPressAttrs=`oncontextmenu="event.preventDefault();showPostCtxMenu(event,'${post.id}')" ontouchstart="_startLongPress(event,'${post.id}')" ontouchend="_cancelLongPress()"`;
@@ -7984,7 +8036,7 @@ function _redditPostHtml(post){
     <div class="reddit-post-content">
       ${contentHtml}
       <div class="reddit-post-meta">
-        <span onclick="event.stopPropagation();openUserProfile('${post.userId}')" style="cursor:pointer">${post.username}${verif?_verifiedBadge():''}</span>
+        <span onclick="event.stopPropagation();openUserProfile('${post.userId}')" style="cursor:pointer">${sanitize(post.username)}${verif?_verifiedBadge():''}</span>
         <span>· ${_timeAgo(post.createdAt)}</span>
         <div class="reddit-post-comments" onclick="event.stopPropagation();openPostDetail('${post.id}')">
           <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -8142,13 +8194,13 @@ function _renderPostDetail(post){
     <div class="post-detail-user-row">
       <div onclick="openUserProfile('${post.userId}')" style="cursor:pointer">${_avatarHtml(post.username,36,profileData.avatarUrl||null)}</div>
       <div style="flex:1;margin-left:10px" onclick="openUserProfile('${post.userId}')">
-        <div style="font-size:13px;font-weight:700;color:var(--txt0);display:flex;align-items:center;gap:4px">${post.username}${verif?_verifiedBadge():''}</div>
+        <div style="font-size:13px;font-weight:700;color:var(--txt0);display:flex;align-items:center;gap:4px">${sanitize(post.username)}${verif?_verifiedBadge():''}</div>
         <div style="font-size:10px;color:var(--txt3)">${_timeAgo(post.createdAt)}</div>
       </div>
       ${String(post.userId)!==String(_myUid())?`<button class="follow-btn${following?' following':''}" onclick="toggleFollow('${post.userId}',this)">${following?'Following':'Follow'}</button>`:''}
     </div>
-    ${post.spotName?`<div style="padding:8px 16px"><div class="post-spot-pill" onclick="openSpotFromPost(${post.spotId})">${post.spotName}</div></div>`:''}
-    ${post.caption?`<div class="post-caption" style="padding:8px 16px 12px;font-size:13px">${post.caption}</div>`:''}
+    ${post.spotName?`<div style="padding:8px 16px"><div class="post-spot-pill" onclick="openSpotFromPost(${post.spotId})">${sanitize(post.spotName)}</div></div>`:''}
+    ${post.caption?`<div class="post-caption" style="padding:8px 16px 12px;font-size:13px">${sanitize(post.caption)}</div>`:''}
     <div class="post-actions" style="border-top:1px solid rgba(255,255,255,.06);border-bottom:1px solid rgba(255,255,255,.06);padding:10px 16px">
       <div class="post-action${myLiked?' liked':''}" onclick="togglePostLike('${post.id}',this)">
         <svg viewBox="0 0 24 24" width="18" height="18" fill="${myLiked?'currentColor':'none'}" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
@@ -8169,8 +8221,8 @@ function _commentHtml(c,isReply=false){
     <div style="display:flex;gap:8px;align-items:flex-start">
       ${_avatarHtml(c.username,24)}
       <div style="flex:1">
-        <div class="comment-user">${c.username}${verif?_verifiedBadge():''}</div>
-        <div class="comment-text">${c.text}</div>
+        <div class="comment-user">${sanitize(c.username)}${verif?_verifiedBadge():''}</div>
+        <div class="comment-text">${sanitize(c.text)}</div>
         <div class="comment-meta">
           <span>${_timeAgo(c.createdAt)}</span>
           ${!isReply?`<span class="comment-reply-btn" onclick="setCommentReply('${c.id}','${c.username}')">Reply</span>`:''}
@@ -8285,10 +8337,10 @@ function _renderUserProfile(userId){
 
   body.innerHTML=`
     <div style="text-align:center;padding:24px 16px 0">
-      <div class="user-profile-avatar" style="margin:0 auto">${avatarUrl?`<img src="${avatarUrl}">`:(username||'?').slice(0,2).toUpperCase()}</div>
-      <div style="font-size:18px;font-weight:700;color:var(--txt0);margin-top:10px;display:flex;align-items:center;justify-content:center;gap:6px">${username}${verif?_verifiedBadge():''}</div>
+      <div class="user-profile-avatar" style="margin:0 auto">${avatarUrl?`<img src="${avatarUrl}">`:sanitize((username||'?').slice(0,2).toUpperCase())}</div>
+      <div style="font-size:18px;font-weight:700;color:var(--txt0);margin-top:10px;display:flex;align-items:center;justify-content:center;gap:6px">${sanitize(username)}${verif?_verifiedBadge():''}</div>
       ${verif?`<div style="font-size:10px;font-weight:700;color:var(--accent);letter-spacing:.5px;margin-top:2px;text-transform:uppercase">Verified Explorer</div>`:''}
-      <div style="font-size:13px;color:var(--txt2);margin-top:6px;padding:0 20px">${bio}</div>
+      <div style="font-size:13px;color:var(--txt2);margin-top:6px;padding:0 20px">${sanitize(bio)}</div>
       ${!isOwn?`<button class="follow-btn${following?' following':''}" style="margin-top:14px" onclick="toggleFollow('${userId}',this)">${following?'Following':'Follow'}</button>`:''}
     </div>
     <div class="user-profile-stats">
@@ -8467,8 +8519,8 @@ function _renderDmInbox(filter=''){
     return `<div class="dm-convo-row" onclick="openDmChat('${otherUid}')">
       ${_avatarHtml(username,40,profileData.avatarUrl||null)}
       <div class="dm-convo-info">
-        <div class="dm-convo-name">${username}</div>
-        <div class="dm-convo-preview">${last?.text||'Spot card shared'}</div>
+        <div class="dm-convo-name">${sanitize(username)}</div>
+        <div class="dm-convo-preview">${sanitize(last?.text)||'Spot card shared'}</div>
       </div>
       <div class="dm-convo-time">${last?_timeAgo(last.time):''}</div>
     </div>`;
@@ -8522,8 +8574,8 @@ function _renderCommDmInbox(filter){
     return `<div class="comm-unified-row" onclick="openDmChat('${otherUid}')">
       <div style="width:44px;height:44px;border-radius:50%;flex-shrink:0;background:${colors[ci]};display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;color:#fff;overflow:hidden">${avatarContent}</div>
       <div style="flex:1;min-width:0">
-        <div style="font-size:14px;font-weight:700;color:var(--txt0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">@${username}</div>
-        <div style="font-size:12px;color:var(--txt3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${preview}</div>
+        <div style="font-size:14px;font-weight:700;color:var(--txt0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">@${sanitize(username)}</div>
+        <div style="font-size:12px;color:var(--txt3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sanitize(preview)}</div>
       </div>
       <div style="font-size:10px;color:var(--txt3);flex-shrink:0">${last?_timeAgo(last.time):''}</div>
     </div>`;
@@ -8569,8 +8621,8 @@ function _renderDmChat(){
         <div onclick="${p.spotId?`openDetail(${p.spotId})`:'void 0'}" style="width:200px;background:var(--bg2);border:1px solid var(--border2);border-radius:12px;overflow:hidden;cursor:${p.spotId?'pointer':'default'}">
           <div style="width:100%;height:120px;overflow:hidden">${thumb}</div>
           <div style="padding:8px 10px">
-            ${p.spotName?`<div style="font-size:10px;font-weight:700;color:#B8E87A;margin-bottom:3px">${p.spotName}</div>`:''}
-            ${p.caption?`<div style="font-size:12px;color:var(--txt1);line-height:1.4">${p.caption}</div>`:''}
+            ${p.spotName?`<div style="font-size:10px;font-weight:700;color:#B8E87A;margin-bottom:3px">${sanitize(p.spotName)}</div>`:''}
+            ${p.caption?`<div style="font-size:12px;color:var(--txt1);line-height:1.4">${sanitize(p.caption)}</div>`:''}
           </div>
         </div>
         <div class="dm-msg-time" style="text-align:${sent?'right':'left'}">${_timeAgo(m.time)}</div>
@@ -8582,7 +8634,7 @@ function _renderDmChat(){
         <div class="dm-spot-card" onclick="openDetail(${s.id})">
           <div class="dm-spot-card-img" style="${s.heroGradient?`background:${s.heroGradient}`:''}">${s.name?s.name[0]:''}</div>
           <div class="dm-spot-card-info">
-            <div class="dm-spot-card-name">${s.name}</div>
+            <div class="dm-spot-card-name">${sanitize(s.name)}</div>
             <div style="font-size:10px;color:var(--txt3);margin-top:2px">${s.typeLabel||''}</div>
             <div style="font-size:10px;color:var(--accent);margin-top:4px;font-weight:700">View Spot →</div>
           </div>
@@ -8597,7 +8649,7 @@ function _renderDmChat(){
       return `<div style="display:flex;flex-direction:column;align-items:${sent?'flex-end':'flex-start'};align-self:${sent?'flex-end':'flex-start'};gap:4px">${tag}<div class="dm-msg-time" style="text-align:${sent?'right':'left'}">${_timeAgo(m.time)}</div></div>`;
     }
     return `<div style="display:flex;flex-direction:column;align-items:${sent?'flex-end':'flex-start'}">
-      <div class="dm-bubble dm-bubble-${sent?'sent':'recv'}">${m.text||''}</div>
+      <div class="dm-bubble dm-bubble-${sent?'sent':'recv'}">${sanitize(m.text)}</div>
       <div class="dm-msg-time" style="text-align:${sent?'right':'left'}">${_timeAgo(m.time)}</div>
     </div>`;
   }).join('');
@@ -8625,7 +8677,7 @@ function openDmSpotShare(){
   const overlay=document.getElementById('commCtxOverlay');
   if(!menu)return;
   menu.style.cssText='display:block;left:10px;right:10px;bottom:70px;top:auto;transform:none;max-height:200px;overflow-y:auto';
-  menu.innerHTML=results.map(s=>`<div class="ctx-menu-item" onclick="sendDmSpotCard(${s.id})">${s.name}</div>`).join('');
+  menu.innerHTML=results.map(s=>`<div class="ctx-menu-item" onclick="sendDmSpotCard(${s.id})">${sanitize(s.name)}</div>`).join('');
   if(overlay)overlay.style.display='block';
 }
 function sendDmSpotCard(spotId){
@@ -8998,7 +9050,7 @@ function _buildShareCommList(){
   if(!list)return;
   const mine=getCommunities().filter(c=>getMembers(c.id).includes(String(_myUid()))||c.adminId===String(_myUid()));
   list.innerHTML=mine.map(c=>`<div class="share-to-row">
-    <div class="share-to-name">${c.name}</div>
+    <div class="share-to-name">${sanitize(c.name)}</div>
     <div class="toggle-switch${_cpShareCommunities.includes(c.id)?' on':''}" onclick="toggleShareTo('comm_${c.id}',this)"></div>
   </div>`).join('');
 }
@@ -10633,7 +10685,7 @@ function buildHomeFeed(){
       <div style="display:flex;align-items:center;gap:10px;padding:12px 14px">
         <div onclick="_showUserPopup('${post.userId}','${post.username}',this)" style="width:36px;height:36px;border-radius:50%;background:var(--bg3);border:2px solid rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#B8E87A;flex-shrink:0;cursor:pointer">${initials}</div>
         <div style="flex:1;min-width:0">
-          <div onclick="_showUserPopup('${post.userId}','${post.username}',this)" style="font-size:13px;font-weight:700;color:var(--txt0);cursor:pointer">@${post.username||'explorer'}</div>
+          <div onclick="_showUserPopup('${post.userId}','${sanitize(post.username)}',this)" style="font-size:13px;font-weight:700;color:var(--txt0);cursor:pointer">@${sanitize(post.username)||'explorer'}</div>
           <div style="font-size:11px;color:var(--txt3);margin-top:1px">${timeAgo}</div>
         </div>
         ${spotPill}
@@ -10668,7 +10720,7 @@ function buildHomeFeed(){
       </div>
 
       <!-- Caption -->
-      ${post.caption?`<div style="padding:4px 14px 14px;font-size:13px;color:var(--txt0);line-height:1.55"><span style="font-weight:700;margin-right:6px">@${post.username||'explorer'}</span>${post.caption}</div>`:'<div style="height:12px"></div>'}
+      ${post.caption?`<div style="padding:4px 14px 14px;font-size:13px;color:var(--txt0);line-height:1.55"><span style="font-weight:700;margin-right:6px">@${sanitize(post.username)||'explorer'}</span>${sanitize(post.caption)}</div>`:'<div style="height:12px"></div>'}
 
     </div>`;
   }).join('');
@@ -11713,7 +11765,7 @@ function _renderSavedPostsGrid(){
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="var(--accent)" stroke-width="1.8"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
       </div>
       <div style="flex:1;min-width:0">
-        <div style="font-size:14px;font-weight:700;color:var(--txt0)">${f.name}</div>
+        <div style="font-size:14px;font-weight:700;color:var(--txt0)">${sanitize(f.name)}</div>
         <div style="font-size:12px;color:var(--txt3);margin-top:2px">${f.postIds.length} post${f.postIds.length!==1?'s':''}</div>
       </div>
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--txt3)" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
