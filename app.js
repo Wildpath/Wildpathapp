@@ -7717,8 +7717,8 @@ function togglePostLike(postId,el){
   if(!p.likes)p.likes=[];
   const uid=_myUid();
   const idx=p.likes.indexOf(uid);
-  if(idx>-1) p.likes.splice(idx,1);
-  else{ p.likes.push(uid); _addNotif(p.userId,'like',_myName(),'liked your post'); }
+  if(idx>-1){p.likes.splice(idx,1);_sbToggleLike(postId,false);}
+  else{ p.likes.push(uid); _sbToggleLike(postId,true); _addNotif(p.userId,'like',_myName(),'liked your post'); }
   setPosts(posts);
   // update UI
   const card=el?.closest('.post-card')||el?.closest('.reddit-post');
@@ -8489,6 +8489,12 @@ function submitComment(){
   const arr=getComments(_currentPostId);
   arr.push(newComment);
   setComments(_currentPostId,arr);
+  // Write through to Supabase (replies flatten to top-level comments in Phase 2)
+  db.from('comments').insert({post_id:_currentPostId,user_id:_myUid(),content:text}).select().single()
+    .then(({data,error})=>{
+      if(error){console.warn('[Supabase] comment:',error.message);return;}
+      newComment.id=data.id;newComment.createdAt=data.created_at;
+    });
   if(post)_addNotif(post.userId,'comment',_myName(),'commented on your post');
   inp.value='';
   inp.placeholder='Add a comment…';
@@ -8654,10 +8660,7 @@ function _updateNotifBadge(){
 
 function _addNotif(toUserId,type,fromName,message){
   if(String(toUserId)===String(_myUid()))return;
-  const notifs=getNotifs();
-  notifs.unshift({id:_uid(),type,fromUsername:fromName,message,read:false,createdAt:new Date().toISOString()});
-  setNotifs(notifs.slice(0,50));
-  _updateNotifBadge();
+  _sbNotify(toUserId,type,message); // delivered to the other user via realtime
 }
 
 function openNotificationsPage(){
@@ -9280,40 +9283,44 @@ function toggleShareTo(key,el){
 function submitPost(){
   if(isGuest()){showLoginScreen();return;}
   const caption=(document.getElementById('cpCaption')?.value||'').trim();
-  const allS=[...spots,...userSpots];
-  const taggedSpot=_cpTaggedSpotId?allS.find(s=>s.id===_cpTaggedSpotId):null;
-  const newPost={
-    id:_uid(),userId:_myUid(),username:_myName(),
-    verified:_userVerified(_myUid()),
-    type:_cpType||'text',
-    mediaUrl:_cpMediaDataUrl||null,
-    mediaUrls:_cpMediaFiles.map(f=>f.dataUrl),
-    caption,
-    spotId:_cpTaggedSpotId||null,spotName:_cpTaggedSpotName||null,
-    spotLat:_cpTaggedSpotLat||null,spotLng:_cpTaggedSpotLng||null,
-    spotType:taggedSpot?.typeLabel?.toLowerCase()||null,
-    region:taggedSpot?.region||null,
-    communityIds:_cpShareCommunities,
-    likes:[],createdAt:new Date().toISOString()
-  };
-  const posts=getPosts();
-  posts.unshift(newPost);
-  setPosts(posts);
-  // Add to community post lists
-  _cpShareCommunities.forEach(cid=>{
-    const cp=getCPosts(cid);
-    cp.unshift(newPost.id);
-    setCPosts(cid,cp);
-  });
-  // Animate button
   const btn=document.getElementById('cpPostNowBtn');
-  if(btn){btn.innerHTML='Posted!';btn.style.background='#4CAF50';}
-  setTimeout(()=>{
-    closeCreatePost();
-    showTab('community');
-    switchCommTab('feed');
-    buildFeed();
-  },1000);
+  if(btn){btn.disabled=true;btn.innerHTML='Uploading…';}
+  (async()=>{
+    try{
+      // Upload media to post-media bucket — never store base64
+      let photo_url=null,video_url=null;
+      const first=_cpMediaFiles[0];
+      if(first){
+        if(first.type==='video')video_url=await _sbUploadDataUrl('post-media',first.dataUrl,'mp4');
+        else photo_url=await _sbUploadDataUrl('post-media',first.dataUrl,'jpg');
+      }
+      const allS=[...spots,...userSpots];
+      const taggedSpot=_cpTaggedSpotId?allS.find(s=>String(s.id)===String(_cpTaggedSpotId)):null;
+      const row={
+        user_id:_myUid(),caption,photo_url,video_url,privacy:'public',
+        spot_id:taggedSpot?taggedSpot.id:null,
+        lat:_cpTaggedSpotLat??taggedSpot?.lat??null,
+        lng:_cpTaggedSpotLng??taggedSpot?.lng??null
+      };
+      const {data,error}=await db.from('posts').insert(row).select('*, profiles(username, avatar_url)').single();
+      if(error)throw error;
+      const posts=getPosts();
+      posts.unshift(_sbAdaptPost(data,null));
+      setPosts(posts);
+      if(btn){btn.innerHTML='Posted!';btn.style.background='#4CAF50';}
+      setTimeout(()=>{
+        if(btn){btn.disabled=false;}
+        closeCreatePost();
+        showTab('community');
+        switchCommTab('feed');
+        buildFeed();
+      },800);
+    }catch(e){
+      console.warn('[Supabase] post failed:',e);
+      if(btn){btn.disabled=false;btn.innerHTML='Post Now';btn.style.background='';}
+      showToast('Could not post — check connection');
+    }
+  })();
 }
 
 // ── Spot Drop ──────────────────────────────────────────────────
@@ -11015,8 +11022,8 @@ function _feedCardLike(idx,btn){
   const myUid=String(_myUid());
   post.likes=post.likes||[];
   const alreadyLiked=post.likes.map(String).includes(myUid);
-  if(alreadyLiked){post.likes=post.likes.filter(u=>String(u)!==myUid);}
-  else{post.likes.push(myUid);}
+  if(alreadyLiked){post.likes=post.likes.filter(u=>String(u)!==myUid);_sbToggleLike(post.id,false);}
+  else{post.likes.push(myUid);_sbToggleLike(post.id,true);}
   const svg=btn.querySelector('.feed-like-svg');
   const countEl=btn.querySelector('.feed-like-count');
   const liked2=post.likes.map(String).includes(myUid);
