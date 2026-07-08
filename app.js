@@ -8883,6 +8883,7 @@ function sendDmMessage(){
   setMessages(msgs);
   inp.value='';
   _renderDmChat();
+  _sbTry(db.from('messages').insert({sender_id:_myUid(),receiver_id:_dmConvUserId,content:text}),'send message');
 }
 
 function openDmSpotShare(){
@@ -8907,6 +8908,7 @@ function sendDmSpotCard(spotId){
   msgs[key].push({id:_uid(),fromId:_myUid(),spotCard:{id:s.id,name:s.name,typeLabel:s.typeLabel,heroGradient:s.heroGradient},time:new Date().toISOString()});
   setMessages(msgs);
   _renderDmChat();
+  _sbTry(db.from('messages').insert({sender_id:_myUid(),receiver_id:_dmConvUserId,spot_id:s.id}),'send spot card');
 }
 function openDmMediaAttach(){
   if(!_dmConvUserId)return;
@@ -8948,13 +8950,17 @@ function sendDmMedia(e){
   if(!file||!_dmConvUserId)return;
   const isVideo=file.type.startsWith('video/');
   if(isVideo&&file.size>VIDEO_MAX_BYTES){showToast('Video too large — choose a shorter clip');return;}
-  const done=dataUrl=>{
+  const done=async dataUrl=>{
+    let mediaUrl=dataUrl;
+    try{mediaUrl=await _sbUploadDataUrl('post-media',dataUrl,isVideo?'mp4':'jpg');}
+    catch(e){console.warn('[Supabase] dm media upload:',e);showToast('Upload failed — check connection');return;}
     const key=_dmConvKey(_myUid(),_dmConvUserId);
     const msgs=getMessages();
     if(!msgs[key])msgs[key]=[];
-    msgs[key].push({id:_uid(),fromId:_myUid(),mediaUrl:dataUrl,mediaType:isVideo?'video':'photo',time:new Date().toISOString()});
+    msgs[key].push({id:_uid(),fromId:_myUid(),mediaUrl,mediaType:isVideo?'video':'photo',time:new Date().toISOString()});
     setMessages(msgs);
     _renderDmChat();
+    _sbTry(db.from('messages').insert({sender_id:_myUid(),receiver_id:_dmConvUserId,media_url:mediaUrl}),'send media');
   };
   if(isVideo){
     const reader=new FileReader();
@@ -9002,6 +9008,7 @@ function sendDmPostCard(postId){
   msgs[key].push({id:_uid(),fromId:_myUid(),postCard:{id:p.id,mediaUrl:p.mediaUrl,caption:p.caption,spotId:p.spotId,spotName:p.spotName,username:p.username,gradient:p.heroGradient},time:new Date().toISOString()});
   setMessages(msgs);
   _renderDmChat();
+  _sbTry(db.from('messages').insert({sender_id:_myUid(),receiver_id:_dmConvUserId,post_id:p.id}),'send post card');
 }
 
 function openNewDm(){openNewMessageOverlay();}
