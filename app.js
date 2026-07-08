@@ -98,6 +98,35 @@ const leafletMap={
 };
 
 // ═══════════════════════════════════════════════════
+// IMAGE COMPRESSION — downscale before any localStorage write
+// Max 1080px longest side, JPEG 0.8 — ~10x smaller than raw photos
+// ═══════════════════════════════════════════════════
+function compressImage(file,maxDim=1080,quality=0.8){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onerror=()=>reject(new Error('read_failed'));
+    reader.onload=ev=>{
+      const img=new Image();
+      img.onload=()=>{
+        let w=img.width,h=img.height;
+        if(Math.max(w,h)>maxDim){
+          const scale=maxDim/Math.max(w,h);
+          w=Math.round(w*scale);h=Math.round(h*scale);
+        }
+        const canvas=document.createElement('canvas');
+        canvas.width=w;canvas.height=h;
+        canvas.getContext('2d').drawImage(img,0,0,w,h);
+        resolve(canvas.toDataURL('image/jpeg',quality));
+      };
+      // Not a decodable image (e.g. HEIC unsupported) — fall back to original
+      img.onerror=()=>resolve(ev.target.result);
+      img.src=ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// ═══════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════
 window.onload=()=>{
@@ -217,9 +246,6 @@ function _launchApp(){
   buildSidePanel();
   buildPlanForm();
   buildProfile();
-  buildExploreScreen();
-  buildHomeScreen();
-  buildHomeFeed();
   // Show location permission card on first run, otherwise init geo
   const locGranted=localStorage.getItem('wp_location_granted');
   if(!locGranted){
@@ -265,12 +291,14 @@ function initMap(){
 
   map.on('load',()=>{
     console.log('Map loaded successfully');
-    // Spot markers as GeoJSON circles
+    // Spot markers as GeoJSON circles (includes community spots via _buildSpotsGeoJSON)
     _initSpotLayers();
     // Land boundary GL layers (sources + empty data)
     _initLandBoundaryLayers();
     // Peak labels
     _initPeakLabels();
+    // Friend location dots on main map
+    _addFriendDotsToMainMap();
     // Restore 3D if satellite/hybrid were active
     if((currentStyle==='satellite'||currentStyle==='hybrid')&&_map3dOn){
       _enable3DTerrain();
@@ -364,7 +392,11 @@ const SPOT_TYPE_COLORS={
 function _spotColor(type){return SPOT_TYPE_COLORS[type]||'#B8E87A';}
 
 function _buildSpotsGeoJSON(){
-  const allS=[...spots,...userSpots];
+  // Merge global spots, user-added spots, and spots from all communities the user is in
+  const commSpots=getAllCommunitySpots();
+  const commSpotIds=new Set(commSpots.map(s=>s.id));
+  // Avoid dupes (community spots that were also added to userSpots via submitSpotForReview)
+  const allS=[...spots,...userSpots.filter(s=>!commSpotIds.has(s.id)),...commSpots];
   const FILTER_TYPES={water:['swimming','river','waterfall','natural_slide'],caves:['caves','lava_tube'],hiking:['hiking'],biking:['biking'],views:['scenic'],urban:['urban'],climb:['rock_climbing']};
   let filtered=activeFilters.size>0?allS.filter(s=>{let ok=false;activeFilters.forEach(fid=>{const t=FILTER_TYPES[fid]||[];if(t.includes(s.type))ok=true;});return ok;}):allS;
   if(hiddenGemFilterActive)filtered=filtered.filter(s=>s.hiddenGem);
@@ -432,6 +464,32 @@ function _initSpotLayers(){
 function refreshSpotMarkers(){
   if(!map||!map.getSource('spots'))return;
   map.getSource('spots').setData(_buildSpotsGeoJSON());
+}
+
+// Add friend real-time location dots to main map (small blue dots)
+let _friendMainMapMarkers=[];
+function _addFriendDotsToMainMap(){
+  if(!map)return;
+  _friendMainMapMarkers.forEach(m=>{try{m.remove();}catch(e){}});
+  _friendMainMapMarkers=[];
+  const myUid=String(_myUid&&_myUid()||'guest');
+  const follows=getFollows&&getFollows()||{};
+  const followingIds=follows[myUid]||[];
+  followingIds.forEach(uid=>{
+    const locData=localStorage.getItem('wildpath-user-location-'+uid);
+    if(!locData)return;
+    try{
+      const loc=JSON.parse(locData);
+      if(Date.now()-loc.ts>3600000)return;// older than 1 hour
+      const prof=getUserProfile&&getUserProfile(uid)||{};
+      const name=prof.username||uid;
+      const el=document.createElement('div');
+      el.style.cssText='width:20px;height:20px;border-radius:50%;background:#6EC6F5;border:2px solid #fff;box-shadow:0 0 0 3px rgba(110,198,245,.3);display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:#0a1a2a;cursor:pointer';
+      el.textContent=name.slice(0,2).toUpperCase();
+      const marker=new mapboxgl.Marker({element:el}).setLngLat([loc.lng,loc.lat]).setPopup(new mapboxgl.Popup({offset:14}).setHTML(`<div style="color:#fff;font-size:12px"><strong>@${name}</strong><br><span style="opacity:.7">Live location</span></div>`)).addTo(map);
+      _friendMainMapMarkers.push(marker);
+    }catch(e){}
+  });
 }
 
 // Add a new spot to the map (called after user submits)
@@ -1248,7 +1306,7 @@ function startNavigation(lat,lng,name){
 // ═══════════════════════════════════════════════════
 let _prevTab='';
 let _tabAnimTimers=[];
-const _tabOrder=['home','map','community','profile'];
+const _tabOrder=['map','community','profile'];
 function showTab(tabName) {
   if(tabName===currentScreen&&_prevTab!=='')return;
 
@@ -1256,8 +1314,8 @@ function showTab(tabName) {
   _tabAnimTimers.forEach(t=>clearTimeout(t));
   _tabAnimTimers=[];
 
-  var screens = ['screen-home','map-screen','community-screen','profile-screen','explore-screen'];
-  var navs = ['nav-home','nav-map','nav-community','nav-profile','nav-explore'];
+  var screens = ['map-screen','community-screen','profile-screen'];
+  var navs = ['nav-map','nav-community','nav-profile'];
 
   // Determine slide direction based on tab order
   const prevIdx=_tabOrder.indexOf(_prevTab);
@@ -1310,8 +1368,6 @@ function showTab(tabName) {
   if (tabName === 'map' && map) setTimeout(function(){ map.resize(); }, 50);
   if (tabName === 'community') buildCommunityScreen();
   if (tabName === 'profile') buildProfile();
-  if (tabName === 'home') buildHomeFeed();
-  if (tabName === 'explore') buildExploreScreen();
   // Show messages FAB only when Community tab is active; reset to community view
   const msgFab = document.getElementById('commMsgFab');
   if (msgFab) msgFab.style.display = (tabName === 'community') ? 'flex' : 'none';
@@ -2218,10 +2274,10 @@ let _aspPhotos=[]; // photo dataUrls for new spot submission
 function handleAspPhotos(e){
   const files=Array.from(e.target.files||[]);
   if(!files.length)return;
-  Promise.all(files.map(f=>new Promise(res=>{const r=new FileReader();r.onload=ev=>res(ev.target.result);r.readAsDataURL(f);}))).then(urls=>{
+  Promise.all(files.map(f=>compressImage(f))).then(urls=>{
     _aspPhotos=[..._aspPhotos,...urls];
     _renderAspPhotoGrid();
-  });
+  }).catch(()=>showToast('Could not read photo'));
   e.target.value='';
 }
 function _renderAspPhotoGrid(){
@@ -2265,6 +2321,7 @@ function closeAddSpot(){
   addSpotMode=false;
   if(map)map.getCanvas().style.cursor='';
   _aspPhotos=[];
+  _addSpotCommunityId=null;
   const grid=document.getElementById('aspPhotoGrid');
   if(grid)grid.innerHTML='';
 }
@@ -2335,6 +2392,24 @@ function submitNewSpot(){
     heroGradient:_aspPhotos.length?undefined:`linear-gradient(160deg,#0f1410,#1e251e,#0a100a)`
   };
   if(_aspPhotos.length)newSpot.heroGradient=`linear-gradient(160deg,#0f1410,#1e251e,#0a100a)`;
+
+  // Tag and save to community if opened from community map
+  if(_addSpotCommunityId){
+    newSpot.communityId=_addSpotCommunityId;
+    const cSpots=getCommunitySpots(_addSpotCommunityId);
+    cSpots.push(newSpot);
+    setCommunitySpots(_addSpotCommunityId,cSpots);
+    const savedCid=_addSpotCommunityId;
+    _addSpotCommunityId=null;
+    submitSpotForReview(newSpot);
+    _aspPhotos=[];
+    closeAddSpot();
+    addSpotMarkerToMap(newSpot);
+    // Return to community map showing the new spot
+    showToast('Spot added to community map!');
+    setTimeout(()=>openCommunityMap(savedCid),300);
+    return;
+  }
 
   submitSpotForReview(newSpot);
   _aspPhotos=[];
@@ -2608,6 +2683,33 @@ function openDetail(spotIdOrObj){
   const nameEl=document.getElementById('detailName');
   if(nameEl)nameEl.textContent=spot.name;
 
+  // ── Permit suggestion chip ──
+  const permitChip=document.getElementById('detailPermitChip');
+  if(permitChip){
+    const lc=spot.legal||'legal';
+    if(lc==='permit'){
+      permitChip.style.display='block';
+      permitChip.innerHTML=`<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(240,192,64,.12);border:1px solid rgba(240,192,64,.35);border-radius:20px;padding:6px 14px">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#f0c040" stroke-width="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <span style="font-size:12px;font-weight:700;color:#f0c040">Permit Required</span>
+        ${spot.permitData?`<span style="font-size:11px;color:rgba(240,192,64,.7)">·</span><a href="${spot.permitData.url}" target="_blank" rel="noopener" style="font-size:12px;font-weight:700;color:#B8E87A;text-decoration:none">Get Permit</a>`:''}
+      </div>`;
+    } else if(lc==='illegal'){
+      permitChip.style.display='block';
+      permitChip.innerHTML=`<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(224,82,82,.1);border:1px solid rgba(224,82,82,.3);border-radius:20px;padding:6px 14px">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#ff7070" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+        <span style="font-size:12px;font-weight:700;color:#ff7070">Do Not Trespass</span>
+      </div>`;
+    } else if(lc==='gray'){
+      permitChip.style.display='block';
+      permitChip.innerHTML=`<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(224,123,57,.1);border:1px solid rgba(224,123,57,.3);border-radius:20px;padding:6px 14px">
+        <span style="font-size:12px;font-weight:700;color:#e07b39">Gray Area — Check Before Visiting</span>
+      </div>`;
+    } else {
+      permitChip.style.display='none';
+    }
+  }
+
   // ── Header badges: type pill + legal badge ──
   const badgesEl=document.getElementById('detailHeaderBadges');
   if(badgesEl){
@@ -2643,9 +2745,10 @@ function openDetail(spotIdOrObj){
     </div>`).join('');
   }
 
-  // ── Legal status banner ──
+  // ── Legal status banner — kept hidden (permit chip in scroll body handles this) ──
   const legalEl=document.getElementById('detailLegalBanner');
-  if(legalEl){
+  if(legalEl){legalEl.style.display='none';}
+  if(false&&legalEl){
     const lc=spot.legal||'legal';
     const legalConfig={
       legal:{bg:'rgba(74,180,100,.12)',border:'rgba(74,180,100,.3)',color:'#6fcf97',title:'Open to Public',desc:'No permit required. Free and open access.'},
@@ -3548,6 +3651,19 @@ function verifySpot(spotId){
   showToast('Spot verified — thanks!');
 }
 
+// ── Community Map Spots (per-community spot storage) ──
+let _addSpotCommunityId=null; // set when add-spot sheet opened from inside a community
+function getCommunitySpots(cid){return JSON.parse(localStorage.getItem('wp_community_spots_'+cid)||'[]');}
+function setCommunitySpots(cid,arr){localStorage.setItem('wp_community_spots_'+cid,JSON.stringify(arr));}
+function getAllCommunitySpots(){
+  const comms=getCommunities();
+  const myUid=String(_myUid&&_myUid()||'guest');
+  const myComms=comms.filter(c=>getMembers(c.id).includes(myUid)||c.adminId===myUid);
+  const all=[];const seen=new Set();
+  myComms.forEach(c=>{getCommunitySpots(c.id).forEach(s=>{if(!seen.has(s.id)){seen.add(s.id);all.push(s);}});});
+  return all;
+}
+
 // ── Trip Reports ──────────────────────────────────
 function getCommunityData(key,spotId){
   const all=JSON.parse(localStorage.getItem(key)||'{}');
@@ -3822,37 +3938,39 @@ function setSidePanelFilter(filterId, el){
 function toggleSidePanelLayer(layerId, toggleEl){
   // Handle county boundaries
   if(layerId==='counties'){
-    const toggleEl2=document.getElementById('spToggle-counties')||toggleEl;
-    toggleCountyLayer(toggleEl2);
+    toggleCountyLayer(toggleEl);
     return;
   }
   // Handle private land boundaries
   if(layerId==='privateland'){
-    const toggleEl2=document.getElementById('spToggle-privateland')||toggleEl;
-    togglePrivateLandLayer(toggleEl2);
+    togglePrivateLandLayer(toggleEl);
     return;
   }
 
-  toggleEl.classList.toggle('on');
-  const isNowOn=toggleEl.classList.contains('on');
-  const vis=isNowOn?'visible':'none';
+  // Toggle on/off classes (supports both plain 'on' and 'on'/'off' toggle elements)
+  const isNowOn=!toggleEl.classList.contains('on');
+  toggleEl.classList.toggle('on',isNowOn);
+  toggleEl.classList.toggle('off',!isNowOn);
 
-  // Map side-panel IDs → GL layer IDs (show both fill + outline + line)
+  // Map side-panel IDs → land type keys used by showLandType/hideLandType
   const glTypeMap={
     blm:'blm',
     natforest:'nationalForest',
     stateparks:'stateParks',
     land:'private',
-    property:'private'
+    property:'private',
+    privateland:'private'
   };
   if(glTypeMap[layerId]){
     const t=glTypeMap[layerId];
+    const label={blm:'BLM Land',nationalForest:'National Forest',stateParks:'State Parks',private:'Private Land'}[t]||t;
     if(isNowOn){
       showLandType(t);
+      showToast('Showing '+label);
     } else {
       hideLandType(t);
+      showToast('Hiding '+label);
     }
-    showToast((isNowOn?'Showing ':'Hiding ')+layerId.replace(/([A-Z])/g,' $1'));
     return;
   }
 
@@ -5004,27 +5122,8 @@ function _llToTile(lat,lng,z){
 // ═══════════════════════════════════════════════════
 function registerServiceWorker(){
   if(!('serviceWorker' in navigator))return;
-  const swCode=`
-    const CACHE='wildpath-tiles-v1';
-    self.addEventListener('fetch',e=>{
-      if(!e.request.url.includes('tile.openstreetmap.org')&&!e.request.url.includes('tiles.wmflabs.org'))return;
-      e.respondWith(
-        caches.match(e.request).then(cached=>{
-          if(cached)return cached;
-          return fetch(e.request).then(r=>{
-            if(r&&r.ok){
-              const clone=r.clone();
-              caches.open(CACHE).then(c=>c.put(e.request,clone));
-            }
-            return r;
-          }).catch(()=>cached||new Response('',{status:503}));
-        })
-      );
-    });
-  `;
-  const blob=new Blob([swCode],{type:'application/javascript'});
-  const url=URL.createObjectURL(blob);
-  navigator.serviceWorker.register(url,{scope:'/'}).then(()=>{
+  // Register the real sw.js file (blob URL registration is blocked by browsers)
+  navigator.serviceWorker.register('/sw.js',{scope:'/'}).then(()=>{
     // Monitor online/offline
     window.addEventListener('offline',()=>{
       const badge=document.getElementById('offlineBadge');
@@ -5038,7 +5137,7 @@ function registerServiceWorker(){
       const badge=document.getElementById('offlineBadge');
       if(badge)badge.style.display='block';
     }
-  }).catch(()=>{/* SW not available in this context */});
+  }).catch(()=>{/* SW not available in this context (e.g. file:// or cross-origin) */});
 }
 
 // ═══════════════════════════════════════════════════
@@ -6934,7 +7033,8 @@ const CK={
   votes:'wildpath-votes', comments:'wildpath-comments',
   follows:'wildpath-follows', notifs:'wildpath-notifications',
   messages:'wildpath-messages', spotdrops:'wildpath-spot-drops',
-  searches:'wildpath-recent-searches', profiles:'wildpath-user-profiles'
+  searches:'wildpath-recent-searches', profiles:'wildpath-user-profiles',
+  pendingMembers:'wildpath-pending-members'
 };
 
 // ── Data helpers ───────────────────────────────────────────────
@@ -6946,6 +7046,8 @@ function getCommunities(){return _cgGet(CK.communities)||[];}
 function setCommunities(v){_cgSet(CK.communities,v);}
 function getMembers(cid){const m=_cgGet(CK.members)||{};return m[cid]||[];}
 function setMembers(cid,arr){const m=_cgGet(CK.members)||{};m[cid]=arr;_cgSet(CK.members,m);}
+function getPendingMembers(cid){const m=_cgGet(CK.pendingMembers)||{};return m[cid]||[];}
+function setPendingMembers(cid,arr){const m=_cgGet(CK.pendingMembers)||{};m[cid]=arr;_cgSet(CK.pendingMembers,m);}
 function getCPosts(cid){const m=_cgGet(CK.cposts)||{};return m[cid]||[];}
 function setCPosts(cid,arr){const m=_cgGet(CK.cposts)||{};m[cid]=arr;_cgSet(CK.cposts,m);}
 function getVotes(){return _cgGet(CK.votes)||{};}
@@ -7545,7 +7647,7 @@ function buildDiscoverList(){
         <div class="comm-discover-desc">${c.desc||''}</div>
         <div class="comm-discover-members">${_fmt(c.memberCount||0)} members</div>
       </div>
-      <button class="comm-join-btn" id="joinBtn_${c.id}" onclick="event.stopPropagation();joinCommunity('${c.id}',this)">Join</button>
+      <button class="comm-join-btn${getPendingMembers(c.id).includes(String(_myUid()))?'':''}" id="joinBtn_${c.id}" onclick="event.stopPropagation();joinCommunity('${c.id}',this)" ${getPendingMembers(c.id).includes(String(_myUid()))?'style="opacity:.6;pointer-events:none"':''}>${getPendingMembers(c.id).includes(String(_myUid()))?'Pending':'Request'}</button>
     </div>`;
   }).join('');
 }
@@ -7557,17 +7659,21 @@ function joinCommunity(cid,btn){
   const comms=getCommunities();
   const c=comms.find(x=>x.id===cid);
   if(!c)return;
-  const members=getMembers(cid);
   const uid=String(_myUid());
-  if(!members.includes(uid)){
-    members.push(uid);
-    setMembers(cid,members);
-    c.memberCount=(c.memberCount||0)+1;
-    setCommunities(comms);
-    showToast('Joined '+c.name);
-    if(btn){btn.textContent='Joined';btn.classList.add('joined');}
-    buildYourCommunitiesRow();
-  }
+  const members=getMembers(cid);
+  if(members.includes(uid))return; // already a member
+  // Check if already pending
+  const pending=getPendingMembers(cid);
+  if(pending.includes(uid)){showToast('Your request is still pending approval');return;}
+  // All joins require admin approval — add to pending
+  pending.push(uid);
+  setPendingMembers(cid,pending);
+  showToast('Join request sent — waiting for admin approval');
+  if(btn){btn.textContent='Request Pending';btn.style.opacity='0.6';btn.style.pointerEvents='none';}
+  // Notify community admin
+  const adminNotifs=_cgGet('wp_notifs_'+c.adminId)||[];
+  adminNotifs.unshift({id:'jreq_'+uid+'_'+cid,type:'join_request',fromUid:uid,commId:cid,commName:c.name,createdAt:new Date().toISOString(),read:false});
+  _cgSet('wp_notifs_'+c.adminId,adminNotifs);
 }
 
 function showAllCommunities(){
@@ -7623,9 +7729,11 @@ function _renderCommunityDetail(cid){
       <div class="comm-stat-item"><div class="comm-stat-val">${spots_count}</div><div class="comm-stat-label">Spots</div></div>
     </div>`;
 
+  const isPending=getPendingMembers(cid).includes(String(_myUid()));
   let joinHtml='';
   if(c.adminId===String(_myUid()))joinHtml=`<div class="comm-join-big joined" style="cursor:default">You're the Admin</div>`;
   else if(isMember)joinHtml=`<div class="comm-join-big joined" onclick="leaveCommunity('${cid}')">Member — Tap to Leave</div>`;
+  else if(isPending)joinHtml=`<div class="comm-join-big" style="opacity:.6;pointer-events:none">Request Pending</div>`;
   else joinHtml=`<div class="comm-join-big" onclick="joinCommunity('${cid}',this);_renderCommunityDetail('${cid}')">Join Community</div>`;
 
   body.innerHTML=`
@@ -7641,7 +7749,7 @@ function _renderCommunityDetail(cid){
     </div>
     <div style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:0">
       <div id="commTabPosts" onclick="setCommView('posts',this,'${cid}')" style="flex:1;text-align:center;padding:10px;font-size:13px;font-weight:700;color:var(--txt0);cursor:pointer;border-bottom:2px solid var(--accent)">Posts</div>
-      <div id="commTabMap" onclick="setCommView('map',this,'${cid}')" style="flex:1;text-align:center;padding:10px;font-size:13px;font-weight:600;color:var(--txt2);cursor:pointer;border-bottom:2px solid transparent">Map</div>
+      <div id="commTabMap" onclick="setCommView('map',this,'${cid}')" style="flex:1;text-align:center;padding:10px;font-size:13px;font-weight:600;color:${isMember?'var(--txt2)':'var(--txt3)'};cursor:pointer;border-bottom:2px solid transparent;display:flex;align-items:center;justify-content:center;gap:5px">${isMember?'':'<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>'}Map</div>
     </div>
     <div id="commPostsView">
       <div class="comm-sort-pills" id="commSortPills">
@@ -7659,20 +7767,133 @@ function _renderCommunityDetail(cid){
 }
 
 function setCommView(view,el,cid){
+  const activeCid=cid||_currentCommunityId;
   const postsView=document.getElementById('commPostsView');
   const mapView=document.getElementById('commMapView');
   const tabPosts=document.getElementById('commTabPosts');
   const tabMap=document.getElementById('commTabMap');
-  if(postsView)postsView.style.display=view==='posts'?'block':'none';
-  if(mapView)mapView.style.display=view==='map'?'block':'none';
-  if(tabPosts){tabPosts.style.borderBottomColor=view==='posts'?'var(--accent)':'transparent';tabPosts.style.color=view==='posts'?'var(--txt0)':'var(--txt2)';}
-  if(tabMap){tabMap.style.borderBottomColor=view==='map'?'var(--accent)':'transparent';tabMap.style.color=view==='map'?'var(--txt0)':'var(--txt2)';}
-  if(view==='map')_buildCommMap(cid||_currentCommunityId);
+
+  if(view==='map'){
+    // Gate map behind membership
+    const comms=getCommunities();
+    const c=comms.find(x=>x.id===activeCid);
+    const uid=String(_myUid());
+    const isMember=getMembers(activeCid).includes(uid)||(c&&c.adminId===uid);
+
+    // Update tab styles
+    if(tabPosts){tabPosts.style.borderBottomColor='transparent';tabPosts.style.color='var(--txt2)';tabPosts.style.fontWeight='600';}
+    if(tabMap){tabMap.style.borderBottomColor='var(--accent)';tabMap.style.color='var(--txt0)';tabMap.style.fontWeight='700';}
+    if(postsView)postsView.style.display='none';
+    if(mapView)mapView.style.display='block';
+
+    if(!isMember){
+      // Show a visible locked state inside the map view
+      const isPending=getPendingMembers(activeCid).includes(uid);
+      if(mapView)mapView.innerHTML=`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 24px;text-align:center;min-height:300px">
+        <div style="width:52px;height:52px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;margin-bottom:16px">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="var(--txt2)" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </div>
+        <div style="font-size:16px;font-weight:700;color:var(--txt0);margin-bottom:8px">Members Only</div>
+        <div style="font-size:13px;color:var(--txt2);margin-bottom:20px;line-height:1.5">${isPending?'Your join request is pending admin approval.':'Join this community to see member-shared spots on the map.'}</div>
+        ${isPending?`<div style="padding:10px 20px;border-radius:20px;background:var(--bg3);color:var(--txt3);font-size:13px;font-weight:600">Request Pending</div>`:`<div onclick="joinCommunity('${activeCid}',this);setCommView('map',null,'${activeCid}')" style="padding:11px 24px;border-radius:20px;background:var(--accent);color:#0b1a0b;font-size:13px;font-weight:700;cursor:pointer">Request to Join</div>`}
+      </div>`;
+      return;
+    }
+
+    // Member — build the inline map
+    if(mapView){
+      mapView.style.cssText='display:block;height:420px;position:relative';
+      // Ensure commMapEl exists inside mapView
+      if(!mapView.querySelector('#commMapEl')){
+        mapView.innerHTML='<div id="commMapEl" style="position:absolute;inset:0"></div>';
+      }
+    }
+    _buildCommMap(activeCid);
+    return;
+  }
+
+  // Posts view
+  if(postsView)postsView.style.display='block';
+  if(mapView)mapView.style.display='none';
+  if(tabPosts){tabPosts.style.borderBottomColor='var(--accent)';tabPosts.style.color='var(--txt0)';tabPosts.style.fontWeight='700';}
+  if(tabMap){tabMap.style.borderBottomColor='transparent';tabMap.style.color='var(--txt2)';tabMap.style.fontWeight='600';}
+}
+
+function openCommunityMap(cid){
+  if(!cid)return;
+  const page=document.getElementById('communityMapPage');
+  if(!page)return;
+  _addSpotCommunityId=cid;
+  const comms=getCommunities();
+  const comm=comms.find(c=>c.id===cid);
+  const titleEl=document.getElementById('communityMapTitle');
+  if(titleEl)titleEl.textContent=(comm?.name||'Community')+' Map';
+  page.style.display='flex';
+  _buildCommunityFullMap(cid);
+}
+
+function closeCommunityMap(){
+  const page=document.getElementById('communityMapPage');
+  if(page)page.style.display='none';
+  _addSpotCommunityId=null;
+}
+
+function openAddSpotFromCommunityMap(){
+  // Hide community map without clearing _addSpotCommunityId
+  const page=document.getElementById('communityMapPage');
+  if(page)page.style.display='none';
+  // Navigate to map tab so user can place pin
+  showTab('map');
+  setTimeout(()=>openAddSpot(),250);
+}
+
+function _buildCommunityFullMap(cid){
+  const container=document.getElementById('communityMapEl');
+  if(!container)return;
+  // Always rebuild (community spots may have changed)
+  if(container._mapInst){try{container._mapInst.remove();}catch(e){} container._mapInst=null; container.innerHTML='';}
+  const tok=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||'';
+  // Gather spots: community-specific spots + posts with location
+  const commSpots=getCommunitySpots(cid);
+  const posts=getPosts().filter(p=>p.communityIds?.includes(cid)&&(p.lat||p.spotId));
+  const allS=[...spots,...userSpots,...commSpots];
+  const pinMap=new Map();
+  commSpots.forEach(s=>{if(s.lat&&s.lng)pinMap.set(`${s.lat},${s.lng}`,{lat:s.lat,lng:s.lng,name:s.name,id:s.id});});
+  posts.forEach(p=>{
+    let lat=p.lat,lng=p.lng,name=p.spotName||p.username||'Post';
+    if(!lat&&p.spotId){const s=allS.find(x=>x.id===p.spotId);if(s){lat=s.lat;lng=s.lng;name=s.name;}}
+    if(lat&&lng){const k=`${lat},${lng}`;if(!pinMap.has(k))pinMap.set(k,{lat,lng,name});}
+  });
+  const pins=[...pinMap.values()];
+  if(!tok){
+    container.innerHTML=`<div style="padding:20px 16px;color:var(--txt3);font-size:13px"><div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:12px">Community Spots</div>${pins.length?pins.map(p=>`<div style="padding:10px 0;border-bottom:1px solid var(--border)"><div style="color:var(--txt0);font-size:13px">${p.name}</div><div style="font-size:11px;color:var(--txt3);margin-top:2px">${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</div></div>`).join(''):'<div style="color:var(--txt3);padding:20px 0">No spots yet — tap Add Spot to be first!</div>'}<div style="margin-top:16px;font-size:11px;color:var(--txt3)">Add a Mapbox token in settings to enable map view</div></div>`;
+    return;
+  }
+  mapboxgl.accessToken=tok;
+  try{
+    const center=pins.length?[pins[0].lng,pins[0].lat]:[-121.5,38.5];
+    const m=new mapboxgl.Map({container,style:'mapbox://styles/mapbox/dark-v11',center,zoom:pins.length?8:5,interactive:true,attributionControl:false});
+    container._mapInst=m;
+    m.on('load',()=>{
+      pins.forEach(p=>{
+        new mapboxgl.Marker({color:'#B8E87A',scale:0.9}).setLngLat([p.lng,p.lat]).setPopup(new mapboxgl.Popup({offset:20}).setText(p.name)).addTo(m);
+      });
+      if(pins.length>1){
+        const lngs=pins.map(p=>p.lng),lats=pins.map(p=>p.lat);
+        m.fitBounds([[Math.min(...lngs)-.1,Math.min(...lats)-.1],[Math.max(...lngs)+.1,Math.max(...lats)+.1]],{padding:70,duration:600});
+      }
+    });
+  }catch(e){console.warn('Community map failed',e);}
 }
 function _buildCommMap(cid){
   const container=document.getElementById('commMapEl');
   if(!container)return;
-  if(container._mapInit)return;
+  // If already built for this same community, skip
+  if(container._mapInit&&container._mapCid===cid)return;
+  // Tear down previous map instance if switching communities
+  if(container._mapInst){try{container._mapInst.remove();}catch(e){}container._mapInst=null;}
+  container._mapInit=false;
+  container._mapCid=cid;
   const token=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||'';
   const posts=getPosts().filter(p=>p.communityIds?.includes(cid)&&(p.lat||p.spotId));
   const allS=[...spots,...userSpots];
@@ -7689,12 +7910,13 @@ function _buildCommMap(cid){
   mapboxgl.accessToken=token;
   try{
     const m=new mapboxgl.Map({container,style:'mapbox://styles/mapbox/dark-v11',center:mapPins.length?[mapPins[0].lng,mapPins[0].lat]:[-121.5,38.5],zoom:mapPins.length?8:5,interactive:true,attributionControl:false});
+    container._mapInst=m;
     m.on('load',()=>{
       mapPins.forEach(p=>{
         new mapboxgl.Marker({color:'#B8E87A',scale:.8}).setLngLat([p.lng,p.lat]).setPopup(new mapboxgl.Popup({offset:20}).setText(p.name)).addTo(m);
       });
     });
-  }catch(e){}
+  }catch(e){console.warn('Community inline map failed',e);}
 }
 
 function setCommSort(s,el){
@@ -8148,15 +8370,12 @@ function saveEditProfile(){
 }
 function handleEditAvatar(e){
   const file=e.target.files?.[0];if(!file)return;
-  const reader=new FileReader();
-  reader.onload=ev=>{
-    const url=ev.target.result;
+  compressImage(file,512).then(url=>{
     const av=document.getElementById('editProfileAvatar');
     if(av)av.innerHTML=`<img src="${url}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
     const existing=getUserProfile(_myUid())||{};
     setUserProfile(_myUid(),{...existing,avatarUrl:url});
-  };
-  reader.readAsDataURL(file);
+  }).catch(()=>showToast('Could not read photo'));
 }
 
 // ── Notifications ──────────────────────────────────────────────
@@ -8460,11 +8679,9 @@ function sendDmMedia(e){
   document.getElementById('_dmAttachSheet')?.remove();
   const file=e.target.files?.[0];
   if(!file||!_dmConvUserId)return;
-  if(file.type.startsWith('video/')&&file.size>VIDEO_MAX_BYTES){showToast('Video too large — choose a shorter clip');return;}
-  const reader=new FileReader();
-  reader.onload=ev=>{
-    const dataUrl=ev.target.result;
-    const isVideo=file.type.startsWith('video/');
+  const isVideo=file.type.startsWith('video/');
+  if(isVideo&&file.size>VIDEO_MAX_BYTES){showToast('Video too large — choose a shorter clip');return;}
+  const done=dataUrl=>{
     const key=_dmConvKey(_myUid(),_dmConvUserId);
     const msgs=getMessages();
     if(!msgs[key])msgs[key]=[];
@@ -8472,7 +8689,13 @@ function sendDmMedia(e){
     setMessages(msgs);
     _renderDmChat();
   };
-  reader.readAsDataURL(file);
+  if(isVideo){
+    const reader=new FileReader();
+    reader.onload=ev=>done(ev.target.result);
+    reader.readAsDataURL(file);
+  } else {
+    compressImage(file).then(done).catch(()=>showToast('Could not read photo'));
+  }
 }
 
 function openDmPostShare(){
@@ -8642,10 +8865,14 @@ function _readFileAsDataUrl(file){
         return;
       }
     }
-    const r=new FileReader();
-    r.onload=e=>resolve({dataUrl:e.target.result,type:file.type.startsWith('video')?'video':'photo',name:file.name});
-    r.onerror=()=>reject(new Error('read_failed'));
-    r.readAsDataURL(file);
+    if(file.type.startsWith('video/')){
+      const r=new FileReader();
+      r.onload=e=>resolve({dataUrl:e.target.result,type:'video',name:file.name});
+      r.onerror=()=>reject(new Error('read_failed'));
+      r.readAsDataURL(file);
+    } else {
+      compressImage(file).then(dataUrl=>resolve({dataUrl,type:'photo',name:file.name})).catch(reject);
+    }
   });
 }
 function _renderCpMediaThumbs(){
@@ -8854,13 +9081,11 @@ function selectSdLocation(lat,lon,name){
 }
 function handleSdPhoto(e){
   const file=e.target.files?.[0];if(!file)return;
-  const reader=new FileReader();
-  reader.onload=ev=>{
-    _sdPhotoDataUrl=ev.target.result;
+  compressImage(file).then(dataUrl=>{
+    _sdPhotoDataUrl=dataUrl;
     const prev=document.getElementById('sdPhotoPreview');
     if(prev){prev.style.display='block';const img=prev.querySelector('img');if(img)img.src=_sdPhotoDataUrl;}
-  };
-  reader.readAsDataURL(file);
+  }).catch(()=>showToast('Could not read photo'));
 }
 function submitSpotDrop(){
   if(isGuest()){showLoginScreen();return;}
@@ -8953,15 +9178,13 @@ function ccNext(){
 }
 function handleCcCover(e){
   const file=e.target.files?.[0];if(!file)return;
-  const reader=new FileReader();
-  reader.onload=ev=>{
-    _ccCoverDataUrl=ev.target.result;
+  compressImage(file).then(dataUrl=>{
+    _ccCoverDataUrl=dataUrl;
     const prev=document.getElementById('ccCoverPreview');
     const zone=document.getElementById('ccCoverZone');
     if(prev){prev.style.display='block';const img=prev.querySelector('img');if(img)img.src=_ccCoverDataUrl;}
     if(zone)zone.style.display='none';
-  };
-  reader.readAsDataURL(file);
+  }).catch(()=>showToast('Could not read photo'));
 }
 function selectCcPrivacy(p,el){
   _ccPrivacy=p;
@@ -9018,12 +9241,29 @@ function _renderCommSettings(cid){
     ${c.adminId===String(_myUid())&&uid!==String(_myUid())?`<button class="member-menu-btn" onclick="showMemberMenu('${cid}','${uid}',this)">⋯</button>`:''}
   </div>`).join('');
 
+  const pending=getPendingMembers(cid);
+  const pendingHtml=pending.length?pending.map(uid=>`<div class="member-row">
+    ${_avatarHtml(uid,36)}
+    <div class="member-row-info">
+      <div class="member-name">${uid}</div>
+      <div class="member-date">Pending approval</div>
+    </div>
+    <div style="display:flex;gap:6px;flex-shrink:0">
+      <button onclick="approveMember('${cid}','${uid}')" style="padding:5px 10px;background:rgba(184,232,122,.15);border:1.5px solid var(--accent);border-radius:8px;color:var(--accent);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">Approve</button>
+      <button onclick="rejectMember('${cid}','${uid}')" style="padding:5px 10px;background:rgba(196,82,74,.1);border:1.5px solid rgba(196,82,74,.4);border-radius:8px;color:var(--red);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">Reject</button>
+    </div>
+  </div>`).join(''):'<div style="font-size:12px;color:var(--txt3);padding:6px 0">No pending requests</div>';
+
   body.innerHTML=`
     <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
       <div class="settings-row" onclick="openEditCommunity('${cid}')" style="padding:12px 0">
         <div class="settings-left"><div class="settings-icon"></div><div class="settings-name">Edit Community Info</div></div>
         <div class="settings-arrow">›</div>
       </div>
+    </div>
+    <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
+      <div style="font-size:12px;font-weight:700;color:var(--accent);letter-spacing:.4px;text-transform:uppercase;margin-bottom:10px">Join Requests${pending.length?` (${pending.length})`:''}</div>
+      ${pendingHtml}
     </div>
     <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
       <div style="font-size:12px;font-weight:700;color:var(--txt2);letter-spacing:.4px;text-transform:uppercase;margin-bottom:10px">Members (${members.length})</div>
@@ -9057,6 +9297,31 @@ function removeMember(cid,uid){
   setMembers(cid,members);
   _renderCommSettings(cid);
   showToast('Member removed');
+}
+function approveMember(cid,uid){
+  const pending=getPendingMembers(cid).filter(m=>m!==uid);
+  setPendingMembers(cid,pending);
+  const members=getMembers(cid);
+  if(!members.includes(uid)){
+    members.push(uid);
+    setMembers(cid,members);
+    const comms=getCommunities();
+    const c=comms.find(x=>x.id===cid);
+    if(c){c.memberCount=(c.memberCount||0)+1;setCommunities(comms);}
+  }
+  // Notify the user they were approved
+  const userNotifs=_cgGet('wp_notifs_'+uid)||[];
+  const c=getCommunities().find(x=>x.id===cid);
+  userNotifs.unshift({id:'japproved_'+uid+'_'+cid,type:'join_approved',commId:cid,commName:c?.name||'',createdAt:new Date().toISOString(),read:false});
+  _cgSet('wp_notifs_'+uid,userNotifs);
+  _renderCommSettings(cid);
+  showToast('Member approved');
+}
+function rejectMember(cid,uid){
+  const pending=getPendingMembers(cid).filter(m=>m!==uid);
+  setPendingMembers(cid,pending);
+  _renderCommSettings(cid);
+  showToast('Request rejected');
 }
 function copyInviteLink(link){navigator.clipboard?.writeText(link);showToast('Invite link copied!');}
 function confirmDeleteCommunity(cid,name){
@@ -9134,18 +9399,16 @@ function openEditCommunity(cid){
 }
 function _handleEditCommCover(e,cid){
   const file=e.target.files?.[0];if(!file)return;
-  const reader=new FileReader();
-  reader.onload=ev=>{
+  compressImage(file).then(dataUrl=>{
     const overlay=document.getElementById('editCommOverlay');
-    if(overlay)overlay._editCoverDataUrl=ev.target.result;
+    if(overlay)overlay._editCoverDataUrl=dataUrl;
     const prev=document.getElementById('editCommCoverPreview');
     if(prev){
       let img=prev.querySelector('img');
       if(!img){img=document.createElement('img');img.style.cssText='position:absolute;inset:0;width:100%;height:100%;object-fit:cover';prev.insertBefore(img,prev.firstChild);}
-      img.src=ev.target.result;
+      img.src=dataUrl;
     }
-  };
-  reader.readAsDataURL(file);
+  }).catch(()=>showToast('Could not read photo'));
 }
 function _setEditPrivacy(p,cid){
   const overlay=document.getElementById('editCommOverlay');
@@ -9491,22 +9754,24 @@ function runCommSearch(query){
 
 function _commSearchRowHTML(c){
   const members=getMembers(c.id);
-  const isMember=members.includes(String(_myUid()));
+  const uid=String(_myUid());
+  const isMember=members.includes(uid)||c.adminId===uid;
+  const isPending=getPendingMembers(c.id).includes(uid);
   const coverHtml=c.coverDataUrl
     ?`<img src="${c.coverDataUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:10px">`
     :`<div style="width:100%;height:100%;${c.coverGrad||'background:var(--bg3)'};border-radius:10px;"></div>`;
   const memberCount=c.memberCount||members.length;
-  const btnStyle=isMember
-    ?'border:1px solid var(--border2);background:transparent;color:var(--txt2)'
-    :'border:1px solid var(--accent);background:rgba(196,149,106,.12);color:var(--accent)';
-  const btnLabel=isMember?'Joined':'Join';
+  let btnStyle,btnLabel,btnExtra='';
+  if(isMember){btnStyle='border:1px solid var(--border2);background:transparent;color:var(--txt2)';btnLabel='Joined';}
+  else if(isPending){btnStyle='border:1px solid var(--border2);background:transparent;color:var(--txt3)';btnLabel='Pending';btnExtra='style="opacity:.7;pointer-events:none"';}
+  else{btnStyle='border:1px solid var(--accent);background:rgba(196,149,106,.12);color:var(--accent)';btnLabel='Request';}
   return `<div style="display:flex;align-items:center;gap:12px;padding:10px 16px">
     <div style="width:44px;height:44px;flex-shrink:0;overflow:hidden;border-radius:10px">${coverHtml}</div>
     <div style="flex:1;min-width:0">
       <div style="font-size:14px;font-weight:700;color:var(--txt0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.name}</div>
       <div style="font-size:12px;color:var(--txt3);margin-top:2px">${memberCount.toLocaleString()} members · ${c.privacy||'public'}</div>
     </div>
-    <button onclick="joinCommunity('${c.id}',this)" style="padding:7px 16px;border-radius:20px;${btnStyle};font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">${btnLabel}</button>
+    <button onclick="joinCommunity('${c.id}',this)" ${btnExtra} style="padding:7px 16px;border-radius:20px;${btnStyle};font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">${btnLabel}</button>
   </div>`;
 }
 
@@ -9732,13 +9997,18 @@ function capturePhoto(){
 function handleMomentCapture(e){
   const file=e.target.files?.[0];
   if(!file)return;
-  const reader=new FileReader();
-  reader.onload=ev=>{
-    _momentCapturedDataUrl=ev.target.result;
+  const done=dataUrl=>{
+    _momentCapturedDataUrl=dataUrl;
     closeMomentCapture();
     showMomentPreview(_momentCapturedDataUrl);
   };
-  reader.readAsDataURL(file);
+  if(file.type.startsWith('video/')){
+    const reader=new FileReader();
+    reader.onload=ev=>done(ev.target.result);
+    reader.readAsDataURL(file);
+  } else {
+    compressImage(file).then(done).catch(()=>showToast('Could not read photo'));
+  }
 }
 
 function showMomentPreview(dataUrl){
@@ -9864,19 +10134,21 @@ let _detailMiniMapInstance=null;
 let _detailCurrentStarRating=5;
 
 function _populateDetailNewElements(spot){
-  // ── Bookmark state ──
+  // ── Bookmark / Save state ──
   const saved=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');
   const isSaved=saved.includes(spot.id);
+  // Legacy icon (may be removed from HTML)
   const bmIcon=document.getElementById('detailBookmarkIcon');
   const bmBtn=document.getElementById('detailBookmarkBtn');
-  if(bmIcon){
-    bmIcon.setAttribute('fill',isSaved?'#B8E87A':'none');
-    bmIcon.setAttribute('stroke',isSaved?'#B8E87A':'var(--txt2)');
-  }
-  if(bmBtn){
-    bmBtn.style.background=isSaved?'rgba(184,232,122,.18)':'var(--bg2)';
-    bmBtn.style.borderColor=isSaved?'rgba(184,232,122,.5)':'var(--border2)';
-  }
+  if(bmIcon){bmIcon.setAttribute('fill',isSaved?'#B8E87A':'none');bmIcon.setAttribute('stroke',isSaved?'#B8E87A':'var(--txt2)');}
+  if(bmBtn){bmBtn.style.background=isSaved?'rgba(184,232,122,.18)':'var(--bg2)';bmBtn.style.borderColor=isSaved?'rgba(184,232,122,.5)':'var(--border2)';}
+  // New Save button
+  const saveBtnIcon=document.getElementById('detailSaveBtnIcon');
+  const saveBtnLabel=document.getElementById('detailSaveBtnLabel');
+  const saveBtn=document.getElementById('detailSaveBtn');
+  if(saveBtnIcon){saveBtnIcon.setAttribute('fill',isSaved?'#B8E87A':'none');saveBtnIcon.setAttribute('stroke',isSaved?'#B8E87A':'var(--txt1)');}
+  if(saveBtnLabel)saveBtnLabel.textContent=isSaved?'Saved':'Save';
+  if(saveBtn){saveBtn.style.background=isSaved?'rgba(184,232,122,.12)':'var(--bg2)';saveBtn.style.borderColor=isSaved?'rgba(184,232,122,.4)':'var(--border2)';saveBtn.style.color=isSaved?'#B8E87A':'var(--txt0)';}
 
   // ── Stars row ──
   const starsEl=document.getElementById('detailStarsRow');
@@ -10057,10 +10329,18 @@ function toggleDetailBookmark(){
   localStorage.setItem('wp_saved_spots',JSON.stringify(saved));
   localStorage.setItem('wp_want_to_go',JSON.stringify(pinned));
   const isSaved=saved.includes(_detailSpotId);
+  // Legacy icon
   const bmIcon=document.getElementById('detailBookmarkIcon');
   const bmBtn=document.getElementById('detailBookmarkBtn');
   if(bmIcon){bmIcon.setAttribute('fill',isSaved?'#B8E87A':'none');bmIcon.setAttribute('stroke',isSaved?'#B8E87A':'var(--txt2)');}
   if(bmBtn){bmBtn.style.background=isSaved?'rgba(184,232,122,.18)':'var(--bg2)';bmBtn.style.borderColor=isSaved?'rgba(184,232,122,.5)':'var(--border2)';}
+  // New Save button
+  const saveBtnIcon=document.getElementById('detailSaveBtnIcon');
+  const saveBtnLabel=document.getElementById('detailSaveBtnLabel');
+  const saveBtn=document.getElementById('detailSaveBtn');
+  if(saveBtnIcon){saveBtnIcon.setAttribute('fill',isSaved?'#B8E87A':'none');saveBtnIcon.setAttribute('stroke',isSaved?'#B8E87A':'var(--txt1)');}
+  if(saveBtnLabel)saveBtnLabel.textContent=isSaved?'Saved':'Save';
+  if(saveBtn){saveBtn.style.background=isSaved?'rgba(184,232,122,.12)':'var(--bg2)';saveBtn.style.borderColor=isSaved?'rgba(184,232,122,.4)':'var(--border2)';saveBtn.style.color=isSaved?'#B8E87A':'var(--txt0)';}
   refreshSpotMarkers();
 }
 
@@ -10077,6 +10357,93 @@ function openDetailAddComment(){
 function closeDetailCommentPanel(){
   const panel=document.getElementById('detailCommentPanel');
   if(panel)panel.style.display='none';
+}
+
+// ── Reviews overlay ──
+function openDetailReviews(){
+  const overlay=document.getElementById('detailReviewsOverlay');
+  if(!overlay)return;
+  const spot=[...spots,...userSpots].find(s=>s.id===_detailSpotId);
+  if(!spot)return;
+
+  // Big score
+  const bigScore=document.getElementById('detailRevBigScore');
+  const bigStars=document.getElementById('detailRevBigStars');
+  const totalCount=document.getElementById('detailRevTotalCount');
+  const r=parseFloat(spot.rating)||4.5;
+  if(bigScore)bigScore.textContent=r.toFixed(1);
+  if(bigStars){
+    const full=Math.floor(r);const half=r-full>=0.5;let sh='';
+    for(let i=1;i<=5;i++){
+      if(i<=full)sh+=`<svg viewBox="0 0 24 24" width="14" height="14" fill="#F5A623" stroke="none"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>`;
+      else if(i===full+1&&half)sh+=`<svg viewBox="0 0 24 24" width="14" height="14" fill="#F5A623" stroke="none"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>`;
+      else sh+=`<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="rgba(255,255,255,.25)" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>`;
+    }
+    bigStars.innerHTML=sh;
+  }
+  const revData=spot.reviews_data||[];
+  const userRevs=JSON.parse(localStorage.getItem(`wp_reviews_${spot.id}`)||'[]');
+  const allRevs=[...revData,...userRevs];
+  const totalN=(spot.reviews||40)+userRevs.length;
+  if(totalCount)totalCount.textContent=totalN+' ratings';
+
+  // Rating bars
+  const barsEl=document.getElementById('detailRevBars');
+  if(barsEl){
+    const counts=[0,0,0,0,0];
+    allRevs.forEach(rv=>{const s=Math.min(5,Math.max(1,Math.round(rv.stars||5)));counts[s-1]++;});
+    if(!allRevs.length){
+      const base=r,total=spot.reviews||40;
+      const fiveStarPct=Math.max(0,(base-4)*2*0.6+0.5);
+      counts[4]=Math.round(total*fiveStarPct);counts[3]=Math.round(total*0.25);
+      counts[2]=Math.round(total*0.1);counts[1]=Math.round(total*0.04);counts[0]=Math.round(total*0.01);
+    }
+    const total=counts.reduce((a,b)=>a+b,0)||1;
+    barsEl.innerHTML=[5,4,3,2,1].map(s=>{
+      const pct=Math.round((counts[s-1]/total)*100);
+      return`<div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:11px;color:var(--txt2);width:10px;text-align:right;flex-shrink:0">${s}</span>
+        <svg viewBox="0 0 24 24" width="11" height="11" fill="#F5A623" stroke="none"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+        <div style="flex:1;height:5px;background:rgba(255,255,255,.1);border-radius:3px;overflow:hidden"><div style="height:100%;width:${pct}%;background:${pct>50?'#F5A623':'rgba(245,166,35,.5)'};border-radius:3px"></div></div>
+        <span style="font-size:11px;color:var(--txt3);width:28px;flex-shrink:0">${pct}%</span>
+      </div>`;
+    }).join('');
+  }
+
+  // Reviews list
+  const listEl=document.getElementById('detailRevList');
+  if(listEl){
+    const displayRevs=[...allRevs].slice(0,20);
+    if(!displayRevs.length){
+      listEl.innerHTML=`<div style="font-size:13px;color:var(--txt3);text-align:center;padding:16px 0">No reviews yet — tap "Write a Review" to be first!</div>`;
+    } else {
+      listEl.innerHTML=displayRevs.map(rv=>{
+        const stars='★'.repeat(Math.min(5,Math.max(1,rv.stars||5)));
+        const empty='☆'.repeat(Math.max(0,5-(rv.stars||5)));
+        return`<div style="background:var(--bg1);border:1px solid var(--border);border-radius:14px;padding:14px">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+            <div style="width:34px;height:34px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#B8E87A;flex-shrink:0">${(rv.user||rv.username||'?').slice(0,2).toUpperCase()}</div>
+            <div style="flex:1">
+              <div style="font-size:13px;font-weight:700;color:var(--txt0)">@${rv.user||rv.username||'Explorer'}</div>
+              <div style="font-size:11px;color:var(--txt3)">${rv.date||''}</div>
+            </div>
+            <div style="font-size:14px;color:#F5A623;letter-spacing:1px">${stars}<span style="color:rgba(255,255,255,.2)">${empty}</span></div>
+          </div>
+          <div style="font-size:13px;color:var(--txt1);line-height:1.5">${rv.text||rv.comment||''}</div>
+        </div>`;
+      }).join('');
+    }
+  }
+
+  overlay.style.display='flex';
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{overlay.style.transform='translateY(0)';}));
+}
+
+function closeDetailReviews(){
+  const overlay=document.getElementById('detailReviewsOverlay');
+  if(!overlay)return;
+  overlay.style.transform='translateY(100%)';
+  setTimeout(()=>{overlay.style.display='none';},350);
 }
 
 function setDetailReviewStar(n){
@@ -10118,7 +10485,10 @@ function submitDetailComment(){
   const allS=[...spots,...userSpots];
   const spot=allS.find(s=>s.id===_detailSpotId);
   if(spot)_populateDetailNewElements(spot);
-  showToast('Comment posted!');
+  // Re-render reviews overlay if open
+  const revOverlay=document.getElementById('detailReviewsOverlay');
+  if(revOverlay&&revOverlay.style.display!=='none')openDetailReviews();
+  showToast('Review posted!');
 }
 
 function detailSearch(query){
@@ -11091,25 +11461,63 @@ function _initProfileMapThumbnail(){
 }
 
 function openProfileYourMap(){
-  showTab('map');
-  setTimeout(()=>{
-    const myUid=String(_myUid());
-    const myPosts=getPosts().filter(p=>String(p.userId)===myUid&&p.spotId);
-    if(!myPosts.length){showToast('No spots posted yet!');return;}
-    const spotIds=new Set(myPosts.map(p=>p.spotId));
-    const allS=[...spots,...userSpots].filter(s=>spotIds.has(s.id));
-    if(allS.length&&map){
-      const lngs=allS.map(s=>s.lng), lats=allS.map(s=>s.lat);
-      const bounds=[[Math.min(...lngs)-0.1,Math.min(...lats)-0.1],[Math.max(...lngs)+0.1,Math.max(...lats)+0.1]];
-      map.fitBounds(bounds,{padding:50,duration:1000});
-    }
-    showToast('Your visited spots');
-  },300);
+  const page=document.getElementById('yourMapPage');
+  if(!page)return;
+  page.style.display='flex';
+  _buildYourMap();
+}
+function _buildYourMap(){
+  const container=document.getElementById('yourMapEl');
+  if(!container)return;
+  if(container._mapInst){try{container._mapInst.remove();}catch(e){} container._mapInst=null; container.innerHTML='';}
+  const tok=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||MAPBOX_TOKEN_DEFAULT||'';
+  mapboxgl.accessToken=tok||mapboxgl.accessToken;
+  // "Your spots" = spots you added (userSubmitted) + spots you've posted about
+  const myUid=String(_myUid());
+  const myPosts=getPosts().filter(p=>String(p.userId)===myUid&&p.spotId);
+  const visitedIds=new Set(myPosts.map(p=>p.spotId));
+  const allS=[...spots,...userSpots];
+  const visited=allS.filter(s=>visitedIds.has(s.id));
+  const added=userSpots.filter(s=>s.userSubmitted);
+  // Also include all demo spots so there's always something to show
+  const demoSpots=spots.slice(0,5);
+  const combined=new Map();
+  demoSpots.forEach(s=>combined.set(s.id,s));
+  added.forEach(s=>combined.set(s.id,{...s,_mine:true}));
+  visited.forEach(s=>{if(!combined.has(s.id))combined.set(s.id,s);});
+  const mySpots=[...combined.values()];
+  try{
+    const m=new mapboxgl.Map({container,style:'mapbox://styles/mapbox/outdoors-v12',center:[-121.5,38.5],zoom:5,interactive:true,attributionControl:false});
+    container._mapInst=m;
+    m.on('load',()=>{
+      const savedIds=new Set(JSON.parse(localStorage.getItem('wp_saved_spots')||'[]'));
+      mySpots.forEach(s=>{
+        const isSaved=savedIds.has(s.id);
+        const isAdded=!!s._mine;
+        const color=isAdded?'#B8E87A':isSaved?'#74C4F5':'#F5C842';
+        const label=isAdded?'Your spot':isSaved?'Saved':'Visited';
+        const el=document.createElement('div');
+        el.style.cssText=`width:14px;height:14px;border-radius:50%;background:${color};border:2px solid #fff;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.4)`;
+        new mapboxgl.Marker({element:el}).setLngLat([s.lng,s.lat])
+          .setPopup(new mapboxgl.Popup({offset:16}).setHTML(`<div style="font-size:12px;font-weight:700;color:#fff">${s.name}</div><div style="font-size:11px;color:rgba(255,255,255,.7);margin-top:2px">${label}</div>`))
+          .addTo(m);
+      });
+      if(mySpots.length>1){
+        const lngs=mySpots.map(s=>s.lng),lats=mySpots.map(s=>s.lat);
+        m.fitBounds([[Math.min(...lngs)-.5,Math.min(...lats)-.5],[Math.max(...lngs)+.5,Math.max(...lats)+.5]],{padding:60,duration:800,maxZoom:10});
+      } else {
+        m.fitBounds([[-124,36],[-117,39]],{padding:40,duration:800});
+      }
+    });
+  }catch(e){console.warn('Your map failed',e);}
 }
 
 function openFriendsMap(){
   const page=document.getElementById('friendsMapPage');
   if(!page)return;
+  // Rebuild every open so new follows/spots appear
+  const fmEl=document.getElementById('friendsMapEl');
+  if(fmEl){fmEl._mapInit=false;if(fmEl._mapInst){try{fmEl._mapInst.remove();}catch(e){}}fmEl._mapInst=null;fmEl.innerHTML='';}
   page.style.display='flex';
   _buildFriendsMap();
 }
@@ -11121,54 +11529,142 @@ function _buildFriendsMap(){
   const followingIds=new Set(follows[myUid]||[]);
   const followingUsers=Array.from(followingIds);
   const allPosts=getPosts();
-  // Build legend
+  const allS=[...spots,...userSpots];
+  // Build legend: "You" dot + friends
   const legend=document.getElementById('friendsMapLegend');
   if(legend){
-    legend.innerHTML=followingUsers.length?followingUsers.map(uid=>{
+    const youEntry=`<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+      <div style="width:14px;height:14px;border-radius:50%;background:#F5C842;border:2px solid #fff;flex-shrink:0"></div>
+      <span style="font-size:12px;color:var(--txt0)">You</span>
+    </div>`;
+    const friendEntries=followingUsers.map(uid=>{
       const p=getUserProfile(uid)||{};
       const name=p.username||uid;
       return`<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
         <div style="width:28px;height:28px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#B8E87A">${name.slice(0,2).toUpperCase()}</div>
         <span style="font-size:12px;color:var(--txt0)">@${name}</span>
       </div>`;
-    }).join('<div style="width:1px;height:20px;background:var(--border);flex-shrink:0"></div>')
-    :'<div style="font-size:12px;color:var(--txt3)">Follow people to see their spots on this map</div>';
+    });
+    const sep='<div style="width:1px;height:20px;background:var(--border);flex-shrink:0"></div>';
+    legend.innerHTML=youEntry+(followingUsers.length?sep+friendEntries.join(sep):'<span style="font-size:12px;color:var(--txt3);margin-left:8px">Follow people to see their spots</span>');
   }
   if(container._mapInit)return;
   container._mapInit=true;
-  // reuse the already-set global token — no separate prompt needed
+  const tok=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||MAPBOX_TOKEN_DEFAULT||'';
+  mapboxgl.accessToken=tok||mapboxgl.accessToken;
   try{
-    const m=new mapboxgl.Map({container,style:'mapbox://styles/mapbox/dark-v11',center:[-121.5,38.5],zoom:5,interactive:true,attributionControl:false});
+    const m=new mapboxgl.Map({container,style:'mapbox://styles/mapbox/outdoors-v12',center:[-121.5,38.5],zoom:5,interactive:true,attributionControl:false});
+    container._mapInst=m;
     m.on('load',()=>{
-      // Friend spot pins
+      // ── YOUR own spots (yellow dots) ──
+      const myPosts=allPosts.filter(p=>String(p.userId)===myUid&&p.spotId);
+      const visitedIds=new Set(myPosts.map(p=>p.spotId));
+      const mySaved=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');
+      const myVisited=[...allS.filter(s=>visitedIds.has(s.id)||mySaved.includes(s.id)),...userSpots.filter(s=>s.userSubmitted)];
+      const myUniq=new Map();myVisited.forEach(s=>myUniq.set(s.id,s));
+      [...myUniq.values()].forEach(s=>{
+        const el=document.createElement('div');
+        el.style.cssText='width:14px;height:14px;border-radius:50%;background:#F5C842;border:2px solid #fff;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.4)';
+        new mapboxgl.Marker({element:el}).setLngLat([s.lng,s.lat])
+          .setPopup(new mapboxgl.Popup({offset:16}).setHTML(`<div style="font-size:12px;font-weight:700;color:#fff">${s.name}</div><div style="font-size:11px;color:rgba(255,255,255,.7);margin-top:2px">Your spot</div>`))
+          .addTo(m);
+      });
+
+      // ── FRIENDS spots (initials bubbles — tap to open profile) ──
+      let hasFriendPins=false;
+      const seenFriendMarkers=new Map(); // uid → marker, so each friend only gets one pin
       followingUsers.forEach(uid=>{
+        const prof=getUserProfile(uid)||{};
+        const name=prof.username||('user'+uid);
         const friendPosts=allPosts.filter(p=>String(p.userId)===uid&&(p.lat||p.spotId));
         friendPosts.forEach(p=>{
           let lat=p.lat,lng=p.lng;
-          if(!lat&&p.spotId){const s=[...spots,...userSpots].find(x=>x.id===p.spotId);if(s){lat=s.lat;lng=s.lng;}}
+          if(!lat&&p.spotId){const s=allS.find(x=>x.id===p.spotId);if(s){lat=s.lat;lng=s.lng;}}
           if(!lat||!lng)return;
-          const prof=getUserProfile(uid)||{};
-          const name=prof.username||uid;
+          hasFriendPins=true;
           const el=document.createElement('div');
-          el.style.cssText='width:28px;height:28px;border-radius:50%;background:#B8E87A;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#0f1a0a;cursor:pointer';
+          el.style.cssText='width:34px;height:34px;border-radius:50%;background:#B8E87A;border:2.5px solid #fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#0f1a0a;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.4);transition:transform .15s';
           el.textContent=name.slice(0,2).toUpperCase();
-          new mapboxgl.Marker({element:el}).setLngLat([lng,lat]).setPopup(new mapboxgl.Popup({offset:20}).setHTML(`<div style="color:#fff;font-size:12px"><strong>@${name}</strong><br>${p.spotName||p.caption?.slice(0,40)||'Post'}</div>`)).addTo(m);
+          // Tap opens profile sheet
+          el.addEventListener('click',()=>{
+            el.style.transform='scale(1.15)';
+            setTimeout(()=>{el.style.transform='';},150);
+            _openUserProfileSheet(uid,name);
+          });
+          el.addEventListener('mouseenter',()=>el.style.transform='scale(1.1)');
+          el.addEventListener('mouseleave',()=>el.style.transform='');
+          new mapboxgl.Marker({element:el}).setLngLat([lng,lat]).addTo(m);
+          seenFriendMarkers.set(uid,true);
         });
-        // Real-time location dot
+        // Real-time location dot — also tappable for profile
         const locData=localStorage.getItem('wildpath-user-location-'+uid);
         if(locData){
           try{
             const loc=JSON.parse(locData);
-            if(Date.now()-loc.ts<3600000){// within 1 hour
+            if(Date.now()-loc.ts<3600000){
+              hasFriendPins=true;
               const dotEl=document.createElement('div');
-              dotEl.style.cssText='width:14px;height:14px;border-radius:50%;background:#B8E87A;border:2px solid #fff;box-shadow:0 0 0 4px rgba(184,232,122,.3)';
+              dotEl.style.cssText='width:34px;height:34px;border-radius:50%;background:#B8E87A;border:2.5px solid #fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#0f1a0a;cursor:pointer;box-shadow:0 0 0 6px rgba(184,232,122,.25)';
+              dotEl.textContent=name.slice(0,2).toUpperCase();
+              dotEl.addEventListener('click',()=>_openUserProfileSheet(uid,name));
               new mapboxgl.Marker({element:dotEl}).setLngLat([loc.lng,loc.lat]).addTo(m);
             }
           }catch(e){}
         }
       });
+
+      // ── DEMO: show community-recommended spots when no friends yet ──
+      if(!hasFriendPins){
+        spots.forEach((s,i)=>{
+          const demoNames=['Ranger','Hiker','Explorer','Scout','Trailhead'];
+          const colors=['#B8E87A','#74C4F5','#F5A623','#C47AE8','#F5C842'];
+          const el=document.createElement('div');
+          el.style.cssText=`width:30px;height:30px;border-radius:50%;background:${colors[i%colors.length]};border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#0f1a0a;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.4)`;
+          el.textContent=demoNames[i%demoNames.length].slice(0,2).toUpperCase();
+          new mapboxgl.Marker({element:el}).setLngLat([s.lng,s.lat])
+            .setPopup(new mapboxgl.Popup({offset:22}).setHTML(`<div style="font-size:12px;font-weight:700;color:#fff">${s.name}</div><div style="font-size:11px;color:rgba(255,255,255,.7);margin-top:2px">Community recommended</div>`))
+            .addTo(m);
+        });
+        m.fitBounds([[-124,36],[-117,39]],{padding:40,duration:800});
+      }
     });
-  }catch(e){}
+  }catch(e){console.warn('Friends map error',e);}
+}
+
+function setFriendsMapStyle(style, btn){
+  const container=document.getElementById('friendsMapEl');
+  if(container&&container._mapInst){
+    container._mapInst.setStyle('mapbox://styles/mapbox/'+style);
+  }
+  // Update button active states
+  const bar=document.getElementById('friendsMapStyleBar');
+  if(bar){
+    bar.querySelectorAll('button').forEach(b=>{
+      const isActive=b===btn;
+      b.style.background=isActive?'rgba(255,255,255,.9)':'rgba(0,0,0,.45)';
+      b.style.color=isActive?'#0f1a0a':'#fff';
+      b.style.fontWeight=isActive?'700':'600';
+      b.style.border=isActive?'none':'1px solid rgba(255,255,255,.2)';
+    });
+  }
+}
+
+function setYourMapStyle(style, btn){
+  const container=document.getElementById('yourMapEl');
+  if(container&&container._mapInst){
+    container._mapInst.setStyle('mapbox://styles/mapbox/'+style);
+  }
+  // Update button active states
+  const page=document.getElementById('yourMapPage');
+  if(page){
+    page.querySelectorAll('[onclick^="setYourMapStyle"]').forEach(b=>{
+      const isActive=b===btn;
+      b.style.background=isActive?'rgba(255,255,255,.9)':'rgba(0,0,0,.45)';
+      b.style.color=isActive?'#0f1a0a':'#fff';
+      b.style.fontWeight=isActive?'700':'600';
+      b.style.border=isActive?'none':'1px solid rgba(255,255,255,.2)';
+    });
+  }
 }
 
 function openSavedLocations(){
@@ -11528,14 +12024,19 @@ function handleCreateNewFile(event){
   const file=event.target.files?.[0];
   if(!file)return;
   const isVideo=file.type.startsWith('video');
-  const reader=new FileReader();
-  reader.onload=(e)=>{
-    _createCapturedDataUrl=e.target.result;
+  const done=dataUrl=>{
+    _createCapturedDataUrl=dataUrl;
     _createCapturedBlob=file;
-    _showCreateNewPreview(e.target.result, isVideo);
+    _showCreateNewPreview(dataUrl, isVideo);
     _updateCreatePostBtn();
   };
-  reader.readAsDataURL(file);
+  if(isVideo){
+    const reader=new FileReader();
+    reader.onload=e=>done(e.target.result);
+    reader.readAsDataURL(file);
+  } else {
+    compressImage(file).then(done).catch(()=>showToast('Could not read photo'));
+  }
 }
 
 function _showCreateNewPreview(dataUrl, isVideo){
@@ -11707,13 +12208,11 @@ function submitCreateNewPost(){
     setTimeout(()=>{
       succ.style.display='none';
       closeFeedCreate();
-      showTab('home');
-      setTimeout(()=>buildHomeFeed(),80);
+      showTab('map');
     },1400);
   } else {
     closeFeedCreate();
-    showTab('home');
-    setTimeout(()=>buildHomeFeed(),80);
+    showTab('map');
   }
 }
 
@@ -12012,18 +12511,13 @@ function _commThreeDotMenu(commId){
 const _sidePanelActiveLayers=new Set();
 
 function _toggleSidePanelLayer(layerId, rowEl){
-  const toggle=rowEl?.querySelector('.side-layer-toggle');
-  const knob=rowEl?.querySelector('.side-layer-knob');
-  const isOn=_sidePanelActiveLayers.has(layerId);
-  if(isOn){
-    _sidePanelActiveLayers.delete(layerId);
-    if(toggle){toggle.classList.remove('on');toggle.classList.add('off');}
-    _removeSidePanelLayer(layerId);
-  } else {
-    _sidePanelActiveLayers.add(layerId);
-    if(toggle){toggle.classList.remove('off');toggle.classList.add('on');}
-    _addSidePanelLayer(layerId);
-  }
+  // Get the visual toggle element inside the row
+  const toggleEl=rowEl?.querySelector('.side-layer-toggle')||rowEl;
+  // Remap HTML layer IDs to the IDs toggleSidePanelLayer expects
+  const idRemap={countylines:'counties'};
+  const mappedId=idRemap[layerId]||layerId;
+  // Delegate to the real toggle function which calls showLandType/hideLandType
+  toggleSidePanelLayer(mappedId, toggleEl);
 }
 
 function _addSidePanelLayer(layerId){
