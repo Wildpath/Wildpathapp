@@ -5643,7 +5643,7 @@ function handleAvatarUpload(e){
   openCropModal(file,'square_locked',async(croppedDataUrl)=>{
     try{
       const small=await _resizeDataUrl(croppedDataUrl,200);
-      const url=await _sbUploadDataUrl('avatars',small,'jpg');
+      const url=await _sbUploadDataUrl('Avatars',small,'jpg');
       const {error}=await db.from('profiles').update({avatar_url:url}).eq('id',_myUid());
       if(error)throw error;
       const pd=getUserProfile(_myUid())||{};
@@ -7285,7 +7285,7 @@ function submitSpotForReview(spot){
       // Upload photos to spot-photos bucket first (never store base64)
       const photoUrls=[];
       for(const dataUrl of (spot.photos||[]).slice(0,6)){
-        try{photoUrls.push(await _sbUploadDataUrl('spot-photos',dataUrl,'jpg'));}catch(e){console.warn('spot photo upload:',e);}
+        try{photoUrls.push(await _sbUploadDataUrl('Spot Photos',dataUrl,'jpg'));}catch(e){console.warn('spot photo upload:',e);}
       }
       const {data,error}=await db.from('pending_spots').insert({
         name:spot.name,type:spot.type,lat:spot.lat,lng:spot.lng,
@@ -8680,7 +8680,7 @@ function handleEditAvatar(e){
   if(isGuest()){showLoginScreen();return;}
   compressImage(file,200).then(async dataUrl=>{
     try{
-      const url=await _sbUploadDataUrl('avatars',dataUrl,'jpg');
+      const url=await _sbUploadDataUrl('Avatars',dataUrl,'jpg');
       const {error}=await db.from('profiles').update({avatar_url:url}).eq('id',_myUid());
       if(error)throw error;
       const av=document.getElementById('editProfileAvatar');
@@ -8999,7 +8999,7 @@ function sendDmMedia(e){
   if(isVideo&&file.size>VIDEO_MAX_BYTES){showToast('Video too large — choose a shorter clip');return;}
   const done=async dataUrl=>{
     let mediaUrl=dataUrl;
-    try{mediaUrl=await _sbUploadDataUrl('post-media',dataUrl,isVideo?'mp4':'jpg');}
+    try{mediaUrl=await _sbUploadDataUrl('Post Media',dataUrl,isVideo?'mp4':'jpg');}
     catch(e){console.warn('[Supabase] dm media upload:',e);showToast('Upload failed — check connection');return;}
     const key=_dmConvKey(_myUid(),_dmConvUserId);
     const msgs=getMessages();
@@ -9345,8 +9345,8 @@ function submitPost(){
       let photo_url=null,video_url=null;
       const first=_cpMediaFiles[0];
       if(first){
-        if(first.type==='video')video_url=await _sbUploadDataUrl('post-media',first.dataUrl,'mp4');
-        else photo_url=await _sbUploadDataUrl('post-media',first.dataUrl,'jpg');
+        if(first.type==='video')video_url=await _sbUploadDataUrl('Post Media',first.dataUrl,'mp4');
+        else photo_url=await _sbUploadDataUrl('Post Media',first.dataUrl,'jpg');
       }
       const allS=[...spots,...userSpots];
       const taggedSpot=_cpTaggedSpotId?allS.find(s=>String(s.id)===String(_cpTaggedSpotId)):null;
@@ -9541,7 +9541,7 @@ function submitCreateCommunity(){
     try{
       let cover_url=null;
       if(_ccCoverDataUrl){
-        try{cover_url=await _sbUploadDataUrl('community-covers',_ccCoverDataUrl,'jpg');}catch(e){console.warn('cover upload:',e);}
+        try{cover_url=await _sbUploadDataUrl('Community Covers',_ccCoverDataUrl,'jpg');}catch(e){console.warn('cover upload:',e);}
       }
       const {data,error}=await db.from('communities').insert({
         name,description:desc,rules,cover_url,privacy:_ccPrivacy,
@@ -9762,7 +9762,7 @@ function _handleCoverTapUpload(e,cid){
   const file=e.target.files?.[0];if(!file)return;
   compressImage(file).then(async dataUrl=>{
     try{
-      const url=await _sbUploadDataUrl('community-covers',dataUrl,'jpg');
+      const url=await _sbUploadDataUrl('Community Covers',dataUrl,'jpg');
       const {error}=await db.from('communities').update({cover_url:url}).eq('id',cid);
       if(error)throw error;
       const comms=getCommunities();
@@ -9803,7 +9803,7 @@ function _saveEditCommunity(cid){
     try{
       const upd={name,description:desc,rules,privacy};
       if(coverDataUrl&&coverDataUrl.startsWith('data:')){
-        upd.cover_url=await _sbUploadDataUrl('community-covers',coverDataUrl,'jpg');
+        upd.cover_url=await _sbUploadDataUrl('Community Covers',coverDataUrl,'jpg');
         c.coverDataUrl=upd.cover_url;setCommunities(comms);
       }
       const {error}=await db.from('communities').update(upd).eq('id',cid);
