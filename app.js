@@ -17,7 +17,7 @@
 // Get a free token at mapbox.com → Account → Access Tokens
 // ═══════════════════════════════════════════════════
 const MAPBOX_TOKEN_DEFAULT = 'pk.eyJ1Ijoid2lsZHBhdGgxMiIsImEiOiJjbXBya2I1aWQxMHB2MnFweG92cjJtbW81In0.wGxIYBZeRDif7L3VTLlXFw';
-const MAPBOX_TOKEN = localStorage.getItem('mapbox-token') || localStorage.getItem('wp_mapbox_token') || MAPBOX_TOKEN_DEFAULT;
+const MAPBOX_TOKEN = localStorage.getItem('mapbox-token') || MAPBOX_TOKEN_DEFAULT;
 mapboxgl.accessToken = MAPBOX_TOKEN || 'MISSING';
 
 function saveMapboxToken(){
@@ -28,7 +28,6 @@ function saveMapboxToken(){
   }
   // Save to both key names so either lookup works
   localStorage.setItem('mapbox-token', val);
-  localStorage.setItem('wp_mapbox_token', val);
   // Hide the error overlay and init the map immediately — no page reload needed
   const errEl=document.getElementById('mapError');
   if(errEl)errEl.classList.remove('show');
@@ -40,7 +39,6 @@ function _saveTokenAndLoad(){
   const val=(document.getElementById('token-input')?.value||'').trim();
   if(val.startsWith('pk.')){
     localStorage.setItem('mapbox-token', val);
-    localStorage.setItem('wp_mapbox_token', val);
     mapboxgl.accessToken = val;
     const prompt=document.getElementById('mapbox-token-prompt');
     if(prompt)prompt.style.display='none';
@@ -177,9 +175,72 @@ const ADMIN_CODE_HASH='rsjs5rilio';
 function _isAdminCode(code){return _hashPw(code,ADMIN_CODE_SALT)===ADMIN_CODE_HASH;}
 
 // ═══════════════════════════════════════════════════
+// SAVED STORE — single canonical key 'wildpath-saved'
+// { postIds:[], spotIds:[], folders:[{name,postIds}] }
+// ═══════════════════════════════════════════════════
+function _getSavedStore(){
+  try{
+    const s=JSON.parse(localStorage.getItem('wildpath-saved')||'{}');
+    return{postIds:s.postIds||[],spotIds:s.spotIds||[],folders:s.folders||[]};
+  }catch(e){return{postIds:[],spotIds:[],folders:[]};}
+}
+function _setSavedStore(s){localStorage.setItem('wildpath-saved',JSON.stringify(s));}
+function getSavedPostIds(){return _getSavedStore().postIds;}
+function setSavedPostIds(a){const s=_getSavedStore();s.postIds=a;_setSavedStore(s);}
+function getSavedSpotIds(){return _getSavedStore().spotIds;}
+function setSavedSpotIds(a){const s=_getSavedStore();s.spotIds=a;_setSavedStore(s);}
+
+// ═══════════════════════════════════════════════════
+// STORAGE KEY MIGRATION — runs once per load, moves data
+// from legacy key names to canonical ones, then removes legacy
+// ═══════════════════════════════════════════════════
+function _migrateStorageKeys(){
+  try{
+    // Saved posts / spots / folders → wildpath-saved
+    const legacyPosts=localStorage.getItem('wildpath-saved-posts');
+    const legacySpots=localStorage.getItem('wp_saved_spots');
+    const legacyFolders=localStorage.getItem('wildpath-saved-folders');
+    if(legacyPosts||legacySpots||legacyFolders){
+      const s=_getSavedStore();
+      if(legacyPosts)JSON.parse(legacyPosts).forEach(id=>{if(!s.postIds.includes(id))s.postIds.push(id);});
+      if(legacySpots)JSON.parse(legacySpots).forEach(id=>{if(!s.spotIds.includes(id))s.spotIds.push(id);});
+      if(legacyFolders)JSON.parse(legacyFolders).forEach(f=>{if(!s.folders.find(x=>x.name===f.name))s.folders.push(f);});
+      _setSavedStore(s);
+      localStorage.removeItem('wildpath-saved-posts');
+      localStorage.removeItem('wp_saved_spots');
+      localStorage.removeItem('wildpath-saved-folders');
+    }
+    // Theme: wildpath-dark-mode / wildpath-light-mode → wp_theme
+    if(!localStorage.getItem('wp_theme')){
+      if(localStorage.getItem('wildpath-dark-mode')==='1')localStorage.setItem('wp_theme','dark');
+      else if(localStorage.getItem('wildpath-light-mode')==='1')localStorage.setItem('wp_theme','light');
+    }
+    localStorage.removeItem('wildpath-dark-mode');
+    localStorage.removeItem('wildpath-light-mode');
+    // Map style label duplicate
+    localStorage.removeItem('wildpath-map-style');
+    // Mapbox token: wp_mapbox_token → mapbox-token
+    const legacyTok=localStorage.getItem('wp_mapbox_token');
+    if(legacyTok&&!localStorage.getItem('mapbox-token'))localStorage.setItem('mapbox-token',legacyTok);
+    localStorage.removeItem('wp_mapbox_token');
+    // Avatar: wp_avatar / wp_avatar_<uid> → profile.avatarUrl
+    const uid=localStorage.getItem('wildpath-current-user');
+    if(uid){
+      const legacyAv=localStorage.getItem('wp_avatar_'+uid)||localStorage.getItem('wp_avatar');
+      if(legacyAv&&typeof getUserProfile==='function'){
+        const prof=getUserProfile(uid)||{};
+        if(!prof.avatarUrl){prof.avatarUrl=legacyAv;setUserProfile(uid,prof);}
+      }
+    }
+    Object.keys(localStorage).filter(k=>k==='wp_avatar'||k.startsWith('wp_avatar_')).forEach(k=>localStorage.removeItem(k));
+  }catch(e){console.warn('Storage migration:',e);}
+}
+
+// ═══════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════
 window.onload=()=>{
+  _migrateStorageKeys();
   // Always auto-login as demo user — no login screen required
   const uid=localStorage.getItem('wildpath-current-user');
   if(uid){
@@ -311,8 +372,8 @@ function _launchApp(){
   registerServiceWorker();
   // Restore day mode
   if(localStorage.getItem('wp_day_mode')==='1')document.body.classList.add('day-mode');
-  // Restore light mode (new setting)
-  if(!localStorage.getItem('wildpath-dark-mode')&&localStorage.getItem('wildpath-light-mode')==='1')document.body.classList.add('light-mode');
+  // Restore theme — single canonical key
+  if(localStorage.getItem('wp_theme')==='light')document.body.classList.add('light-mode');
   // Update UI for admin users
   if(_currentUser&&_currentUser.role==='admin')_applyAdminUI();
 }
@@ -321,7 +382,7 @@ function _launchApp(){
 // MAP INIT
 // ═══════════════════════════════════════════════════
 function initMap(){
-  const tok = localStorage.getItem('mapbox-token') || localStorage.getItem('wp_mapbox_token') || MAPBOX_TOKEN_DEFAULT;
+  const tok = localStorage.getItem('mapbox-token') || MAPBOX_TOKEN_DEFAULT;
   mapboxgl.accessToken = tok;
 
   const savedStyle=localStorage.getItem('wp_map_style')||'standard';
@@ -383,7 +444,7 @@ function initMap(){
       if(status===401||msg.includes('token')||msg.includes('unauthorized')||msg.includes('access')){
         errEl.classList.add('show');
         // Pre-fill token field if saved token exists (so user can see/correct it)
-        const saved=localStorage.getItem('wp_mapbox_token')||'';
+        const saved=localStorage.getItem('mapbox-token')||'';
         const inp=document.getElementById('mapboxTokenInput');
         if(inp&&saved)inp.value=saved;
       }
@@ -452,7 +513,7 @@ function _buildSpotsGeoJSON(){
   let filtered=activeFilters.size>0?allS.filter(s=>{let ok=false;activeFilters.forEach(fid=>{const t=FILTER_TYPES[fid]||[];if(t.includes(s.type))ok=true;});return ok;}):allS;
   if(hiddenGemFilterActive)filtered=filtered.filter(s=>s.hiddenGem);
   // Build saved and visited sets for pin colors
-  const savedSet=new Set(JSON.parse(localStorage.getItem('wp_saved_spots')||'[]'));
+  const savedSet=new Set(getSavedSpotIds());
   const myUid=String(_myUid&&_myUid()||'guest');
   const postedSet=new Set(getPosts().filter(p=>String(p.userId)===myUid&&p.spotId).map(p=>p.spotId));
   return{type:'FeatureCollection',features:filtered.map(s=>{
@@ -1901,7 +1962,7 @@ function buildProfile(){
     const fullNameEl=document.getElementById('profileFullName');
     if(fullNameEl)fullNameEl.textContent=_currentUser.fullName||_currentUser.username||'Explorer';
     // Load saved avatar photo if any
-    const savedAvatar=localStorage.getItem('wp_avatar_'+String(_currentUser.id));
+    const savedAvatar=(getUserProfile(String(_currentUser.id))||{}).avatarUrl;
     if(savedAvatar){
       const img=document.getElementById('profileAvatarImg');
       const txt=document.getElementById('profileAvatarText');
@@ -1910,7 +1971,7 @@ function buildProfile(){
     }
   }
   // Update tile counts
-  const savedList=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');
+  const savedList=getSavedSpotIds();
   const savedCountEl=document.getElementById('profileSavedCount');
   if(savedCountEl)savedCountEl.textContent=savedList.length+' spot'+(savedList.length===1?'':'s');
   const pinnedList=JSON.parse(localStorage.getItem('wp_want_to_go')||'[]');
@@ -1989,7 +2050,7 @@ function buildProfile(){
     }
   }
   // Update saved posts count
-  const savedPostIds=JSON.parse(localStorage.getItem('wildpath-saved-posts')||'[]');
+  const savedPostIds=getSavedPostIds();
   const _savedPostCountEl=document.getElementById('profileSavedCount');
   if(_savedPostCountEl)_savedPostCountEl.textContent=savedPostIds.length+' post'+(savedPostIds.length===1?'':'s');
 
@@ -4470,7 +4531,7 @@ function _showHikeSummary(hike){
   document.body.appendChild(overlay);
   // Try to render map
   if(hike.points.length>1){
-    const token=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||'';
+    const token=localStorage.getItem('mapbox-token')||'';
     if(token){
       setTimeout(()=>{
         const mapEl=overlay.querySelector('#hikeSummaryMap');
@@ -5289,11 +5350,8 @@ function handleAvatarUpload(e){
   if(!file)return;
   // Open square crop modal — callback saves the cropped result
   openCropModal(file,'square_locked',(croppedDataUrl)=>{
-    // Persist to both the per-user key and the legacy single key
+    // Canonical avatar store: profile.avatarUrl
     const uid=String(_currentUser?.id||'demo_me');
-    localStorage.setItem('wp_avatar',croppedDataUrl);
-    localStorage.setItem('wp_avatar_'+uid,croppedDataUrl);
-    // Sync profile data too
     const pd=getUserProfile(uid)||{};
     pd.avatarUrl=croppedDataUrl;
     setUserProfile(uid,pd);
@@ -5336,9 +5394,11 @@ function saveUsername(){
 }
 // Restore profile on load
 (()=>{
-  const av=localStorage.getItem('wp_avatar');
+  setTimeout(()=>{
+    const av=(getUserProfile(String(_myUid()))||{}).avatarUrl;
+    if(av)_applyAvatar(av);
+  },150);
   const un=localStorage.getItem('wp_username');
-  if(av)setTimeout(()=>_applyAvatar(av),100);
   if(un){
     setTimeout(()=>{
       const el=document.getElementById('profileUsername');
@@ -5448,7 +5508,7 @@ function shareProfile(){
   if(!overlay)return;
   // Sync current username + avatar
   const un=localStorage.getItem('wp_username')||'@wildexplorer';
-  const av=localStorage.getItem('wp_avatar');
+  const av=(getUserProfile(String(_myUid()))||{}).avatarUrl;
   const unEl=document.getElementById('shareProfileUsername');
   if(unEl)unEl.textContent=un;
   if(av){
@@ -6378,7 +6438,8 @@ function _buildSettingsFull(){
   const notifMsg=localStorage.getItem('wp_notif_msg')==='1';
   const units=localStorage.getItem('wp_units')||'miles';
   const offlineAreas=JSON.parse(localStorage.getItem('wp_offline_areas')||'[]');
-  const mapStyle=localStorage.getItem('wildpath-map-style')||'Standard';
+  const _msKey=localStorage.getItem('wp_map_style')||'standard';
+  const mapStyle=_msKey.charAt(0).toUpperCase()+_msKey.slice(1);
   const shareLocOn=localStorage.getItem('wp_share_location')==='1';
 
   const mapStyleRow=`<div class="sf-row">
@@ -6469,8 +6530,8 @@ function _sfRow(icon,label,sub,val,action,toggleState,isToggle=false){
 
 function _sfToggleDark(){
   const isLight=document.body.classList.contains('light-mode');
-  if(isLight){document.body.classList.remove('light-mode');localStorage.setItem('wildpath-dark-mode','1');}
-  else{document.body.classList.add('light-mode');localStorage.removeItem('wildpath-dark-mode');}
+  if(isLight){document.body.classList.remove('light-mode');localStorage.setItem('wp_theme','dark');}
+  else{document.body.classList.add('light-mode');localStorage.setItem('wp_theme','light');}
   _buildSettingsFull();
 }
 function _sfToggleUnits(){
@@ -6504,7 +6565,6 @@ function _sfLocation(){
   );
 }
 function _sfSetMapStyle(s){
-  localStorage.setItem('wildpath-map-style',s);
   const keyMap={Standard:'standard',Terrain:'terrain',Satellite:'satellite',Hybrid:'hybrid'};
   if(typeof setMapStyle==='function'&&keyMap[s])setMapStyle(keyMap[s]);
   showToast('Map style: '+s);
@@ -7558,8 +7618,8 @@ function bookmarkPost(postId,el){
 }
 
 // ── Save-to-folder system ───────────────────────────────────────
-function _getSavedFolders(){return JSON.parse(localStorage.getItem('wildpath-saved-folders')||'[]');}
-function _setSavedFolders(arr){localStorage.setItem('wildpath-saved-folders',JSON.stringify(arr));}
+function _getSavedFolders(){return _getSavedStore().folders;}
+function _setSavedFolders(arr){const s=_getSavedStore();s.folders=arr;_setSavedStore(s);}
 
 function openSaveFolderSheet(postId,triggerEl){
   const existing=document.getElementById('_saveFolderSheet');
@@ -7598,9 +7658,9 @@ function _savePostToFolder(postId,folderName){
   if(!folder.postIds.includes(postId))folder.postIds.push(postId);
   _setSavedFolders(folders);
   // Also add to flat saved-posts list for backwards compat
-  const saved=JSON.parse(localStorage.getItem('wildpath-saved-posts')||'[]');
+  const saved=getSavedPostIds();
   if(!saved.includes(postId))saved.push(postId);
-  localStorage.setItem('wildpath-saved-posts',JSON.stringify(saved));
+  setSavedPostIds(saved);
   showToast(`Saved to "${folderName}"`);
 }
 
@@ -7904,7 +7964,7 @@ function _buildCommunityFullMap(cid){
   if(!container)return;
   // Always rebuild (community spots may have changed)
   if(container._mapInst){try{container._mapInst.remove();}catch(e){} container._mapInst=null; container.innerHTML='';}
-  const tok=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||'';
+  const tok=localStorage.getItem('mapbox-token')||'';
   // Gather spots: community-specific spots + posts with location
   const commSpots=getCommunitySpots(cid);
   const posts=getPosts().filter(p=>p.communityIds?.includes(cid)&&(p.lat||p.spotId));
@@ -7946,7 +8006,7 @@ function _buildCommMap(cid){
   if(container._mapInst){try{container._mapInst.remove();}catch(e){}container._mapInst=null;}
   container._mapInit=false;
   container._mapCid=cid;
-  const token=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||'';
+  const token=localStorage.getItem('mapbox-token')||'';
   const posts=getPosts().filter(p=>p.communityIds?.includes(cid)&&(p.lat||p.spotId));
   const allS=[...spots,...userSpots];
   const mapPins=posts.map(p=>{
@@ -10173,7 +10233,7 @@ function _getPinColor(spotId){
   const hasPosted=posts.some(p=>String(p.userId)===myUid&&p.spotId===spotId);
   if(hasPosted)return '#F5C842';
   // Red: user has saved this spot
-  const saved=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');
+  const saved=getSavedSpotIds();
   if(saved.includes(spotId))return '#E05252';
   // White (public default)
   return '#FFFFFF';
@@ -10187,7 +10247,7 @@ let _detailCurrentStarRating=5;
 
 function _populateDetailNewElements(spot){
   // ── Bookmark / Save state ──
-  const saved=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');
+  const saved=getSavedSpotIds();
   const isSaved=saved.includes(spot.id);
   // Legacy icon (may be removed from HTML)
   const bmIcon=document.getElementById('detailBookmarkIcon');
@@ -10341,7 +10401,7 @@ function _initDetailMiniMap(spot){
   }
   const container=document.getElementById('detailMiniMap');
   if(!container||!spot)return;
-  const tok=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||'';
+  const tok=localStorage.getItem('mapbox-token')||'';
   if(!tok)return;
   try{
     mapboxgl.accessToken=tok;
@@ -10365,7 +10425,7 @@ function _initDetailMiniMap(spot){
 function toggleDetailBookmark(){
   if(isGuest()){showLoginScreen();return;}
   if(!_detailSpotId)return;
-  const saved=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');
+  const saved=getSavedSpotIds();
   const pinned=JSON.parse(localStorage.getItem('wp_want_to_go')||'[]');
   const idx=saved.indexOf(_detailSpotId);
   if(idx>=0){
@@ -10378,7 +10438,7 @@ function toggleDetailBookmark(){
     if(!pinned.includes(_detailSpotId))pinned.push(_detailSpotId);
     showToast('Saved!');
   }
-  localStorage.setItem('wp_saved_spots',JSON.stringify(saved));
+  setSavedSpotIds(saved);
   localStorage.setItem('wp_want_to_go',JSON.stringify(pinned));
   const isSaved=saved.includes(_detailSpotId);
   // Legacy icon
@@ -10939,7 +10999,7 @@ function _initFeedCardMap(containerId,lat,lng,spotName){
   if(_feedMapsInited.has(containerId))return;
   const el=document.getElementById(containerId);
   if(!el)return;
-  const token=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||'';
+  const token=localStorage.getItem('mapbox-token')||'';
   if(!token||!token.startsWith('pk.')){
     el.innerHTML=`<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0d1a0d;gap:10px">
       <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="rgba(184,232,122,.4)" stroke-width="1.5"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
@@ -11059,7 +11119,7 @@ function _renderFeedPost(idx){
     avatarEl.innerHTML='';
     const initials=(post.username||'WP').slice(0,2).toUpperCase();
     // Try avatar image
-    const savedAvatar=localStorage.getItem('wp_avatar_'+String(post.userId));
+    const savedAvatar=(getUserProfile(String(post.userId))||{}).avatarUrl;
     if(savedAvatar&&post.userId!=='system'){
       const img=document.createElement('img');
       img.src=savedAvatar;img.style.cssText='width:100%;height:100%;object-fit:cover;border-radius:50%';
@@ -11096,7 +11156,7 @@ function _renderFeedPost(idx){
   }
 
   // Save state
-  const savedSpots=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');
+  const savedSpots=getSavedSpotIds();
   _feedSaved=post.spotId&&savedSpots.includes(post.spotId);
   _setFeedSaveUI(_feedSaved);
 
@@ -11239,15 +11299,15 @@ function feedToggleSave(){
   if(!post)return;
   _feedSaved=!_feedSaved;
   _setFeedSaveUI(_feedSaved);
-  const savedPosts=JSON.parse(localStorage.getItem('wildpath-saved-posts')||'[]');
+  const savedPosts=getSavedPostIds();
   if(_feedSaved){
     if(!savedPosts.find(p=>p.id===post.id))savedPosts.unshift(post);
-    if(post.spotId){const s=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');if(!s.includes(post.spotId)){s.push(post.spotId);localStorage.setItem('wp_saved_spots',JSON.stringify(s));}}
+    if(post.spotId){const s=getSavedSpotIds();if(!s.includes(post.spotId)){s.push(post.spotId);setSavedSpotIds(s);}}
   } else {
     const i=savedPosts.findIndex(p=>p.id===post.id);if(i>=0)savedPosts.splice(i,1);
-    if(post.spotId){const s=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');const si=s.indexOf(post.spotId);if(si>=0){s.splice(si,1);localStorage.setItem('wp_saved_spots',JSON.stringify(s));}}
+    if(post.spotId){const s=getSavedSpotIds();const si=s.indexOf(post.spotId);if(si>=0){s.splice(si,1);setSavedSpotIds(s);}}
   }
-  localStorage.setItem('wildpath-saved-posts',JSON.stringify(savedPosts));
+  setSavedPostIds(savedPosts);
   showToast(_feedSaved?'Saved!':'Removed from saved');
   refreshSpotMarkers();
 }
@@ -11406,7 +11466,7 @@ function _initFeedMapSlide(post){
   const allS=[...spots,...userSpots];
   const s=allS.find(x=>x.id===post.spotId);
   if(!s)return;
-  const tok=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||'';
+  const tok=localStorage.getItem('mapbox-token')||'';
   if(!tok)return;
   try{
     mapboxgl.accessToken=tok;
@@ -11479,7 +11539,7 @@ let _profileMapThumbnailInstance=null;
 function _initProfileMapThumbnail(){
   const container=document.getElementById('profileMapThumbnail');
   if(!container)return;
-  const tok=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||'';
+  const tok=localStorage.getItem('mapbox-token')||'';
   if(!tok){
     container.innerHTML=`<div style="width:100%;height:100%;background:linear-gradient(135deg,#0b1a0b,#1a3a2a);border-radius:12px"></div>`;
     return;
@@ -11522,7 +11582,7 @@ function _buildYourMap(){
   const container=document.getElementById('yourMapEl');
   if(!container)return;
   if(container._mapInst){try{container._mapInst.remove();}catch(e){} container._mapInst=null; container.innerHTML='';}
-  const tok=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||MAPBOX_TOKEN_DEFAULT||'';
+  const tok=localStorage.getItem('mapbox-token')||MAPBOX_TOKEN_DEFAULT||'';
   mapboxgl.accessToken=tok||mapboxgl.accessToken;
   // "Your spots" = spots you added (userSubmitted) + spots you've posted about
   const myUid=String(_myUid());
@@ -11542,7 +11602,7 @@ function _buildYourMap(){
     const m=new mapboxgl.Map({container,style:'mapbox://styles/mapbox/outdoors-v12',center:[-121.5,38.5],zoom:5,interactive:true,attributionControl:false});
     container._mapInst=m;
     m.on('load',()=>{
-      const savedIds=new Set(JSON.parse(localStorage.getItem('wp_saved_spots')||'[]'));
+      const savedIds=new Set(getSavedSpotIds());
       mySpots.forEach(s=>{
         const isSaved=savedIds.has(s.id);
         const isAdded=!!s._mine;
@@ -11602,7 +11662,7 @@ function _buildFriendsMap(){
   }
   if(container._mapInit)return;
   container._mapInit=true;
-  const tok=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||MAPBOX_TOKEN_DEFAULT||'';
+  const tok=localStorage.getItem('mapbox-token')||MAPBOX_TOKEN_DEFAULT||'';
   mapboxgl.accessToken=tok||mapboxgl.accessToken;
   try{
     const m=new mapboxgl.Map({container,style:'mapbox://styles/mapbox/outdoors-v12',center:[-121.5,38.5],zoom:5,interactive:true,attributionControl:false});
@@ -11611,7 +11671,7 @@ function _buildFriendsMap(){
       // ── YOUR own spots (yellow dots) ──
       const myPosts=allPosts.filter(p=>String(p.userId)===myUid&&p.spotId);
       const visitedIds=new Set(myPosts.map(p=>p.spotId));
-      const mySaved=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');
+      const mySaved=getSavedSpotIds();
       const myVisited=[...allS.filter(s=>visitedIds.has(s.id)||mySaved.includes(s.id)),...userSpots.filter(s=>s.userSubmitted)];
       const myUniq=new Map();myVisited.forEach(s=>myUniq.set(s.id,s));
       [...myUniq.values()].forEach(s=>{
@@ -11720,7 +11780,7 @@ function setYourMapStyle(style, btn){
 }
 
 function openSavedLocations(){
-  const saved=JSON.parse(localStorage.getItem('wp_saved_spots')||'[]');
+  const saved=getSavedSpotIds();
   if(!saved.length){showToast('No saved spots yet — bookmark spots to save them');return;}
   const allS=[...spots,...userSpots].filter(s=>saved.includes(s.id));
   _showSpotListSheet('Saved Locations',allS);
@@ -11737,11 +11797,11 @@ function _renderSavedPostsGrid(){
   const grid=document.getElementById('savedPostsGrid');
   if(!grid)return;
   const cnt=document.getElementById('profileSavedCount');
-  const totalSaved=JSON.parse(localStorage.getItem('wildpath-saved-posts')||'[]').length;
+  const totalSaved=getSavedPostIds().length;
   if(cnt)cnt.textContent=totalSaved+' post'+(totalSaved!==1?'s':'');
   if(!folders.length){
     // Fallback: show flat grid if no folders
-    const savedIds=JSON.parse(localStorage.getItem('wildpath-saved-posts')||'[]');
+    const savedIds=getSavedPostIds();
     const allPosts=getPosts();
     const savedPosts=_feedPosts.filter(p=>savedIds.includes(p.id)).concat(allPosts.filter(p=>savedIds.includes(p.id)&&!_feedPosts.find(fp=>fp.id===p.id)));
     if(!savedPosts.length){grid.innerHTML='<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--txt3);font-size:13px">No saved posts yet — tap the bookmark on any post</div>';return;}
@@ -11788,11 +11848,11 @@ function setSavedView(view,el){
 function _initSavedPostsMap(){
   const container=document.getElementById('savedPostsMapEl');
   if(!container||container._mapInit)return;
-  const token=localStorage.getItem('mapbox-token')||localStorage.getItem('wp_mapbox_token')||'';
+  const token=localStorage.getItem('mapbox-token')||'';
   if(!token){container.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--txt3);font-size:13px;text-align:center;padding:20px">Add a Mapbox token to enable map view</div>';return;}
   container._mapInit=true;
   mapboxgl.accessToken=token;
-  const savedIds=JSON.parse(localStorage.getItem('wildpath-saved-posts')||'[]');
+  const savedIds=getSavedPostIds();
   const posts=_feedPosts.filter(p=>savedIds.includes(p.id)&&p.lat&&p.lng);
   try{
     const m=new mapboxgl.Map({container,style:'mapbox://styles/mapbox/dark-v11',center:[-121.5,38.5],zoom:5,interactive:true,attributionControl:false});
