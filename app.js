@@ -57,7 +57,7 @@ let activeFilters=new Set();
 let hiddenGemFilterActive=false;
 let addSpotMode=false, addSpotTempLat=null, addSpotTempLng=null;
 let waypointMarkers=[], parkingMarker=null;
-let userSpots=JSON.parse(localStorage.getItem('wildpath-spots-approved')||'[]');
+let userSpots=[]; // hydrated from Supabase spots table (status=approved)
 let favorites=new Set(JSON.parse(localStorage.getItem('wp_favs')||'[]'));
 
 const landLayerCache={nationalForest:{on:false},blm:{on:false},stateParks:{on:false},private:{on:false}};
@@ -277,7 +277,7 @@ async function _sbHydrate(){
   try{
     await _sbLoadSpots();
     await Promise.all([_sbLoadProfiles(),_sbLoadCommunities()]);
-    await Promise.all([_sbLoadPosts(),_sbLoadMessages(),_sbLoadFollows(),_sbLoadNotifications(),_sbLoadSaved()]);
+    await Promise.all([_sbLoadPosts(),_sbLoadMessages(),_sbLoadFollows(),_sbLoadNotifications(),_sbLoadSaved(),_sbLoadPendingSpots()]);
     _sbHydrated=true;
     _sbSubscribeRealtime();
     // Refresh whatever is on screen
@@ -2470,7 +2470,7 @@ function _showManageSpots(){
           </div>
           <div style="display:flex;gap:6px;flex-shrink:0">
             <button onclick="document.getElementById('manageSpotsOverlay').remove();setTimeout(()=>openDetail(${s.id}),50)" style="background:rgba(212,135,74,.15);border:1px solid rgba(212,135,74,.3);color:#D4874A;border-radius:8px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font)">Edit</button>
-            <button onclick="_manageDeleteSpot(${s.id},this)" style="background:rgba(196,82,74,.1);border:1px solid rgba(196,82,74,.25);color:var(--red);border-radius:8px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font)">×</button>
+            <button onclick="_manageDeleteSpot('${s.id}',this)" style="background:rgba(196,82,74,.1);border:1px solid rgba(196,82,74,.25);color:var(--red);border-radius:8px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font)">×</button>
           </div>
         </div>`).join('')}
     </div>`;
@@ -2484,7 +2484,7 @@ function _manageDeleteSpot(spotId, btn){
   const sIdx=spots.findIndex(s=>s.id===spotId);
   if(sIdx>=0)spots.splice(sIdx,1);
   const uIdx=userSpots.findIndex(s=>s.id===spotId);
-  if(uIdx>=0){userSpots.splice(uIdx,1);localStorage.setItem('wildpath-spots-approved',JSON.stringify(userSpots));}
+  if(uIdx>=0)userSpots.splice(uIdx,1);
   const row=document.getElementById(`manageRow_${spotId}`);
   if(row)row.remove();
   // Update header count
@@ -2529,7 +2529,7 @@ function buildFavList(){
     return;
   }
   el.innerHTML=favSpots.map(s=>`
-    <div class="fav-row" onclick="goToSpot(${s.id})">
+    <div class="fav-row" onclick="goToSpot('${s.id}')">
       <div class="fav-thumb" style="background:${s.heroGradient}"></div>
       <div style="flex:1;min-width:0">
         <div class="fav-name">${s.name}</div>
@@ -2953,7 +2953,7 @@ function buildRecentlyAdded(){
 }
 
 function spotCardHTML(s,badge,showGem){
-  return`<div class="spot-card-h" onclick="goToSpot(${s.id})">
+  return`<div class="spot-card-h" onclick="goToSpot('${s.id}')">
     <div class="spot-card-thumb" style="background:${s.heroGradient}"></div>
     <div class="spot-card-info">
       <div class="spot-card-name">${sanitize(s.name)}${showGem?'<span class="gem-badge">Hidden Gem</span>':''}</div>
@@ -3036,9 +3036,9 @@ function openSheet(pinIndex){
       <div class="sheet-actions-row" style="gap:6px">
         <a href="https://maps.apple.com/?daddr=${spot.lat},${spot.lng}&dirflg=d" target="_blank" class="sheet-btn-nav" style="text-decoration:none;text-align:center;flex:1">Apple Maps</a>
         <a href="https://www.google.com/maps/dir/?api=1&destination=${spot.lat},${spot.lng}" target="_blank" class="sheet-btn-nav" style="text-decoration:none;text-align:center;flex:1;background:var(--accent);color:#0f1a0a">Google Maps</a>
-        <button class="btn-fav${isFav?' saved':''}" id="favBtn" onclick="toggleFavorite(${spot.id})">${isFav?'Saved':'Save'}</button>
+        <button class="btn-fav${isFav?' saved':''}" id="favBtn" onclick="toggleFavorite('${spot.id}')">${isFav?'Saved':'Save'}</button>
       </div>
-      <button class="sheet-btn-full" style="margin-top:8px" onclick="openDetail(${spot.id})">View Full Details →</button>
+      <button class="sheet-btn-full" style="margin-top:8px" onclick="openDetail('${spot.id}')">View Full Details →</button>
     </div>`;
 
   document.getElementById('spotSheet').classList.add('open');
@@ -3327,7 +3327,7 @@ function openDetail(spotIdOrObj){
       extraHTML+=`<div style="margin-top:14px;margin-bottom:16px">
         <div style="font-size:13px;font-weight:700;color:var(--txt0);margin-bottom:8px">Similar Spots</div>
         <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:4px;scrollbar-width:none">
-          ${similar.map(s=>`<div onclick="openDetail(${s.id})" style="flex-shrink:0;width:120px;cursor:pointer">
+          ${similar.map(s=>`<div onclick="openDetail('${s.id}')" style="flex-shrink:0;width:120px;cursor:pointer">
             <div style="width:120px;height:80px;border-radius:10px;background:${s.heroGradient};margin-bottom:6px"></div>
             <div style="font-size:12px;font-weight:700;color:var(--txt0)">${s.name}</div>
             <div style="font-size:11px;color:var(--txt3)">${s.typeLabel}</div>
@@ -4909,7 +4909,7 @@ function liveSearchSpots(query){
   }
   drop.innerHTML=results.map(s=>{
     const dist=s._realDistStr||s.distance||'';
-    return `<div class="search-result-item" onclick="selectSearchResult(${s.id})">
+    return `<div class="search-result-item" onclick="selectSearchResult('${s.id}')">
       <div class="search-result-icon">${_getSpotIcon(s.type,s.typeColor)}</div>
       <div class="search-result-info">
         <div class="search-result-name">${sanitize(s.name)}</div>
@@ -5034,7 +5034,7 @@ function renderHomeSpots(filter){
   }
   const show=filtered.slice(0,10);
   container.innerHTML=show.map(s=>`
-    <div class="nearby-card" onclick="goToSpotFromHome(${s.id})">
+    <div class="nearby-card" onclick="goToSpotFromHome('${s.id}')">
       <div class="nearby-card-img" style="background:${s.heroGradient||'var(--bg3)'}">
       </div>
       <div class="nearby-card-body">
@@ -5910,7 +5910,7 @@ function openCollectionDetail(idx){
   } else {
     const saved=c.spotIds.map(id=>allS.find(s=>s.id===id)).filter(Boolean);
     body.innerHTML=addBtn+saved.map(s=>`
-      <div class="saved-spot-row" onclick="openDetail(${s.id})" style="cursor:pointer">
+      <div class="saved-spot-row" onclick="openDetail('${s.id}')" style="cursor:pointer">
         <div class="saved-spot-icon">${_getSpotIcon(s.type,s.typeColor)}</div>
         <div><div class="saved-spot-name">${s.name}</div><div class="saved-spot-dist">${s.typeLabel}</div></div>
         <div class="saved-spot-arrow">›</div>
@@ -7192,46 +7192,93 @@ function showLoginScreen(cb){promptSignIn(cb);}
 function switchToProfile(el){switchScreen('profile',el);}
 
 // ── Admin: Pending spots management ──────────────
-function getPendingSpots(){
-  return JSON.parse(localStorage.getItem('wildpath-pending-spots')||'[]');
+// Pending spots — Supabase pending_spots table, cached in memory
+let _pendingSpotsCache=[];
+function getPendingSpots(){return _pendingSpotsCache;}
+function savePendingSpots(arr){_pendingSpotsCache=arr;}
+
+async function _sbLoadPendingSpots(){
+  if(isGuest())return;
+  try{
+    let q=db.from('pending_spots').select('*').eq('status','pending').order('submitted_at');
+    if(!isAdmin())q=q.eq('submitted_by',_myUid());
+    const {data,error}=await q;
+    if(error)throw error;
+    _pendingSpotsCache=(data||[]).map(r=>{
+      const s=_sbAdaptSpot(r);
+      s._pendingId=r.id;
+      s._submitterUid=String(r.submitted_by||'');
+      s._submittedBy=(getUserProfile(r.submitted_by)||{}).username||'Explorer';
+      s.photos=r.photo_urls||[];
+      return s;
+    });
+    try{refreshSpotMarkers();}catch(e){}
+  }catch(e){console.warn('[Supabase] pending spots load:',e);}
 }
-function savePendingSpots(arr){
-  localStorage.setItem('wildpath-pending-spots',JSON.stringify(arr));
-}
+
 function approveSpot(spotId){
-  const pending=getPendingSpots();
-  const idx=pending.findIndex(s=>s._pendingId===spotId);
+  const idx=_pendingSpotsCache.findIndex(s=>s._pendingId===spotId);
   if(idx===-1)return;
-  const spot=pending[idx];
-  spot.approved=true;
-  spot._pendingId=undefined;
-  userSpots.push(spot);
-  localStorage.setItem('wildpath-spots-approved',JSON.stringify(userSpots));
-  pending.splice(idx,1);
-  savePendingSpots(pending);
-  refreshSpotMarkers();
-  showToast('Spot approved and published!');
+  const s=_pendingSpotsCache[idx];
+  _pendingSpotsCache.splice(idx,1);
+  (async()=>{
+    try{
+      const {data,error}=await db.from('spots').insert({
+        name:s.name,type:s.type,lat:s.lat,lng:s.lng,
+        legal_status:s.legal||'caution',description:s.description||s.insiderTips||'',
+        approach:s.approach||'',difficulty:s.difficulty||null,
+        submitted_by:s._submitterUid||null,status:'approved',
+        discovered_by:s._submittedBy||null
+      }).select().single();
+      if(error)throw error;
+      await db.from('pending_spots').delete().eq('id',spotId);
+      userSpots.push(_sbAdaptSpot(data));
+      refreshSpotMarkers();
+      showToast('Spot approved and published!');
+    }catch(e){
+      console.warn('[Supabase] approve failed:',e);
+      showToast('Approve failed — check connection');
+      _sbLoadPendingSpots();
+    }
+  })();
 }
 function rejectSpot(spotId){
-  const pending=getPendingSpots();
-  const idx=pending.findIndex(s=>s._pendingId===spotId);
-  if(idx===-1)return;
-  pending.splice(idx,1);
-  savePendingSpots(pending);
+  const idx=_pendingSpotsCache.findIndex(s=>s._pendingId===spotId);
+  if(idx>-1)_pendingSpotsCache.splice(idx,1);
+  _sbTry(db.from('pending_spots').delete().eq('id',spotId),'reject spot');
   try{refreshSpotMarkers();}catch(e){}
   showToast('Spot rejected.');
 }
 
-// Every submission goes to the pending queue — nothing goes live without admin approval
+// Every submission goes to pending_spots — nothing goes live without admin approval
 function submitSpotForReview(spot){
-  const pending=getPendingSpots();
-  spot._pendingId=Date.now();
-  spot._submittedBy=_currentUser?.username||'Unknown';
-  spot._submitterUid=String(_myUid?_myUid():'guest');
-  pending.push(spot);
-  savePendingSpots(pending);
-  refreshSpotMarkers(); // submitter sees it on their own map with Pending badge
-  showToast(isAdmin()?'Spot queued — approve it in Admin Review':'Spot submitted for review!');
+  if(isGuest()){showLoginScreen();return;}
+  (async()=>{
+    try{
+      // Upload photos to spot-photos bucket first (never store base64)
+      const photoUrls=[];
+      for(const dataUrl of (spot.photos||[]).slice(0,6)){
+        try{photoUrls.push(await _sbUploadDataUrl('spot-photos',dataUrl,'jpg'));}catch(e){console.warn('spot photo upload:',e);}
+      }
+      const {data,error}=await db.from('pending_spots').insert({
+        name:spot.name,type:spot.type,lat:spot.lat,lng:spot.lng,
+        legal_status:spot.legal||'caution',
+        description:spot.description||spot.insiderTips||'',
+        approach:spot.approach||'',
+        photo_urls:photoUrls,
+        submitted_by:_myUid()
+      }).select().single();
+      if(error)throw error;
+      const s=_sbAdaptSpot(data);
+      s._pendingId=data.id;s._submitterUid=String(_myUid());s._submittedBy=_myName();s.photos=photoUrls;
+      _pendingSpotsCache.push(s);
+      refreshSpotMarkers(); // submitter sees it with Pending badge
+      showToast(isAdmin()?'Spot queued — approve it in Admin Review':'Spot submitted for review!');
+    }catch(e){
+      console.warn('[Supabase] spot submit failed:',e);
+      showToast('Could not submit spot — check connection');
+    }
+  })();
 }
 
 // Guest mode: route to Profile tab inline login
@@ -7322,7 +7369,7 @@ function saveAdminEdit(){
         found=true; break;
       }
     }
-    if(found)localStorage.setItem('wildpath-spots-approved',JSON.stringify(userSpots));
+    // userSpots is a Supabase cache — server-side spot editing comes later
   }
 
   closeAdminEdit();
@@ -7348,10 +7395,7 @@ function adminDeleteSpot(){
   if(sIdx>=0)spots.splice(sIdx,1);
 
   const uIdx=userSpots.findIndex(s=>s.id===spot.id);
-  if(uIdx>=0){
-    userSpots.splice(uIdx,1);
-    localStorage.setItem('wildpath-spots-approved',JSON.stringify(userSpots));
-  }
+  if(uIdx>=0)userSpots.splice(uIdx,1);
 
   // Remove marker from map
   if(window._spotMarkers){
@@ -7599,7 +7643,7 @@ function buildPostCard(post,compact=false){
   const myLiked=(post.likes||[]).includes(_myUid());
   const likeCount=(post.likes||[]).length;
   const commentCount=getComments(post.id).length;
-  const spotPill=post.spotName?`<div class="post-spot-pill" onclick="event.stopPropagation();openSpotFromPost(${post.spotId})">${sanitize(post.spotName)}</div>`:'';
+  const spotPill=post.spotName?`<div class="post-spot-pill" onclick="event.stopPropagation();openSpotFromPost('${post.spotId}')">${sanitize(post.spotName)}</div>`:'';
 
   let mediaHtml='';
   if(post.type==='photo'&&post.mediaUrl){
@@ -8367,7 +8411,7 @@ function _renderPostDetail(post){
       </div>
       ${String(post.userId)!==String(_myUid())?`<button class="follow-btn${following?' following':''}" onclick="toggleFollow('${post.userId}',this)">${following?'Following':'Follow'}</button>`:''}
     </div>
-    ${post.spotName?`<div style="padding:8px 16px"><div class="post-spot-pill" onclick="openSpotFromPost(${post.spotId})">${sanitize(post.spotName)}</div></div>`:''}
+    ${post.spotName?`<div style="padding:8px 16px"><div class="post-spot-pill" onclick="openSpotFromPost('${post.spotId}')">${sanitize(post.spotName)}</div></div>`:''}
     ${post.caption?`<div class="post-caption" style="padding:8px 16px 12px;font-size:13px">${sanitize(post.caption)}</div>`:''}
     <div class="post-actions" style="border-top:1px solid rgba(255,255,255,.06);border-bottom:1px solid rgba(255,255,255,.06);padding:10px 16px">
       <div class="post-action${myLiked?' liked':''}" onclick="togglePostLike('${post.id}',this)">
@@ -8555,7 +8599,7 @@ function _renderUserSpotsTab(userId){
       ${userSpotObjs.length} spots posted from
     </div>
     <div style="padding:8px 14px">
-    ${userSpotObjs.map(s=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="openDetail(${s.id})">
+    ${userSpotObjs.map(s=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="openDetail('${s.id}')">
       <div style="width:40px;height:40px;background:${s.heroGradient||'var(--bg3)'};border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px"></div>
       <div><div style="font-size:13px;font-weight:600;color:var(--txt0)">${s.name}</div><div style="font-size:11px;color:var(--txt3)">${s.region||s.distance||''}</div></div>
     </div>`).join('')}
@@ -8799,7 +8843,7 @@ function _renderDmChat(){
     if(m.spotCard){
       const s=m.spotCard;
       return `<div style="align-self:${sent?'flex-end':'flex-start'}">
-        <div class="dm-spot-card" onclick="openDetail(${s.id})">
+        <div class="dm-spot-card" onclick="openDetail('${s.id}')">
           <div class="dm-spot-card-img" style="${s.heroGradient?`background:${s.heroGradient}`:''}">${s.name?s.name[0]:''}</div>
           <div class="dm-spot-card-info">
             <div class="dm-spot-card-name">${sanitize(s.name)}</div>
@@ -8845,7 +8889,7 @@ function openDmSpotShare(){
   const overlay=document.getElementById('commCtxOverlay');
   if(!menu)return;
   menu.style.cssText='display:block;left:10px;right:10px;bottom:70px;top:auto;transform:none;max-height:200px;overflow-y:auto';
-  menu.innerHTML=results.map(s=>`<div class="ctx-menu-item" onclick="sendDmSpotCard(${s.id})">${sanitize(s.name)}</div>`).join('');
+  menu.innerHTML=results.map(s=>`<div class="ctx-menu-item" onclick="sendDmSpotCard('${s.id}')">${sanitize(s.name)}</div>`).join('');
   if(overlay)overlay.style.display='block';
 }
 function sendDmSpotCard(spotId){
@@ -9162,7 +9206,7 @@ function searchCpSpot(q){
   const matches=allS.filter(s=>s.name.toLowerCase().includes(q.toLowerCase())).slice(0,5);
   const spotHtml=matches.length
     ?`<div style="font-size:10px;font-weight:700;color:var(--txt3);padding:6px 12px 2px;letter-spacing:.5px;text-transform:uppercase">WildPath Spots</div>`
-     +matches.map(s=>`<div onclick="selectCpSpot(${s.id},'${s.name.replace(/'/g,"\\'")}',${s.lat||0},${s.lng||0})" style="padding:9px 12px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:10px"><svg viewBox="0 0 24 24" width="13" height="13" fill="#B8E87A" style="flex-shrink:0"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg><div><div style="font-size:13px;font-weight:600;color:var(--txt0)">${s.name}</div><div style="font-size:11px;color:var(--txt3)">${s.typeLabel||'Spot'}</div></div></div>`).join('')
+     +matches.map(s=>`<div onclick="selectCpSpot('${s.id}','${s.name.replace(/'/g,"\\'")}',${s.lat||0},${s.lng||0})" style="padding:9px 12px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:10px"><svg viewBox="0 0 24 24" width="13" height="13" fill="#B8E87A" style="flex-shrink:0"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg><div><div style="font-size:13px;font-weight:600;color:var(--txt0)">${s.name}</div><div style="font-size:11px;color:var(--txt3)">${s.typeLabel||'Spot'}</div></div></div>`).join('')
     :'';
   if(spotHtml){res.style.display='block';res.innerHTML=spotHtml;}else{res.style.display='none';}
   clearTimeout(_cpSpotSearchTimer);
@@ -9354,7 +9398,6 @@ function approveSpotDrop(postId){
     approved:true,_submittedBy:sd.submittedBy
   };
   userSpots.push(newSpot);
-  localStorage.setItem('wildpath-spots-approved',JSON.stringify(userSpots));
   try{refreshSpotMarkers();}catch{}
   post.spotdrop.approved=true;
   post.spotId=newSpot.id;
@@ -9751,7 +9794,7 @@ function _buildSearchDefault(){
     </div>`).join('');
   }
   html+=`<div style="padding:10px 14px;font-size:11px;font-weight:700;color:var(--txt3);letter-spacing:.4px;text-transform:uppercase">Trending Spots</div>`;
-  html+=trending.map(s=>`<div class="search-result-item" onclick="openDetail(${s.id})">
+  html+=trending.map(s=>`<div class="search-result-item" onclick="openDetail('${s.id}')">
     <div class="search-result-icon" style="background:${s.heroGradient||'var(--bg3)'}"></div>
     <div class="search-result-info"><div class="search-result-title">${s.name}</div><div class="search-result-sub">${s.typeLabel||''}</div></div>
   </div>`).join('');
@@ -10744,7 +10787,7 @@ function detailSearch(query){
   if(!matches.length){dropEl.style.display='none';return;}
   dropEl.style.display='block';
   dropEl.innerHTML=matches.map(s=>`
-    <div onclick="openDetail(${s.id});document.getElementById('detailSearchInput').value='';document.getElementById('detailSearchDrop').style.display='none'"
+    <div onclick="openDetail('${s.id}');document.getElementById('detailSearchInput').value='';document.getElementById('detailSearchDrop').style.display='none'"
       style="padding:10px 14px;cursor:pointer;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
       <div style="width:32px;height:32px;border-radius:8px;background:${s.heroGradient||'var(--bg3)'};flex-shrink:0"></div>
       <div>
@@ -12007,7 +12050,7 @@ function _showSpotListSheet(title,spotList){
       <button onclick="document.getElementById('_spotListSheet').remove()" style="background:var(--bg2);border:1px solid var(--border);color:var(--txt1);border-radius:50%;width:32px;height:32px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px">×</button>
     </div>
     ${spotList.length?spotList.map(s=>`
-      <div onclick="openDetail(${s.id});document.getElementById('_spotListSheet')?.remove()" style="padding:12px 14px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;gap:12px;align-items:center">
+      <div onclick="openDetail('${s.id}');document.getElementById('_spotListSheet')?.remove()" style="padding:12px 14px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;gap:12px;align-items:center">
         <div style="width:52px;height:52px;border-radius:12px;background:${s.heroGradient||'var(--bg3)'};flex-shrink:0"></div>
         <div style="flex:1">
           <div style="font-size:14px;font-weight:700;color:var(--txt0)">${s.name}</div>
@@ -12315,7 +12358,7 @@ function filterCreateLocationNew(query){
   const allS=[...spots,...userSpots];
   const spotResults=allS.filter(s=>s.name.toLowerCase().includes(query.toLowerCase())).slice(0,5);
   const spotItems=spotResults.map(s=>
-    `<div onclick="_selectCreateLocationNew(${s.id},'${s.name.replace(/'/g,"\\'")}')" style="padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:10px;-webkit-tap-highlight-color:transparent">
+    `<div onclick="_selectCreateLocationNew('${s.id}','${s.name.replace(/'/g,"\\'")}')" style="padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:10px;-webkit-tap-highlight-color:transparent">
       <svg viewBox="0 0 24 24" width="14" height="14" fill="#B8E87A" style="flex-shrink:0"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
       <div><div style="font-size:13px;font-weight:600;color:var(--txt0)">${s.name}</div><div style="font-size:11px;color:var(--txt3)">${s.typeLabel||'WildPath Spot'}</div></div>
     </div>`
