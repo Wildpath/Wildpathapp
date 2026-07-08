@@ -197,7 +197,7 @@
       <!-- Existing dynamic layers (kept) -->
       <div id="sidePanelLayers"></div>
 
-      <div style="height:32px"></div>
+      <div style="height:calc(var(--nav-h) + 24px)"></div>
     </div>
 
     <!-- Layers button (hidden — kept for compat) -->
@@ -427,23 +427,25 @@
       <div id="detailSearchInput" style="display:none"></div>
       <div id="detailSearchDrop" style="display:none"></div>
 
-      <!-- ── NAME + BOOKMARK ── -->
-      <div style="padding:14px 14px 0;display:flex;align-items:flex-start;gap:10px">
-        <div id="detailName" style="flex:1;font-size:22px;font-weight:700;color:var(--txt0);line-height:1.25;letter-spacing:-.3px"></div>
-        <button type="button" id="detailBookmarkBtn" onclick="toggleDetailBookmark()" style="flex-shrink:0;width:40px;height:40px;background:var(--bg2);border:1px solid var(--border2);border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;margin-top:2px">
-          <svg id="detailBookmarkIcon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--txt2)" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+      <!-- ── NAME ── -->
+      <div style="padding:14px 14px 0">
+        <div id="detailName" style="font-size:22px;font-weight:700;color:var(--txt0);line-height:1.25;letter-spacing:-.3px"></div>
+      </div>
+
+      <!-- ── PERMIT SUGGESTION CHIP (shown only if permit required) ── -->
+      <div id="detailPermitChip" style="display:none;padding:8px 14px 0"></div>
+
+      <!-- ── ACTION BUTTONS: Save + Reviews ── -->
+      <div style="padding:12px 14px 0;display:flex;gap:10px">
+        <button id="detailSaveBtn" type="button" onclick="toggleDetailBookmark()" style="flex:1;height:46px;background:var(--bg2);border:1px solid var(--border2);border-radius:14px;color:var(--txt0);font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:8px;-webkit-tap-highlight-color:transparent">
+          <svg id="detailSaveBtnIcon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="var(--txt1)" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+          <span id="detailSaveBtnLabel">Save</span>
+        </button>
+        <button type="button" onclick="openDetailReviews()" style="flex:1;height:46px;background:var(--bg2);border:1px solid var(--border2);border-radius:14px;color:var(--txt0);font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:8px;-webkit-tap-highlight-color:transparent">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="#F5A623" stroke="none"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+          Reviews
         </button>
       </div>
-
-      <!-- ── STAR RATING ── -->
-      <div style="padding:8px 14px 0;display:flex;align-items:center;gap:8px">
-        <div id="detailStarsRow" style="display:flex;gap:2px"></div>
-        <span id="detailRatingScore" style="font-size:15px;font-weight:700;color:var(--txt0)"></span>
-        <span id="detailRatingCount" style="font-size:13px;color:var(--txt3)"></span>
-      </div>
-
-      <!-- ── ACTIVITY FILTER CHIPS ── -->
-      <div id="detailActivityChips" style="display:flex;gap:8px;overflow-x:auto;padding:10px 14px 0;-webkit-overflow-scrolling:touch;scrollbar-width:none"></div>
 
       <!-- ── PHOTO GRID (community photos) ── -->
       <div style="padding:14px 14px 0">
@@ -467,36 +469,47 @@
         </div>
       </div>
 
-      <!-- ── RATINGS DISTRIBUTION + RECENT REVIEWS ── -->
-      <div style="padding:16px 14px 0">
-        <div style="font-size:14px;font-weight:700;color:var(--txt0);margin-bottom:12px">Ratings & Reviews</div>
-        <!-- Star bars -->
-        <div id="detailRatingBars" style="display:flex;flex-direction:column;gap:5px;margin-bottom:16px"></div>
-        <!-- Recent reviews list -->
-        <div id="detailReviewsList" style="display:flex;flex-direction:column;gap:12px"></div>
-      </div>
-
-      <!-- ── FULL COMMENT THREAD ── -->
-      <div style="padding:16px 14px 0">
-        <div style="font-size:14px;font-weight:700;color:var(--txt0);margin-bottom:12px">Comments</div>
-        <div id="detailCommentsList" style="display:flex;flex-direction:column;gap:12px"></div>
-      </div>
-
       <!-- Spacer for fixed button -->
       <div style="height:20px"></div>
 
     </div><!-- end detailScrollBody -->
 
-    <!-- ── FIXED BOTTOM: Add a Comment ── -->
+    <!-- ── FIXED BOTTOM: Write a Review ── -->
     <div style="flex-shrink:0;padding:10px 14px calc(env(safe-area-inset-bottom,0px) + 10px);background:var(--bg0);border-top:1px solid var(--border)">
-      <button type="button" onclick="openDetailAddComment()" style="width:100%;height:50px;background:#B8E87A;color:#0f1a0a;border:none;border-radius:16px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;letter-spacing:-.1px;display:flex;align-items:center;justify-content:center;gap:8px">
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#0f1a0a" stroke-width="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-        Add a Comment
+      <button type="button" onclick="openDetailReviews()" style="width:100%;height:50px;background:#B8E87A;color:#0f1a0a;border:none;border-radius:16px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;letter-spacing:-.1px;display:flex;align-items:center;justify-content:center;gap:8px">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="#0f1a0a" stroke="none"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+        Ratings & Reviews
       </button>
     </div>
 
+    <!-- Reviews overlay (slides up from bottom of sheet) -->
+    <div id="detailReviewsOverlay" style="display:none;position:absolute;inset:0;z-index:150;background:var(--bg0);flex-direction:column;border-radius:20px 20px 0 0;overflow:hidden;transform:translateY(100%);transition:transform .35s cubic-bezier(.4,0,.2,1)">
+      <!-- Header -->
+      <div style="flex-shrink:0;padding:12px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)">
+        <button type="button" onclick="closeDetailReviews()" style="width:36px;height:36px;border-radius:50%;background:var(--bg2);border:1px solid var(--border2);color:var(--txt1);cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center;font-family:inherit">←</button>
+        <div style="font-size:16px;font-weight:700;color:var(--txt0)">Ratings & Reviews</div>
+        <button type="button" onclick="openDetailAddComment()" style="background:#B8E87A;color:#0f1a0a;border:none;border-radius:20px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Write a Review</button>
+      </div>
+      <!-- Scrollable content -->
+      <div style="flex:1;overflow-y:auto;padding:16px 14px 80px;-webkit-overflow-scrolling:touch">
+        <!-- Big score + bars side by side -->
+        <div style="display:flex;align-items:center;gap:16px;margin-bottom:24px;padding:16px;background:var(--bg1);border-radius:16px;border:1px solid var(--border)">
+          <div style="text-align:center;flex-shrink:0">
+            <div id="detailRevBigScore" style="font-size:52px;font-weight:800;color:var(--txt0);line-height:1">4.5</div>
+            <div id="detailRevBigStars" style="display:flex;gap:3px;justify-content:center;margin-top:5px"></div>
+            <div id="detailRevTotalCount" style="font-size:11px;color:var(--txt3);margin-top:4px"></div>
+          </div>
+          <div style="flex:1">
+            <div id="detailRevBars" style="display:flex;flex-direction:column;gap:6px"></div>
+          </div>
+        </div>
+        <!-- Reviews list -->
+        <div id="detailRevList" style="display:flex;flex-direction:column;gap:12px"></div>
+      </div>
+    </div>
+
     <!-- Comment input panel (slides up when tapped) -->
-    <div id="detailCommentPanel" style="display:none;position:absolute;inset:0;background:rgba(0,0,0,.7);z-index:50;align-items:flex-end" onclick="if(event.target===this)closeDetailCommentPanel()">
+    <div id="detailCommentPanel" style="display:none;position:absolute;inset:0;background:rgba(0,0,0,.7);z-index:200;align-items:flex-end" onclick="if(event.target===this)closeDetailCommentPanel()">
       <div style="background:var(--bg1);border-radius:20px 20px 0 0;width:100%;padding:20px 14px calc(env(safe-area-inset-bottom,0px) + 16px)">
         <div style="width:36px;height:4px;background:var(--border2);border-radius:2px;margin:0 auto 16px"></div>
         <!-- Star rating for this review -->
@@ -1783,11 +1796,7 @@
 
   <!-- ── BOTTOM NAV ─────────────────────────────────── -->
   <nav class="bottom-nav">
-    <div id="nav-home" class="nav-item active" data-screen="home" onclick="showTab('home')" style="flex:1">
-      <div class="nav-icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></div>
-      <div class="nav-label">Home</div>
-    </div>
-    <div id="nav-map" class="nav-item" data-screen="map" onclick="showTab('map')" style="flex:1">
+    <div id="nav-map" class="nav-item active" data-screen="map" onclick="showTab('map')" style="flex:1">
       <div class="nav-icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg></div>
       <div class="nav-label">Map</div>
     </div>
@@ -1847,11 +1856,49 @@
 
   <!-- ── FRIENDS MAP PAGE ───────────────────────── -->
   <div id="friendsMapPage" style="position:fixed;inset:0;z-index:400;background:var(--bg0);display:none;flex-direction:column;overflow:hidden">
-    <div style="position:absolute;top:52px;left:14px;z-index:10;background:rgba(0,0,0,.5);border-radius:50%;width:38px;height:38px;display:flex;align-items:center;justify-content:center;cursor:pointer" onclick="document.getElementById('friendsMapPage').style.display='none'">
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    <!-- Close button -->
+    <div style="position:absolute;top:52px;left:14px;z-index:20;background:rgba(255,255,255,.15);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-radius:50%;width:38px;height:38px;display:flex;align-items:center;justify-content:center;cursor:pointer;border:1px solid rgba(255,255,255,.2)" onclick="document.getElementById('friendsMapPage').style.display='none'">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#fff" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </div>
+    <!-- Title -->
+    <div style="position:absolute;top:58px;left:66px;z-index:20;font-size:15px;font-weight:700;color:#fff;text-shadow:0 1px 4px rgba(0,0,0,.5);pointer-events:none">Friends Map</div>
+    <!-- Map type switcher -->
+    <div id="friendsMapStyleBar" style="position:absolute;top:52px;right:14px;z-index:20;display:flex;gap:6px">
+      <button onclick="setFriendsMapStyle('outdoors-v12',this)" style="background:rgba(255,255,255,.9);color:#0f1a0a;border:none;border-radius:20px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit" data-active="true">Standard</button>
+      <button onclick="setFriendsMapStyle('satellite-streets-v12',this)" style="background:rgba(0,0,0,.45);backdrop-filter:blur(8px);color:#fff;border:1px solid rgba(255,255,255,.2);border-radius:20px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">Satellite</button>
+      <button onclick="setFriendsMapStyle('dark-v11',this)" style="background:rgba(0,0,0,.45);backdrop-filter:blur(8px);color:#fff;border:1px solid rgba(255,255,255,.2);border-radius:20px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">Dark</button>
     </div>
     <div id="friendsMapEl" style="flex:1;position:relative"></div>
-    <div id="friendsMapLegend" style="flex-shrink:0;padding:12px 16px;background:var(--bg1);border-top:1px solid var(--border);display:flex;gap:8px;overflow-x:auto;align-items:center"></div>
+    <div id="friendsMapLegend" style="flex-shrink:0;padding:10px 16px;background:rgba(0,0,0,.7);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);display:flex;gap:10px;overflow-x:auto;align-items:center"></div>
+  </div>
+
+  <!-- ── COMMUNITY MAP PAGE ───────────────────────── -->
+  <div id="communityMapPage" style="position:absolute;inset:0;z-index:900;background:var(--bg0);display:none;flex-direction:column;overflow:hidden">
+    <div style="position:absolute;top:52px;left:14px;z-index:10;background:rgba(0,0,0,.5);border-radius:50%;width:38px;height:38px;display:flex;align-items:center;justify-content:center;cursor:pointer" onclick="closeCommunityMap()">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </div>
+    <div id="communityMapTitle" style="position:absolute;top:52px;left:66px;z-index:10;background:rgba(0,0,0,.55);border-radius:20px;padding:6px 14px;font-size:14px;font-weight:700;color:#fff;pointer-events:none"></div>
+    <div id="communityMapAddBtn" style="position:absolute;top:52px;right:14px;z-index:10;background:var(--accent);border-radius:20px;padding:8px 16px;font-size:13px;font-weight:700;color:#0b1a0b;cursor:pointer;display:flex;align-items:center;gap:6px" onclick="openAddSpotFromCommunityMap()">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Add Spot
+    </div>
+    <div id="communityMapEl" style="flex:1;position:relative"></div>
+  </div>
+
+  <!-- ── YOUR MAP PAGE ─────────────────────────────── -->
+  <div id="yourMapPage" style="position:fixed;inset:0;z-index:400;background:var(--bg0);display:none;flex-direction:column;overflow:hidden">
+    <!-- Close button -->
+    <div style="position:absolute;top:52px;left:14px;z-index:20;background:rgba(255,255,255,.15);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-radius:50%;width:38px;height:38px;display:flex;align-items:center;justify-content:center;cursor:pointer;border:1px solid rgba(255,255,255,.2)" onclick="document.getElementById('yourMapPage').style.display='none'">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#fff" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </div>
+    <!-- Title -->
+    <div style="position:absolute;top:58px;left:66px;z-index:20;font-size:15px;font-weight:700;color:#fff;text-shadow:0 1px 4px rgba(0,0,0,.5);pointer-events:none">Your Spots</div>
+    <!-- Map type switcher -->
+    <div style="position:absolute;top:52px;right:14px;z-index:20;display:flex;gap:6px">
+      <button onclick="setYourMapStyle('outdoors-v12',this)" style="background:rgba(255,255,255,.9);color:#0f1a0a;border:none;border-radius:20px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit" data-active="true">Standard</button>
+      <button onclick="setYourMapStyle('satellite-streets-v12',this)" style="background:rgba(0,0,0,.45);backdrop-filter:blur(8px);color:#fff;border:1px solid rgba(255,255,255,.2);border-radius:20px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">Satellite</button>
+      <button onclick="setYourMapStyle('dark-v11',this)" style="background:rgba(0,0,0,.45);backdrop-filter:blur(8px);color:#fff;border:1px solid rgba(255,255,255,.2);border-radius:20px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">Dark</button>
+    </div>
+    <div id="yourMapEl" style="flex:1;position:relative"></div>
   </div>
 
   <!-- ── CROP MODAL ───────────────────────────────── -->
