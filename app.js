@@ -274,23 +274,27 @@ async function _sbUploadDataUrl(bucket,dataUrl,ext){
 
 // ── Hydration: pull everything the UI needs into _DB ──
 async function _sbHydrate(){
-  try{
-    await _sbLoadSpots();
-    await Promise.all([_sbLoadProfiles(),_sbLoadCommunities()]);
-    await Promise.all([_sbLoadPosts(),_sbLoadMessages(),_sbLoadFollows(),_sbLoadNotifications(),_sbLoadSaved(),_sbLoadPendingSpots()]);
-    _sbHydrated=true;
-    _sbSubscribeRealtime();
-    // Refresh whatever is on screen
-    try{refreshSpotMarkers();}catch(e){}
-    try{if(typeof buildHomeFeed==='function')buildHomeFeed();}catch(e){}
-    try{buildFeed();}catch(e){}
-    try{buildCommunitiesTab();}catch(e){}
-    try{buildProfile();}catch(e){}
-    try{_updateNotifBadge();}catch(e){}
+  const failed=[];
+  const run=async(name,fn)=>{try{await fn();}catch(e){failed.push(name);console.warn('[Supabase] '+name+' load failed:',e?.message||e);}};
+  await run('spots',_sbLoadSpots);
+  await Promise.allSettled([run('profiles',_sbLoadProfiles),run('communities',_sbLoadCommunities)]);
+  await Promise.allSettled([
+    run('posts',_sbLoadPosts),run('messages',_sbLoadMessages),run('follows',_sbLoadFollows),
+    run('notifications',_sbLoadNotifications),run('saved',_sbLoadSaved),run('pending spots',_sbLoadPendingSpots)
+  ]);
+  _sbHydrated=true;
+  try{_sbSubscribeRealtime();}catch(e){console.warn('[Supabase] realtime:',e);}
+  // Refresh whatever is on screen
+  try{refreshSpotMarkers();}catch(e){}
+  try{if(typeof buildHomeFeed==='function')buildHomeFeed();}catch(e){}
+  try{buildFeed();}catch(e){}
+  try{buildCommunitiesTab();}catch(e){}
+  try{buildProfile();}catch(e){}
+  try{_updateNotifBadge();}catch(e){}
+  if(failed.length){
+    _showRetryToast('Could not load: '+failed.join(', '),'_sbHydrate()');
+  }else{
     console.log('[Supabase] hydrated');
-  }catch(e){
-    console.warn('[Supabase] hydrate failed:',e);
-    _showRetryToast('Could not load data from server','_sbHydrate()');
   }
 }
 
@@ -310,7 +314,7 @@ async function _sbLoadSpots(){
 }
 
 async function _sbLoadPosts(){
-  const {data,error}=await db.from('posts').select('*, profiles(username, avatar_url)')
+  const {data,error}=await db.from('posts').select('*, profiles!posts_user_id_fkey(username, avatar_url)')
     .eq('privacy','public').order('created_at',{ascending:false}).limit(20);
   if(error)throw error;
   const rows=data||[];
@@ -9356,7 +9360,7 @@ function submitPost(){
         lat:_cpTaggedSpotLat??taggedSpot?.lat??null,
         lng:_cpTaggedSpotLng??taggedSpot?.lng??null
       };
-      const {data,error}=await db.from('posts').insert(row).select('*, profiles(username, avatar_url)').single();
+      const {data,error}=await db.from('posts').insert(row).select('*, profiles!posts_user_id_fkey(username, avatar_url)').single();
       if(error)throw error;
       const posts=getPosts();
       posts.unshift(_sbAdaptPost(data,null));
