@@ -274,27 +274,34 @@ async function _sbUploadDataUrl(bucket,dataUrl,ext){
 
 // ── Hydration: pull everything the UI needs into _DB ──
 async function _sbHydrate(){
-  const failed=[];
-  const run=async(name,fn)=>{try{await fn();}catch(e){failed.push(name);console.warn('[Supabase] '+name+' load failed:',e?.message||e);}};
-  await run('spots',_sbLoadSpots);
-  await Promise.allSettled([run('profiles',_sbLoadProfiles),run('communities',_sbLoadCommunities)]);
-  await Promise.allSettled([
-    run('posts',_sbLoadPosts),run('messages',_sbLoadMessages),run('follows',_sbLoadFollows),
-    run('notifications',_sbLoadNotifications),run('saved',_sbLoadSaved),run('pending spots',_sbLoadPendingSpots)
-  ]);
-  _sbHydrated=true;
-  try{_sbSubscribeRealtime();}catch(e){console.warn('[Supabase] realtime:',e);}
-  // Refresh whatever is on screen
-  try{refreshSpotMarkers();}catch(e){}
-  try{if(typeof buildHomeFeed==='function')buildHomeFeed();}catch(e){}
-  try{buildFeed();}catch(e){}
-  try{buildCommunitiesTab();}catch(e){}
-  try{buildProfile();}catch(e){}
-  try{_updateNotifBadge();}catch(e){}
-  if(failed.length){
-    _showRetryToast('Could not load: '+failed.join(', '),'_sbHydrate()');
-  }else{
-    console.log('[Supabase] hydrated');
+  // Outer safety net: hydration must NEVER throw and must NEVER block a user
+  // from landing on / staying on the Map tab after login or signup — it only
+  // refreshes data for screens that are already visible.
+  try{
+    const failed=[];
+    const run=async(name,fn)=>{try{await fn();}catch(e){failed.push(name);console.warn('[Supabase] '+name+' load failed:',e?.message||e);}};
+    await run('spots',_sbLoadSpots);
+    await Promise.allSettled([run('profiles',_sbLoadProfiles),run('communities',_sbLoadCommunities)]);
+    await Promise.allSettled([
+      run('posts',_sbLoadPosts),run('messages',_sbLoadMessages),run('follows',_sbLoadFollows),
+      run('notifications',_sbLoadNotifications),run('saved',_sbLoadSaved),run('pending spots',_sbLoadPendingSpots)
+    ]);
+    _sbHydrated=true;
+    try{_sbSubscribeRealtime();}catch(e){console.warn('[Supabase] realtime:',e);}
+    // Refresh whatever is on screen
+    try{refreshSpotMarkers();}catch(e){}
+    try{if(typeof buildHomeFeed==='function')buildHomeFeed();}catch(e){}
+    try{buildFeed();}catch(e){}
+    try{buildCommunitiesTab();}catch(e){}
+    try{buildProfile();}catch(e){}
+    try{_updateNotifBadge();}catch(e){}
+    if(failed.length){
+      _showRetryToast('Could not load: '+failed.join(', '),'_sbHydrate()');
+    }else{
+      console.log('[Supabase] hydrated');
+    }
+  }catch(e){
+    console.warn('[Supabase] hydrate failed unexpectedly (non-blocking):',e?.message||e);
   }
 }
 
@@ -493,7 +500,7 @@ window.onload=async()=>{
     await _sbLoadCurrentUser(_sbSession.user);
     _hideLoginScreen();
     _launchApp();
-    _sbHydrate();
+    _sbHydrate().catch(e=>console.warn('[Supabase] hydrate error (non-blocking):',e));
   } else {
     _currentUser=null;
     _showLoginScreen();
@@ -557,7 +564,7 @@ async function _sbSignIn(email,pw,showErr){
     await _sbLoadCurrentUser(data.user);
     _hideLoginScreen();
     if(!_appInitialized)_launchApp();else{buildProfile();showToast('Welcome back, '+_currentUser.username+'!');}
-    _sbHydrate();
+    _sbHydrate().catch(e=>console.warn('[Supabase] hydrate error (non-blocking):',e));
     return true;
   }catch(e){showErr('Could not reach the server — check your connection.');return false;}
 }
@@ -574,7 +581,7 @@ async function _sbSignUp(username,email,pw,showErr){
     await _sbLoadCurrentUser(data.user);
     _hideLoginScreen();
     if(!_appInitialized)_launchApp();else{buildProfile();showToast('Welcome to WildPath!');}
-    _sbHydrate();
+    _sbHydrate().catch(e=>console.warn('[Supabase] hydrate error (non-blocking):',e));
     return true;
   }catch(e){showErr('Could not reach the server — check your connection.');return false;}
 }
@@ -603,7 +610,7 @@ function continueAsGuest(){
   _currentUser={id:'guest',username:'Guest',role:'guest',email:''};
   _hideLoginScreen();
   if(!_appInitialized)_launchApp();
-  _sbHydrate(); // guests still see public spots and posts (RLS allows anon reads)
+  _sbHydrate().catch(e=>console.warn('[Supabase] hydrate error (non-blocking):',e)); // guests still see public spots and posts (RLS allows anon reads)
 }
 
 function _launchApp(){
