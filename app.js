@@ -2201,9 +2201,10 @@ function _buildProfileLoginForm(){
   ov.style.alignItems='center';
   ov.innerHTML=`
     <div style="padding:60px 24px 40px;width:100%;display:flex;flex-direction:column;align-items:center">
-      <div style="text-align:center;margin-bottom:40px">
-        <div style="font-size:26px;font-weight:700;color:var(--txt0);letter-spacing:-.02em;margin-bottom:8px">WildPath</div>
-        <div style="font-size:14px;color:var(--txt2)">Sign in to track your adventures</div>
+      <div style="text-align:center;margin-bottom:40px;display:flex;flex-direction:column;align-items:center;gap:10px">
+        <svg width="44" height="44" viewBox="0 0 48 48" fill="none"><path d="M4 40 L16 18 L24 28 L32 16 L44 40 Z" fill="#B8E87A" opacity=".9"/><path d="M2 40 Q8 36 14 38 Q20 40 26 37 Q32 34 38 36 Q42 38 46 40" stroke="#B8E87A" stroke-width="1.5" stroke-linecap="round" fill="none" opacity=".45"/></svg>
+        <div style="font-size:26px;font-weight:700;color:var(--txt0);letter-spacing:-.02em">WildPath</div>
+        <div style="font-size:14px;color:var(--txt2);line-height:1.5;padding:0 10px">Discover and share hidden exploration spots</div>
       </div>
       <div style="width:100%;max-width:340px">
         <div class="login-tabs">

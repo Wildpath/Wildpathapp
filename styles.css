@@ -144,9 +144,13 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0F0D0B;
 .token-hint{font-size:11px;color:var(--txt3);margin-top:8px;max-width:280px;line-height:1.5}
 
 /* ── PHONE SHELL ─────────────────────────────────────── */
-#app{width:390px;height:844px;height:min(844px,100dvh);margin:0 auto;
+#app{width:100%;max-width:390px;height:844px;height:min(844px,100dvh);margin:0 auto;
   position:relative;overflow:hidden;overflow:clip;background:var(--bg0);
   box-shadow:0 0 80px rgba(0,0,0,.8),0 0 0 1px rgba(255,255,255,.04)}
+/* Real phones: fill the whole screen — no desktop frame */
+@media (max-width:480px){
+  #app{max-width:none;height:100dvh;box-shadow:none}
+}
 
 /* ── SCREENS ─────────────────────────────────────────── */
 .screen{position:absolute;inset:0;display:none;flex-direction:column;
