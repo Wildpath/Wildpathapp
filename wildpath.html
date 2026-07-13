@@ -221,8 +221,11 @@
     <div class="fab-add" onclick="openAddSpot()" style="display:none">＋</div>
 
     <!-- ── RIGHT COLUMN: Compass on top, Add Spot FAB below ── -->
-    <!-- Compass — tap opens full-screen panel — right side per spec -->
-    <div id="compassOverlay" title="Open compass" onclick="openCompassPanel()">
+    <!-- Compass — tap resets map to north-up; long-press opens the full compass panel -->
+    <div id="compassOverlay" title="Reset to North · hold for compass panel"
+         onclick="resetMapNorth()"
+         ontouchstart="_compassLongPressStart(event)" ontouchend="_compassLongPressEnd(event)" ontouchmove="_compassLongPressCancel(event)"
+         onmousedown="_compassLongPressStart(event)" onmouseup="_compassLongPressEnd(event)" onmouseleave="_compassLongPressCancel(event)">
       <svg viewBox="0 0 56 56" width="40" height="40">
         <circle cx="28" cy="28" r="27" fill="rgba(22,19,16,.96)" stroke="rgba(196,149,106,.4)" stroke-width="1.5"/>
         <!-- Cardinal labels — static, always face up -->
@@ -1921,7 +1924,7 @@
 </div><!-- #app -->
 
 
-<script src="data.js?v=11"></script>
-<script src="app.js?v=11"></script>
+<script src="data.js?v=12"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>
