@@ -18,7 +18,7 @@
 // ═══════════════════════════════════════════════════
 const MAPBOX_TOKEN_DEFAULT = 'pk.eyJ1Ijoid2lsZHBhdGgxMiIsImEiOiJjbXBya2I1aWQxMHB2MnFweG92cjJtbW81In0.wGxIYBZeRDif7L3VTLlXFw';
 const MAPBOX_TOKEN = localStorage.getItem('mapbox-token') || MAPBOX_TOKEN_DEFAULT;
-mapboxgl.accessToken = MAPBOX_TOKEN || 'MISSING';
+mapboxgl.accessToken = MAPBOX_TOKEN;
 
 function saveMapboxToken(){
   const val=(document.getElementById('mapboxTokenInput')?.value||'').trim();
@@ -702,18 +702,13 @@ function initMap(){
     _prefetchLandData();
     // Rivers always visible
     loadRiversAlways();
-    // Peak labels
-    loadOsmPeaks();
   });
 
   // Reload rivers / peaks on map move (debounced)
   let _riverReloadTimer=null;
-  let _peakReloadTimer=null;
   map.on('moveend',()=>{
     clearTimeout(_riverReloadTimer);
     _riverReloadTimer=setTimeout(loadRiversAlways,2000);
-    clearTimeout(_peakReloadTimer);
-    _peakReloadTimer=setTimeout(loadOsmPeaks,2000);
   });
 
   map.on('error',(e)=>{
@@ -948,10 +943,6 @@ function setMapStyle(key){
     // 7. Rivers always visible
     _riversBounds=null; // force reload after style switch
     loadRiversAlways();
-    // 8. OSM peaks (force reload)
-    _osmPeaksBounds=null;
-    _clearOsmPeaks();
-    loadOsmPeaks();
     // 8. Restore county + private land layers if they were on
     const countyToggle=document.getElementById('spToggle-counties')||document.getElementById('toggle-counties');
     if(countyToggle&&countyToggle.classList.contains('on')){
@@ -1415,13 +1406,8 @@ function buildLayersPanel(){
   list.appendChild(note);
 }
 
-// ═══════════════════════════════════════════════════
-// OSM PEAKS — always-visible summit labels
-// ═══════════════════════════════════════════════════
-const _peaksCache=new Map(); // rounded bbox → raw Overpass response
-let _osmPeaksBounds=null;
-
 // Overpass fetch with 429 retry: up to 2 retries, 2s backoff each
+// (shared by on-demand trails toggle and spot-detail trail fetches)
 async function _overpassFetchRetry(query,timeoutMs){
   for(let attempt=0;attempt<3;attempt++){
     if(attempt>0)await new Promise(r=>setTimeout(r,2000));
@@ -1437,76 +1423,6 @@ async function _overpassFetchRetry(query,timeoutMs){
     }catch(e){
       if(attempt===2)throw e;
     }
-  }
-}
-
-function _clearOsmPeaks(){
-  try{if(map&&map.getLayer('osm-peaks'))map.removeLayer('osm-peaks');}catch{}
-  try{if(map&&map.getSource('osm-peaks-src'))map.removeSource('osm-peaks-src');}catch{}
-}
-
-async function loadOsmPeaks(){
-  if(!map)return;
-  const zoom=map.getZoom();
-  if(zoom<8){_clearOsmPeaks();return;}
-  const bounds=map.getBounds();
-  const bbox=`${bounds.getSouth().toFixed(2)},${bounds.getWest().toFixed(2)},${bounds.getNorth().toFixed(2)},${bounds.getEast().toFixed(2)}`;
-  if(_osmPeaksBounds===bbox)return;
-  _osmPeaksBounds=bbox;
-  try{
-    let data;
-    if(_peaksCache.has(bbox)){
-      data=_peaksCache.get(bbox);
-    }else{
-      const q=`[out:json][timeout:15];node["natural"="peak"](${bbox});out;`;
-      data=await _overpassFetchRetry(q,15000);
-      _peaksCache.set(bbox,data);
-    }
-    const features=(data.elements||[])
-      .filter(el=>{
-        const elevM=parseFloat(el.tags?.ele||0);
-        if(zoom<9&&elevM<900)return false;
-        if(zoom<10&&elevM<300)return false;
-        return true;
-      })
-      .map(el=>{
-        const elevM=parseFloat(el.tags?.ele||0);
-        const elevFt=elevM>0?Math.round(elevM*3.28084):null;
-        const name=el.tags?.name||'Peak';
-        const label=elevFt?`${name}\n▲ ${elevFt.toLocaleString()} ft`:name;
-        return{
-          type:'Feature',
-          geometry:{type:'Point',coordinates:[el.lon,el.lat]},
-          properties:{name,elevFt:elevFt||0,label}
-        };
-      });
-    _clearOsmPeaks();
-    if(!features.length)return;
-    const geojson={type:'FeatureCollection',features};
-    map.addSource('osm-peaks-src',{type:'geojson',data:geojson});
-    map.addLayer({
-      id:'osm-peaks',type:'symbol',source:'osm-peaks-src',
-      layout:{
-        'text-field':['get','label'],
-        'text-font':['Open Sans SemiBold','Arial Unicode MS Bold'],
-        'text-size':['interpolate',['linear'],['zoom'],8,9,11,11,14,13],
-        'text-offset':[0,1.1],
-        'text-anchor':'top',
-        'text-max-width':8,
-        'icon-allow-overlap':false,
-        'text-allow-overlap':false
-      },
-      paint:{
-        'text-color':'#e8dece',
-        'text-halo-color':'rgba(20,17,14,0.9)',
-        'text-halo-width':1.5
-      }
-    });
-    console.log('[Peaks] Loaded',features.length,'OSM peaks');
-  }catch(e){
-    console.warn('[Peaks] Load failed:',e);
-    _osmPeaksBounds=null; // allow retry on next map move
-    _showMapNotice('Peaks unavailable — data server busy');
   }
 }
 
@@ -1720,8 +1636,8 @@ function showTab(tabName) {
   _tabAnimTimers.forEach(t=>clearTimeout(t));
   _tabAnimTimers=[];
 
-  var screens = ['map-screen','community-screen','profile-screen'];
-  var navs = ['nav-map','nav-community','nav-profile'];
+  var screens = ['map-screen','community-screen','profile-screen','explore-screen','screen-plan'];
+  var navs = ['nav-map','nav-community','nav-profile','nav-explore'];
 
   // Determine slide direction based on tab order
   const prevIdx=_tabOrder.indexOf(_prevTab);
@@ -1774,6 +1690,8 @@ function showTab(tabName) {
   if (tabName === 'map' && map) setTimeout(function(){ map.resize(); }, 50);
   if (tabName === 'community') buildCommunityScreen();
   if (tabName === 'profile') buildProfile();
+  if (tabName === 'explore') buildExploreScreen();
+  if (tabName === 'plan') _onShowPlanScreen();
   // Show messages FAB only when Community tab is active; reset to community view
   const msgFab = document.getElementById('commMsgFab');
   if (msgFab) msgFab.style.display = (tabName === 'community') ? 'flex' : 'none';
@@ -1972,7 +1890,9 @@ function _renderPlanState(){
   const totalCost=days.reduce((sum,d)=>{const m=d.cost.match(/\$(\d+)/);return sum+(m?parseInt(m[1]):0);},0);
   const keptTotal=days.reduce((s,d)=>s+d.spots.filter(sp=>sp.kept).length,0);
 
-  document.getElementById('itineraryOutput').innerHTML=`
+  const _itinOut=document.getElementById('itineraryOutput')||document.getElementById('hpItineraryOutput');
+  if(!_itinOut)return;
+  _itinOut.innerHTML=`
     <div class="route-summary-card fade-in">
       <div class="route-summary-title">${route.name}</div>
       <div class="route-stats-row">
@@ -2115,7 +2035,9 @@ function confirmItinerary(){
     .filter(d=>d.spots.length>0);
   if(!kept.length){showToast('Keep at least one spot first');return;}
   const names=kept.flatMap(d=>d.spots.map(s=>s.name));
-  document.getElementById('itineraryOutput').innerHTML=`
+  const _confOut=document.getElementById('itineraryOutput')||document.getElementById('hpItineraryOutput');
+  if(!_confOut)return;
+  _confOut.innerHTML=`
     <div style="background:var(--bg1);border-radius:20px;border:1px solid rgba(196,149,106,.3);
       padding:28px 20px;text-align:center;animation:bounceIn .5s ease">
       <div style="font-size:44px;margin-bottom:12px;color:var(--accent)">+</div>
@@ -2230,7 +2152,6 @@ function _buildProfileLoginForm(){
           <input class="login-input-new" id="profileSignupEmail" type="email" placeholder="Email address" autocomplete="email" onkeydown="if(event.key==='Enter')doProfileSignUp()">
           <input class="login-input-new" id="profileSignupPassword" type="password" placeholder="Password" autocomplete="new-password" onkeydown="if(event.key==='Enter')doProfileSignUp()">
           <input class="login-input-new" id="profileSignupConfirm" type="password" placeholder="Confirm password" autocomplete="new-password" onkeydown="if(event.key==='Enter')doProfileSignUp()">
-          <div class="admin-code-hint" style="margin-bottom:10px">Have an admin code? Enter it for admin access.</div>
           <button class="login-btn-new" type="button" onclick="doProfileSignUp()">Create Account</button>
         </div>
       </div>
@@ -2579,6 +2500,14 @@ function buildJournalList(){
   if(journalEntries.length>5)el.innerHTML+=`<div style="font-size:12px;color:var(--txt2);text-align:center;padding:8px">${journalEntries.length-5} more entries…</div>`;
 }
 
+function initJournalStars(){
+  const container=document.getElementById('journalStars');
+  if(!container)return;
+  container.innerHTML=[1,2,3,4,5].map(n=>
+    `<span onclick="setJournalStar(${n})" style="font-size:22px;cursor:pointer;transition:.1s" class="jstar" data-v="${n}"></span>`
+  ).join('');
+}
+
 function openJournalEntry(){
   const overlay=document.getElementById('journalOverlay');
   const sel=document.getElementById('journalSpotSelect');
@@ -2587,6 +2516,7 @@ function openJournalEntry(){
   document.getElementById('journalDate').value=new Date().toISOString().split('T')[0];
   document.getElementById('journalNotes').value='';
   journalStarVal=5;
+  initJournalStars();
   document.querySelectorAll('.jstar').forEach(s=>s.textContent=parseInt(s.dataset.v)<=5?'':'');
   overlay.classList.add('open');
 }
@@ -5474,34 +5404,9 @@ function closeOfflineDownload(){
   setTimeout(()=>{if(overlay)overlay.classList.remove('active');},350);
 }
 
-async function startOfflineDownload(){
-  const nameEl=document.getElementById('offlineAreaName');
-  const name=(nameEl&&nameEl.value.trim())||'Map Area';
-  showToast('Caching map tiles…');
+function startOfflineDownload(){
   closeOfflineDownload();
-
-  const bounds=leafletMap?leafletMap.getBounds():{getNorthEast:()=>({lat:38,lng:-121}),getSouthWest:()=>({lat:37,lng:-122})};
-  const urls=_getTileUrlsForBounds(bounds,8,13); // z8-13 to keep size reasonable
-  const sizeMB=Math.round(urls.length*0.015); // rough estimate per tile
-
-  // Cache tiles via fetch into Cache API
-  try{
-    const cache=await caches.open('wildpath-tiles-v1');
-    let done=0;
-    const batch=50;
-    for(let i=0;i<urls.length;i+=batch){
-      await Promise.allSettled(urls.slice(i,i+batch).map(u=>
-        fetch(u,{mode:'cors'}).then(r=>r.ok?cache.put(u,r):null).catch(()=>{})
-      ));
-      done=Math.min(i+batch,urls.length);
-    }
-    const areas=JSON.parse(localStorage.getItem('wp_offline_areas')||'[]');
-    areas.push({name,sizeMB:sizeMB||1,date:new Date().toLocaleDateString(),tileCount:urls.length});
-    localStorage.setItem('wp_offline_areas',JSON.stringify(areas));
-    showToast(`"${name}" downloaded — ${urls.length} tiles`);
-  }catch(e){
-    showToast('Cache unavailable in this browser');
-  }
+  showToast('Offline maps available in the mobile app');
 }
 
 function _getTileUrlsForBounds(bounds,zMin,zMax){
@@ -5835,17 +5740,25 @@ function setCropAspect(ratio,el){
 function shareProfile(){
   const overlay=document.getElementById('shareProfileOverlay');
   if(!overlay)return;
-  // Sync current username + avatar
-  const un=localStorage.getItem('wp_username')||'@wildexplorer';
+  const un=(_currentUser?.username)||localStorage.getItem('wp_username')||'wildexplorer';
+  const initials=un.replace('@','').slice(0,2).toUpperCase()||'WP';
   const av=(getUserProfile(String(_myUid()))||{}).avatarUrl;
   const unEl=document.getElementById('shareProfileUsername');
-  if(unEl)unEl.textContent=un;
-  if(av){
-    const avEl=document.getElementById('shareProfileAvatar');
-    if(avEl)avEl.innerHTML=`<img src="${av}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
+  if(unEl)unEl.textContent='@'+un.replace('@','');
+  const avEl=document.getElementById('shareProfileAvatar');
+  if(avEl){
+    if(av)avEl.innerHTML=`<img src="${av}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
+    else avEl.textContent=initials;
   }
-  const countEl=document.getElementById('shareSpotCount');
-  if(countEl)countEl.textContent=userSpots.length;
+  const myUid=String(_myUid());
+  const myPosts=getPosts().filter(p=>String(p.userId)===myUid&&!p.id.startsWith('dp_'));
+  const visitedSpots=new Set(myPosts.filter(p=>p.spotId).map(p=>String(p.spotId))).size;
+  const visitedEl=document.getElementById('shareVisitedCount');
+  if(visitedEl)visitedEl.textContent=visitedSpots;
+  const postEl=document.getElementById('sharePostCount');
+  if(postEl)postEl.textContent=myPosts.length;
+  const addedEl=document.getElementById('shareSpotCount');
+  if(addedEl)addedEl.textContent=userSpots.filter(s=>s.submittedBy===myUid).length;
   overlay.style.display='flex';
 }
 function closeShareProfile(){
@@ -6425,8 +6338,47 @@ function _buildInlinePlanHTML(){
     <div id="hpItineraryOutput"></div>`;
 }
 
+function _onShowPlanScreen(){
+  const container=document.getElementById('planScreenBody');
+  if(container&&!container.dataset.built){
+    container.innerHTML=_buildInlinePlanHTML();
+    container.dataset.built='1';
+    // Seed duration pills
+    const row=document.getElementById('hpDurationRow');
+    if(row){
+      row.innerHTML=Array.from({length:14},(_,i)=>i+1).map(d=>
+        `<div onclick="setTripDays(${d},null)" class="duration-pill${d===_tripDays?' active':''}" style="font-size:11px;flex-shrink:0">${d}D</div>`
+      ).join('')+`<div style="flex-shrink:0"><input type="number" min="1" max="30" placeholder="Custom" id="hpCustomDays" style="width:72px;height:34px;background:var(--bg2);border:1.5px solid var(--border2);border-radius:20px;color:var(--txt0);font-size:12px;font-family:var(--font);text-align:center;outline:none;padding:0 8px" oninput="setTripDaysCustom(this.value)"></div>`;
+    }
+  }
+}
+
 async function _generateInlinePlan(){
-  showToast('Route planning removed — use Map tab to explore spots');
+  const start=(document.getElementById('hpRouteStart')?.value||'').trim();
+  const end=(document.getElementById('hpRouteEnd')?.value||'').trim();
+  const outEl=document.getElementById('itineraryOutput')||document.getElementById('hpItineraryOutput');
+  if(outEl)outEl.innerHTML='<div style="text-align:center;padding:24px;color:var(--txt3);font-size:13px">Building your route…</div>';
+  if(!start&&!end){
+    renderItinerary(DEFAULT_ROUTE,_tripDays);
+    return;
+  }
+  // Match known routes first
+  if(start||end){
+    const q=(start+' '+end).toLowerCase();
+    const matched=TRIP_ROUTES.find(r=>
+      r.startKw.some(k=>q.includes(k))&&r.endKw.some(k=>q.includes(k))
+    );
+    if(matched){renderItinerary(matched,_tripDays);return;}
+  }
+  // Geocode and build dynamic route
+  showToast('Geocoding route…');
+  const[startGeo,endGeo]=await Promise.all([
+    start?geocodeLocation(start):Promise.resolve({lat:37.7749,lng:-122.4194,name:'San Francisco'}),
+    end?geocodeLocation(end):Promise.resolve({lat:37.8651,lng:-119.5383,name:'Yosemite'})
+  ]);
+  if(!startGeo||!endGeo){showToast('Could not find one of those locations');return;}
+  const routeSpots=findSpotsAlongRoute(startGeo,endGeo);
+  renderDynamicItinerary(startGeo,endGeo,routeSpots,_tripDays,start,end);
 }
 
 // ═══════════════════════════════════════════════════
@@ -7019,7 +6971,7 @@ function _patchSettingsRows(){
 // ── Trip planner export buttons (Apple Maps + Google Maps) ──
 function _addMapExportButtons(){
   if(!_planState)return;
-  const output=document.getElementById('itineraryOutput');
+  const output=document.getElementById('itineraryOutput')||document.getElementById('hpItineraryOutput');
   if(!output)return;
   const existingExport=output.querySelector('.map-export-row');
   if(existingExport)return; // already added
@@ -7538,9 +7490,35 @@ function _avatarHtml(username,size=32,photoUrl=null){
 }
 
 // ── Seed demo data ─────────────────────────────────────────────
-// Phase 2: no demo seeding — all users, posts, DMs, and communities
-// come from Supabase. Kept as a no-op so old call sites are safe.
-function _seedCommunityData(){}
+function _seedCommunityData(){
+  if(typeof DEMO_COMMUNITIES==='undefined')return;
+  const existing=getCommunities();
+  if(existing.length>0)return; // already seeded or user has real data
+  const comms=DEMO_COMMUNITIES.map(dc=>({
+    id:dc.id,
+    name:dc.name,
+    description:dc.description,
+    memberCount:dc.memberCount,
+    privacy:dc.privacy,
+    adminId:dc.adminId,
+    coverGradient:dc.coverGradient,
+    members:[dc.adminId],
+    createdAt:new Date(Date.now()-86400000*30).toISOString()
+  }));
+  setCommunities(comms);
+  // Seed posts for each demo community into localStorage posts
+  const allPosts=getPosts();
+  const existingIds=new Set(allPosts.map(p=>p.id));
+  const newPosts=DEMO_COMMUNITIES.flatMap(dc=>
+    (dc.posts||[]).filter(p=>!existingIds.has(p.id)).map(p=>({
+      ...p,
+      type:p.type||'post',
+      privacy:'public',
+      createdAt:p.createdAt||new Date().toISOString()
+    }))
+  );
+  if(newPosts.length)setPosts([...allPosts,...newPosts]);
+}
 
 // ── Community screen setup ─────────────────────────────────────
 let _seeded=false;
@@ -8931,18 +8909,7 @@ function _renderDmChat(){
 }
 
 function sendDmMessage(){
-  if(isGuest()){showLoginScreen();return;}
-  const inp=document.getElementById('dmChatInput');
-  const text=(inp?.value||'').trim();
-  if(!text||!_dmConvUserId)return;
-  const key=_dmConvKey(_myUid(),_dmConvUserId);
-  const msgs=getMessages();
-  if(!msgs[key])msgs[key]=[];
-  msgs[key].push({id:_uid(),fromId:_myUid(),text,time:new Date().toISOString()});
-  setMessages(msgs);
-  inp.value='';
-  _renderDmChat();
-  _sbTry(db.from('messages').insert({sender_id:_myUid(),receiver_id:_dmConvUserId,content:text}),'send message');
+  showToast('Messaging is coming soon');
 }
 
 function openDmSpotShare(){
@@ -10165,145 +10132,6 @@ function _commSearchRowHTML(c){
 }
 
 // ═══════════════════════════════════════════════════
-// AR PEAK IDENTIFICATION
-// Camera + DeviceOrientation compass + Haversine overlay
-// ═══════════════════════════════════════════════════
-let _arStream=null;
-let _arRafId=null;
-let _arHeading=0; // degrees, 0=North
-let _arCalibrationOffset=0;
-let _arOrientHandler=null;
-
-function _bearingTo(lat1,lon1,lat2,lon2){
-  const toRad=d=>d*Math.PI/180;
-  const toDeg=r=>r*180/Math.PI;
-  const dLon=toRad(lon2-lon1);
-  const y=Math.sin(dLon)*Math.cos(toRad(lat2));
-  const x=Math.cos(toRad(lat1))*Math.sin(toRad(lat2))-Math.sin(toRad(lat1))*Math.cos(toRad(lat2))*Math.cos(dLon);
-  return(toDeg(Math.atan2(y,x))+360)%360;
-}
-
-function _distanceKm(lat1,lon1,lat2,lon2){
-  const R=6371;
-  const toRad=d=>d*Math.PI/180;
-  const dLat=toRad(lat2-lat1);
-  const dLon=toRad(lon2-lon1);
-  const a=Math.sin(dLat/2)**2+Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
-  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
-}
-
-async function openARMode(){
-  const ov=document.getElementById('arOverlay');
-  if(!ov)return;
-  ov.style.display='flex';
-  const noPerm=document.getElementById('arNoPermission');
-  // Request camera
-  try{
-    _arStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});
-    const vid=document.getElementById('arVideo');
-    if(vid){vid.srcObject=_arStream;vid.play();}
-    if(noPerm)noPerm.style.display='none';
-  }catch(e){
-    if(noPerm)noPerm.style.display='flex';
-    return;
-  }
-  // Request compass — iOS needs permission request
-  if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){
-    try{await DeviceOrientationEvent.requestPermission();}catch(e){}
-  }
-  // Listen for orientation
-  _arOrientHandler=function(e){
-    let heading=0;
-    if(e.webkitCompassHeading!=null){
-      heading=e.webkitCompassHeading; // iOS — 0=North, clockwise
-    }else if(e.alpha!=null){
-      heading=(360-e.alpha+_arCalibrationOffset)%360; // Android
-    }
-    heading=(heading+_arCalibrationOffset+360)%360;
-    _arHeading=heading;
-    const headEl=document.getElementById('arHeadingVal');
-    const dirEl=document.getElementById('arCompassDir');
-    if(headEl)headEl.textContent=Math.round(heading)+'°';
-    if(dirEl){
-      const dirs=['N','NE','E','SE','S','SW','W','NW','N'];
-      dirEl.textContent=dirs[Math.round(heading/45)%8];
-    }
-  };
-  window.addEventListener('deviceorientation',_arOrientHandler,true);
-  // Start render loop
-  _arRafId=requestAnimationFrame(_arRender);
-}
-
-function _arRender(){
-  if(!document.getElementById('arOverlay')||document.getElementById('arOverlay').style.display==='none'){
-    _arRafId=null;return;
-  }
-  const container=document.getElementById('arPeaksContainer');
-  if(!container){_arRafId=requestAnimationFrame(_arRender);return;}
-
-  // Get user position
-  const userLat=_userLat||37.7749;
-  const userLng=_userLng||-122.4194;
-  const vFov=60; // vertical field of view in degrees
-  const hFov=90; // horizontal field of view estimate
-
-  // Collect peaks from NORCAL_PEAKS + any OSM peaks visible
-  const allPeaks=NORCAL_PEAKS.map(p=>({name:p.name,lat:p.lat,lng:p.lng,elevFt:p.elev}));
-
-  // Filter to peaks within ±(hFov/2) of current heading, max 100km
-  const labels=[];
-  allPeaks.forEach(p=>{
-    const dist=_distanceKm(userLat,userLng,p.lat,p.lng);
-    if(dist>120)return;
-    const bearing=_bearingTo(userLat,userLng,p.lat,p.lng);
-    let angleDiff=bearing-_arHeading;
-    // Normalize to -180..180
-    while(angleDiff>180)angleDiff-=360;
-    while(angleDiff<-180)angleDiff+=360;
-    if(Math.abs(angleDiff)>hFov/2)return;
-    // Map angle to screen X percentage
-    const x=50+(angleDiff/(hFov/2))*50;
-    // Elevation angle very rough — flatten to top 40% for close, 25% for far
-    const elevFrac=Math.max(0,1-dist/120);
-    const y=60-elevFrac*30; // 30%..60% from top
-    labels.push({name:p.name,elevFt:p.elevFt,dist:dist.toFixed(1),x,y,angleDiff});
-  });
-  // Sort by distance — closest drawn last (on top)
-  labels.sort((a,b)=>parseFloat(b.dist)-parseFloat(a.dist));
-
-  container.innerHTML=labels.map(l=>{
-    const opacity=Math.max(0.4,1-parseFloat(l.dist)/120);
-    return`<div style="position:absolute;left:${l.x}%;top:${l.y}%;transform:translate(-50%,-50%);text-align:center;pointer-events:none;opacity:${opacity.toFixed(2)}">
-      <div style="width:1px;height:18px;background:rgba(184,232,122,.5);margin:0 auto 4px"></div>
-      <div style="background:rgba(0,0,0,.6);backdrop-filter:blur(6px);border:1px solid rgba(184,232,122,.4);border-radius:8px;padding:3px 8px;white-space:nowrap">
-        <div style="color:#B8E87A;font-size:11px;font-weight:700">${l.name}</div>
-        <div style="color:#ccc;font-size:9px">▲ ${l.elevFt.toLocaleString()} ft · ${l.dist} km</div>
-      </div>
-    </div>`;
-  }).join('');
-
-  _arRafId=requestAnimationFrame(_arRender);
-}
-
-function calibrateAR(){
-  // Reset calibration — current orientation becomes "correct"
-  _arCalibrationOffset=0;
-  showToast('AR calibrated');
-}
-
-function closeARMode(){
-  const ov=document.getElementById('arOverlay');
-  if(ov)ov.style.display='none';
-  if(_arRafId){cancelAnimationFrame(_arRafId);_arRafId=null;}
-  if(_arOrientHandler){window.removeEventListener('deviceorientation',_arOrientHandler,true);_arOrientHandler=null;}
-  if(_arStream){_arStream.getTracks().forEach(t=>t.stop());_arStream=null;}
-  const vid=document.getElementById('arVideo');
-  if(vid){vid.srcObject=null;}
-  const container=document.getElementById('arPeaksContainer');
-  if(container)container.innerHTML='';
-}
-
-// ═══════════════════════════════════════════════════
 // IN THE MOMENT CAPTURE
 // ═══════════════════════════════════════════════════
 let _momentPrivacy='public';
@@ -10938,9 +10766,12 @@ let _feedMapsInited=new Set();
 
 function buildHomeFeed(){
   // Gather feed posts: community posts (public or own) + spot posts
-  const allPosts=getPosts().filter(p=>p.privacy!=='private'||(String(p.userId)===String(_myUid())));
+  const userPosts=getPosts().filter(p=>p.privacy!=='private'||(String(p.userId)===String(_myUid())));
   const spotPosts=_buildSpotFeedPosts();
-  const combined=[...allPosts,...spotPosts];
+  // Use DEMO_POSTS as seed content when no real posts exist
+  const demoPadding=(typeof DEMO_POSTS!=='undefined'&&(userPosts.length+spotPosts.length)===0)?DEMO_POSTS:
+    (typeof DEMO_POSTS!=='undefined'?DEMO_POSTS.filter(dp=>!userPosts.find(up=>up.id===dp.id)):[]);
+  const combined=[...userPosts,...spotPosts,...demoPadding];
   // Deduplicate by id, sort by newest first
   const seen=new Set();
   _feedPosts=combined.filter(p=>{if(seen.has(p.id))return false;seen.add(p.id);return true;})
@@ -12952,9 +12783,7 @@ if(_origSetMapStyle){
   };
 }
 
-// Stub for legacy calls
-function toggleDotMenu(){}
-function closeDotMenu(){}
+// Legacy stubs removed — real toggleDotMenu/closeDotMenu functions are defined above
 
 // CSS helper for side-layer toggles (injected once)
 (function(){
