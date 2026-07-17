@@ -90,6 +90,17 @@
       </svg>
     </div>
 
+    <!-- Small persistent bearing indicator — always visible, no tap needed to rotate; tap resets north -->
+    <div id="miniCompassIndicator" title="Reset to North" onclick="resetMapNorth()">
+      <svg viewBox="0 0 32 32" width="20" height="20">
+        <circle cx="16" cy="16" r="15" fill="rgba(22,19,16,.85)" stroke="rgba(196,149,106,.35)" stroke-width="1"/>
+        <g id="miniCompassNeedle" style="transform-origin:16px 16px;transition:transform .15s linear">
+          <polygon points="16,6 18.5,16 16,18 13.5,16" fill="#e05252"/>
+          <polygon points="16,18 18.5,16 16,26 13.5,16" fill="rgba(200,184,168,.6)"/>
+        </g>
+      </svg>
+    </div>
+
     <!-- Search bar (left shifted to clear menu button) -->
     <div class="map-search-wrapper" style="position:absolute;top:16px;left:70px;right:14px;z-index:100">
       <div class="map-search" style="position:relative;left:auto;right:auto;top:auto">
@@ -247,11 +258,8 @@
         <div class="map-zoom-btn" onclick="_mapZoomStep(-1)">−</div>
       </div>
 
-      <!-- Compass — tap resets map to north-up; long-press opens the full compass panel -->
-      <div id="compassOverlay" title="Reset to North · hold for compass panel"
-           onclick="resetMapNorth()"
-           ontouchstart="_compassLongPressStart(event)" ontouchend="_compassLongPressEnd(event)" ontouchmove="_compassLongPressCancel(event)"
-           onmousedown="_compassLongPressStart(event)" onmouseup="_compassLongPressEnd(event)" onmouseleave="_compassLongPressCancel(event)">
+      <!-- Compass — tap opens the full detailed compass panel (heading/altitude/GPS) -->
+      <div id="compassOverlay" title="Open compass" onclick="openCompassPanel()">
         <svg viewBox="0 0 56 56" width="40" height="40">
           <circle cx="28" cy="28" r="27" fill="rgba(22,19,16,.96)" stroke="rgba(196,149,106,.4)" stroke-width="1.5"/>
           <!-- Cardinal labels — static, always face up -->
@@ -1948,7 +1956,7 @@
 </div><!-- #app -->
 
 
-<script src="data.js?v=13"></script>
-<script src="app.js?v=13"></script>
+<script src="data.js?v=14"></script>
+<script src="app.js?v=14"></script>
 </body>
 </html>

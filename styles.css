@@ -223,6 +223,11 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0F0D0B;
   backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
   box-shadow:0 4px 20px rgba(0,0,0,.4);transition:all .18s ease}
 .menu-btn:active{transform:scale(.92)}
+/* Small persistent bearing indicator below the hamburger menu — always visible, no tap needed to rotate */
+#miniCompassIndicator{position:absolute;top:76px;left:22px;width:32px;height:32px;z-index:99;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;border-radius:50%;
+  background:rgba(26,23,20,.7);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  box-shadow:0 2px 8px rgba(0,0,0,.3)}
 
 /* Generic map icon button */
 .map-icon-btn{position:absolute;width:44px;height:44px;

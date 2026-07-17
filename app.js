@@ -684,8 +684,11 @@ function initMap(){
 
   // ── Compass button reflects live map bearing (standard map-app behavior) ──
   map.on('rotate',()=>{
+    const bearing=-map.getBearing();
     const needle=document.getElementById('compassNeedle');
-    if(needle)needle.style.transform=`rotate(${-map.getBearing()}deg)`;
+    if(needle)needle.style.transform=`rotate(${bearing}deg)`;
+    const miniNeedle=document.getElementById('miniCompassNeedle');
+    if(miniNeedle)miniNeedle.style.transform=`rotate(${bearing}deg)`;
   });
 
   map.on('load',()=>{
@@ -6426,31 +6429,10 @@ function _mapZoomStep(dir){
   map.easeTo({zoom:target,duration:300});
 }
 
-// ── Compass button: tap = reset map to north, long-press = open detailed panel ──
+// ── Mini persistent compass indicator: tap resets map to north-up ──
 function resetMapNorth(){
-  if(_compassLongPressFired){_compassLongPressFired=false;return;} // long-press already handled it
   if(!map)return;
   map.easeTo({bearing:0,duration:500,easing:t=>t*(2-t)});
-}
-let _compassPressTimer=null, _compassPressStart=null, _compassLongPressFired=false;
-function _compassLongPressStart(e){
-  _compassLongPressFired=false;
-  const pt=e.touches?e.touches[0]:e;
-  _compassPressStart={x:pt.clientX,y:pt.clientY};
-  clearTimeout(_compassPressTimer);
-  _compassPressTimer=setTimeout(()=>{
-    _compassLongPressFired=true;
-    openCompassPanel();
-  },500);
-}
-function _compassLongPressEnd(){
-  clearTimeout(_compassPressTimer);
-}
-function _compassLongPressCancel(e){
-  if(!_compassPressStart)return;
-  const pt=e.touches?e.touches[0]:e;
-  const dx=pt.clientX-_compassPressStart.x, dy=pt.clientY-_compassPressStart.y;
-  if(Math.hypot(dx,dy)>10)clearTimeout(_compassPressTimer);
 }
 
 function openCompassPanel(){
