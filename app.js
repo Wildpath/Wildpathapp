@@ -6938,6 +6938,107 @@ function _sfDeleteOffline(i){
   showToast('Offline area removed');
   _buildSettingsFull();
 }
+function _pulseAtLocation(lat,lng){
+  if(!map)return;
+  const el=document.createElement('div');
+  el.className='pin-pulse-marker';
+  const marker=new mapboxgl.Marker({element:el,anchor:'center'}).setLngLat([lng,lat]).addTo(map);
+  setTimeout(()=>{try{marker.remove();}catch(e){}},2900);
+}
+
+function openSavedPlacesSheet(){
+  const existing=document.getElementById('_savedPlacesSheet');
+  if(existing){existing.remove();return;}
+  const sheet=document.createElement('div');
+  sheet.id='_savedPlacesSheet';
+  sheet.style.cssText='position:absolute;inset:0;z-index:800;background:rgba(0,0,0,.75);display:flex;align-items:flex-end';
+  sheet.onclick=(e)=>{if(e.target===sheet)sheet.remove();};
+  const inner=document.createElement('div');
+  inner.style.cssText='background:var(--bg1);border-radius:20px 20px 0 0;width:100%;max-height:75vh;overflow-y:auto;padding:0 0 calc(env(safe-area-inset-bottom,0px)+16px);display:flex;flex-direction:column';
+  inner.innerHTML=`
+    <div style="padding:16px 14px 10px;border-bottom:1px solid var(--border);flex-shrink:0">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div style="font-size:16px;font-weight:700;color:var(--txt0)">My Saved Places</div>
+        <button onclick="document.getElementById('_savedPlacesSheet').remove()" style="background:var(--bg2);border:1px solid var(--border);color:var(--txt1);border-radius:50%;width:32px;height:32px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px">×</button>
+      </div>
+      <input id="savedPlacesSearch" placeholder="Search saved places…" oninput="_filterSavedPlaces(this.value)" style="width:100%;height:38px;background:var(--bg2);border:1px solid var(--border2);border-radius:10px;color:var(--txt0);padding:0 12px;font-size:13px;outline:none;font-family:var(--font)">
+    </div>
+    <div id="savedPlacesList" style="flex:1;overflow-y:auto"></div>
+  `;
+  sheet.appendChild(inner);
+  document.getElementById('app').appendChild(sheet);
+  _renderSavedPlacesList('');
+}
+
+function _renderSavedPlacesList(filter){
+  const listEl=document.getElementById('savedPlacesList');
+  if(!listEl)return;
+  const q=(filter||'').toLowerCase();
+  const allS=[...spots,...userSpots];
+  const folders=_getSavedFolders();
+  const personal=(typeof personalSpots!=='undefined'?personalSpots:[]);
+  const hikes=(typeof savedHikes!=='undefined'?savedHikes:[]);
+
+  const rowHtml=(name,sub,lat,lng,iconSvg)=>`
+    <div onclick="_flyToSavedPlace(${lat},${lng})" style="display:flex;align-items:center;gap:12px;padding:11px 14px;border-bottom:1px solid var(--border);cursor:pointer">
+      <div style="width:40px;height:40px;border-radius:10px;background:var(--bg3);display:flex;align-items:center;justify-content:center;flex-shrink:0">${iconSvg}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:14px;font-weight:600;color:var(--txt0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sanitize(name)}</div>
+        <div style="font-size:11px;color:var(--txt3);margin-top:1px">${sub}</div>
+      </div>
+    </div>`;
+
+  const bookmarkIcon='<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>';
+  const pinIcon='<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#D4A843" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>';
+  const hikeIcon='<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--accent)" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
+
+  let html='';
+
+  // Folders (each expandable inline to its saved spots)
+  const filteredFolders=folders.filter(f=>!q||f.name.toLowerCase().includes(q));
+  if(filteredFolders.length){
+    html+=`<div style="padding:10px 14px 4px;font-size:11px;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.5px">Saved Folders</div>`;
+    html+=filteredFolders.map(f=>rowHtml(f.name,`${(f.postIds||[]).length} saved`,
+      allS.find(s=>f.postIds?.includes(s.id))?.lat||37.8, allS.find(s=>f.postIds?.includes(s.id))?.lng||-122.4, bookmarkIcon)).join('');
+  }
+
+  // Flat saved spots (from saved_spots ids, resolved against known spots)
+  const savedIds=getSavedSpotIds();
+  const savedResolved=savedIds.map(id=>allS.find(s=>String(s.id)===String(id))).filter(Boolean).filter(s=>!q||s.name.toLowerCase().includes(q));
+  if(savedResolved.length){
+    html+=`<div style="padding:10px 14px 4px;font-size:11px;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.5px">Saved Spots</div>`;
+    html+=savedResolved.map(s=>rowHtml(s.name,s.typeLabel||'Spot',s.lat,s.lng,bookmarkIcon)).join('');
+  }
+
+  // Personal spots (populated once Section 1's personal_spots table is wired up)
+  const filteredPersonal=personal.filter(s=>!q||s.name.toLowerCase().includes(q));
+  if(filteredPersonal.length){
+    html+=`<div style="padding:10px 14px 4px;font-size:11px;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.5px">Personal Spots</div>`;
+    html+=filteredPersonal.map(s=>rowHtml(s.name,'Personal',s.lat,s.lng,pinIcon)).join('');
+  }
+
+  // Saved hikes (populated once Section 8/9's hikes table is wired up)
+  const filteredHikes=hikes.filter(h=>!q||h.name.toLowerCase().includes(q));
+  if(filteredHikes.length){
+    html+=`<div style="padding:10px 14px 4px;font-size:11px;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.5px">Saved Hikes</div>`;
+    html+=filteredHikes.map(h=>rowHtml(h.name,(h.distance||'')+' mi',h.startLat,h.startLng,hikeIcon)).join('');
+  }
+
+  if(!html){
+    html=`<div style="padding:40px 20px;text-align:center;color:var(--txt3);font-size:13px">${q?'No matches found':'Nothing saved yet — bookmark a spot to see it here'}</div>`;
+  }
+  listEl.innerHTML=html;
+}
+
+function _filterSavedPlaces(val){_renderSavedPlacesList(val);}
+
+function _flyToSavedPlace(lat,lng){
+  document.getElementById('_savedPlacesSheet')?.remove();
+  if(!map||lat==null||lng==null)return;
+  map.flyTo({center:[lng,lat],zoom:15,duration:900,essential:true});
+  setTimeout(()=>_pulseAtLocation(lat,lng),950);
+}
+
 function openMyDownloadsSheet(){
   const areas=JSON.parse(localStorage.getItem('wp_offline_areas')||'[]');
   const existing=document.getElementById('_myDownloadsSheet');
