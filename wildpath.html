@@ -495,13 +495,19 @@
 
       <!-- ── ACTION BUTTONS: Save + Reviews ── -->
       <div style="padding:12px 14px 0;display:flex;gap:10px">
-        <button id="detailSaveBtn" type="button" onclick="toggleDetailBookmark()" style="flex:1;height:46px;background:var(--bg2);border:1px solid var(--border2);border-radius:14px;color:var(--txt0);font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:8px;-webkit-tap-highlight-color:transparent">
+        <button id="detailSaveBtn" type="button" onclick="openDetailSaveSheet()" style="flex:1;height:46px;background:var(--bg2);border:1px solid var(--border2);border-radius:14px;color:var(--txt0);font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:8px;-webkit-tap-highlight-color:transparent">
           <svg id="detailSaveBtnIcon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="var(--txt1)" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
           <span id="detailSaveBtnLabel">Save</span>
         </button>
         <button type="button" onclick="openDetailReviews()" style="flex:1;height:46px;background:var(--bg2);border:1px solid var(--border2);border-radius:14px;color:var(--txt0);font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:8px;-webkit-tap-highlight-color:transparent">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="#F5A623" stroke="none"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
           Reviews
+        </button>
+      </div>
+      <div style="padding:8px 14px 0">
+        <button type="button" onclick="openDetailAddPost()" style="width:100%;height:42px;background:rgba(184,232,122,.08);border:1px solid rgba(184,232,122,.25);border-radius:14px;color:var(--accent);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:8px;-webkit-tap-highlight-color:transparent">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Add Post
         </button>
       </div>
 
@@ -1996,7 +2002,7 @@
 </div><!-- #app -->
 
 
-<script src="data.js?v=19"></script>
-<script src="app.js?v=19"></script>
+<script src="data.js?v=20"></script>
+<script src="app.js?v=20"></script>
 </body>
 </html>

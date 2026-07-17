@@ -59,6 +59,7 @@ let addSpotMode=false, addSpotTempLat=null, addSpotTempLng=null;
 let waypointMarkers=[], parkingMarker=null;
 let userSpots=[]; // hydrated from Supabase spots table (status=approved)
 let personalSpots=[]; // hydrated from Supabase personal_spots table — only this user's own, gold pins
+let savedPlaces=[]; // hydrated from Supabase saved_places table — red want-to-go pins, any ref_type
 let favorites=new Set(JSON.parse(localStorage.getItem('wp_favs')||'[]'));
 
 const landLayerCache={nationalForest:{on:false},blm:{on:false},stateParks:{on:false},private:{on:false}};
@@ -287,7 +288,7 @@ async function _sbHydrate(){
     await Promise.allSettled([
       run('posts',_sbLoadPosts),run('messages',_sbLoadMessages),run('follows',_sbLoadFollows),
       run('notifications',_sbLoadNotifications),run('saved',_sbLoadSaved),run('pending spots',_sbLoadPendingSpots),
-      run('personal spots',_sbLoadPersonalSpots)
+      run('personal spots',_sbLoadPersonalSpots),run('saved places',_sbLoadSavedPlaces)
     ]);
     _sbHydrated=true;
     try{_sbSubscribeRealtime();}catch(e){console.warn('[Supabase] realtime:',e);}
@@ -421,6 +422,14 @@ async function _sbLoadSaved(){
     (folders[f]=folders[f]||[]).push(r.spot_id);
   });
   _setSavedStore({postIds:[],spotIds,folders:Object.entries(folders).map(([name,ids])=>({name,postIds:ids}))});
+}
+
+async function _sbLoadSavedPlaces(){
+  if(isGuest())return;
+  const {data,error}=await db.from('saved_places').select('*').eq('user_id',_myUid()).order('saved_at',{ascending:false});
+  if(error)throw error;
+  savedPlaces.length=0;
+  (data||[]).forEach(r=>savedPlaces.push({id:r.id,refType:r.ref_type,refId:r.ref_id,name:r.name,lat:r.lat,lng:r.lng,folderName:r.folder_name||'General',savedAt:r.saved_at}));
 }
 
 async function _sbLoadCommunities(){
@@ -836,6 +845,12 @@ function _buildSpotsGeoJSON(){
   personalSpots.forEach(s=>{
     features.push({type:'Feature',geometry:{type:'Point',coordinates:[s.lng,s.lat]},
       properties:{id:s.id,name:s.name,type:s.type,color:'#D4A843',personal:1}});
+  });
+  // Saved raw locations (no other pin exists for these — saved real/personal spots
+  // are already colored red/gold by the logic above and shouldn't be duplicated here)
+  savedPlaces.filter(p=>p.refType==='raw_location').forEach(p=>{
+    features.push({type:'Feature',geometry:{type:'Point',coordinates:[p.lng,p.lat]},
+      properties:{id:'saved_'+p.id,name:p.name,type:'saved',color:'#E05252',saved:1}});
   });
   return{type:'FeatureCollection',features};
 }
@@ -8124,6 +8139,81 @@ function bookmarkPost(postId,el){
 function _getSavedFolders(){return _getSavedStore().folders;}
 function _setSavedFolders(arr){const s=_getSavedStore();s.folders=arr;_setSavedStore(s);}
 
+// ═══════════════════════════════════════════════════
+// SAVE ANY LOCATION (Section 3) — spots, personal spots,
+// community spots, or a raw lat/lng from a post — all save
+// the same way into saved_places with a folder.
+// ═══════════════════════════════════════════════════
+function openPlaceSaveSheet(refType,refId,name,lat,lng){
+  if(isGuest()){showLoginScreen();return;}
+  const existing=document.getElementById('_placeSaveSheet');
+  if(existing)existing.remove();
+  const folders=[...new Set([..._getSavedFolders().map(f=>f.name),...savedPlaces.map(p=>p.folderName)])];
+  const sheet=document.createElement('div');
+  sheet.id='_placeSaveSheet';
+  sheet.style.cssText='position:fixed;inset:0;z-index:9500;display:flex;flex-direction:column;justify-content:flex-end';
+  sheet.onclick=(e)=>{if(e.target===sheet)sheet.remove();};
+  const safeName=String(name).replace(/'/g,"\\'");
+  sheet.innerHTML=`
+    <div style="position:relative;background:var(--bg1);border-radius:20px 20px 0 0;padding:16px 16px calc(env(safe-area-inset-bottom,0px) + 16px);max-height:70vh;overflow-y:auto">
+      <div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:14px">Save "${sanitize(name)}"</div>
+      <div style="display:flex;gap:8px;margin-bottom:14px">
+        <input id="_newPlaceFolderInput" placeholder="New folder name…" style="flex:1;height:40px;background:var(--bg2);border:1px solid var(--border2);border-radius:10px;color:var(--txt0);padding:0 12px;font-size:13px;outline:none;font-family:var(--font)">
+        <button onclick="_createAndSavePlace('${refType}','${refId||''}','${safeName}',${lat},${lng})" style="height:40px;padding:0 16px;background:var(--accent);color:#0f1a0a;border:none;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);white-space:nowrap">Create</button>
+      </div>
+      ${folders.length?folders.map(f=>`
+        <div onclick="_savePlaceToFolder('${refType}','${refId||''}','${safeName}',${lat},${lng},'${f.replace(/'/g,"\'")}');document.getElementById('_placeSaveSheet').remove()" style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--border);cursor:pointer;-webkit-tap-highlight-color:transparent">
+          <div style="width:38px;height:38px;border-radius:10px;background:var(--bg3);display:flex;align-items:center;justify-content:center">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          </div>
+          <div style="font-size:14px;font-weight:600;color:var(--txt0)">${sanitize(f)}</div>
+        </div>`).join(''):'<div style="font-size:13px;color:var(--txt3);text-align:center;padding:20px 0">No folders yet — create one above</div>'}
+    </div>`;
+  document.body.appendChild(sheet);
+}
+
+async function _savePlaceToFolder(refType,refId,name,lat,lng,folderName){
+  try{
+    const {data,error}=await db.from('saved_places').insert({
+      user_id:_myUid(),ref_type:refType,ref_id:refId||null,name,lat,lng,folder_name:folderName
+    }).select().single();
+    if(error)throw error;
+    savedPlaces.unshift({id:data.id,refType,refId,name,lat,lng,folderName,savedAt:data.saved_at});
+    // Keep legacy saved-spot id set in sync so existing red-pin/spot-detail code paths still see it
+    if(refType==='spot'&&refId){
+      const saved=getSavedSpotIds();
+      if(!saved.includes(refId)){saved.push(refId);setSavedSpotIds(saved);}
+    }
+    refreshSpotMarkers();
+    showToast(`Saved to "${folderName}"`);
+  }catch(e){
+    console.warn('[Supabase] save place failed:',e);
+    showToast('Could not save — check connection');
+  }
+}
+
+function _createAndSavePlace(refType,refId,name,lat,lng){
+  const inp=document.getElementById('_newPlaceFolderInput');
+  const folderName=(inp?.value||'').trim();
+  if(!folderName){showToast('Enter a folder name');return;}
+  _savePlaceToFolder(refType,refId,name,lat,lng,folderName);
+  document.getElementById('_placeSaveSheet')?.remove();
+}
+
+// Post overflow: "Save Spot" — saves the post's tagged spot or raw lat/lng location
+function savePostLocation(postId){
+  const post=getPosts().find(p=>String(p.id)===String(postId))||_feedPosts?.find(p=>String(p.id)===String(postId));
+  if(!post){showToast('Post not found');return;}
+  if(post.spotId){
+    const s=[...spots,...userSpots].find(x=>String(x.id)===String(post.spotId));
+    openPlaceSaveSheet('spot',post.spotId,s?.name||post.spotName||'Spot',s?.lat||post.lat,s?.lng||post.lng);
+  } else if(post.lat&&post.lng){
+    openPlaceSaveSheet('raw_location',null,post.caption?.slice(0,40)||'Saved location',post.lat,post.lng);
+  } else {
+    showToast('This post has no location to save');
+  }
+}
+
 function openSaveFolderSheet(postId,triggerEl){
   const existing=document.getElementById('_saveFolderSheet');
   if(existing)existing.remove();
@@ -8667,15 +8757,16 @@ function showPostCtxMenu(event,postId){
   const post=posts.find(p=>p.id===postId);
   if(!post)return;
   const isOwn=String(post.userId)===String(_myUid());
+  const saveItem=(post.spotId||(post.lat&&post.lng))?`<div class="ctx-menu-item" onclick="closeCtxMenu();savePostLocation('${postId}')">Save Spot</div>`:'';
   let items='';
   if(_isAdmin()){
-    items=`<div class="ctx-menu-item" onclick="ctxPinPost('${postId}')">Pin Post</div>
+    items=`${saveItem}<div class="ctx-menu-item" onclick="ctxPinPost('${postId}')">Pin Post</div>
       <div class="ctx-menu-item danger" onclick="ctxDeletePost('${postId}')">Delete Post</div>
       <div class="ctx-menu-item danger" onclick="ctxBanMember('${post.userId}')">Ban Member</div>`;
   } else if(isOwn){
-    items=`<div class="ctx-menu-item danger" onclick="ctxDeletePost('${postId}')">Delete Post</div>`;
+    items=`${saveItem}<div class="ctx-menu-item danger" onclick="ctxDeletePost('${postId}')">Delete Post</div>`;
   } else {
-    items=`<div class="ctx-menu-item" onclick="ctxReportPost('${postId}')">Report Post</div>`;
+    items=`${saveItem}<div class="ctx-menu-item" onclick="ctxReportPost('${postId}')">Report Post</div>`;
   }
   const menu=document.getElementById('commCtxMenu');
   const overlay=document.getElementById('commCtxOverlay');
@@ -10932,6 +11023,28 @@ function _initDetailMiniMap(spot){
   }catch(e){console.warn('Detail mini map init failed',e);}
 }
 
+function openDetailAddPost(){
+  if(isGuest()){showLoginScreen();return;}
+  const allS=[...spots,...userSpots,...personalSpots];
+  const spot=allS.find(s=>String(s.id)===String(_detailSpotId));
+  if(!spot)return;
+  openCreatePost();
+  setTimeout(()=>{
+    // Personal spots have no row in the real spots table, so tag by raw location instead
+    // (posts.spot_id is a real foreign key and can't point at a personal spot)
+    if(spot.tier==='personal')selectCpLocation(spot.name,spot.lat,spot.lng);
+    else selectCpSpot(spot.id,spot.name,spot.lat,spot.lng);
+  },150);
+}
+function openDetailSaveSheet(){
+  if(isGuest()){showLoginScreen();return;}
+  if(!_detailSpotId)return;
+  const allS=[...spots,...userSpots,...personalSpots];
+  const spot=allS.find(s=>String(s.id)===String(_detailSpotId));
+  if(!spot)return;
+  const refType=spot.tier==='personal'?'personal_spot':'spot';
+  openPlaceSaveSheet(refType,spot.personalSpotId||spot.id,spot.name,spot.lat,spot.lng);
+}
 function toggleDetailBookmark(){
   if(isGuest()){showLoginScreen();return;}
   if(!_detailSpotId)return;
