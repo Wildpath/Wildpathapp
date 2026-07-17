@@ -12819,6 +12819,74 @@ function _commThreeDotMenu(commId){
 // ═══════════════════════════════════════════════════
 const _sidePanelActiveLayers=new Set();
 
+// ═══════════════════════════════════════════════════
+// ON-DEMAND TRAILS TOGGLE (side panel) — independent of the
+// automatic 2km spot-detail trails, which always stay on regardless.
+// ═══════════════════════════════════════════════════
+let _viewportTrailsOn=false;
+const _viewportTrailsCache=new Map();
+let _viewportTrailsBounds=null, _viewportTrailsMoveHandler=null;
+
+function toggleTrailsLayer(rowEl){
+  _viewportTrailsOn=!_viewportTrailsOn;
+  const toggleEl=rowEl?.querySelector('.side-layer-toggle');
+  if(toggleEl)toggleEl.classList.toggle('on',_viewportTrailsOn);
+  if(toggleEl)toggleEl.classList.toggle('off',!_viewportTrailsOn);
+  if(_viewportTrailsOn){
+    _loadViewportTrails();
+    if(!_viewportTrailsMoveHandler){
+      let debounceTimer=null;
+      _viewportTrailsMoveHandler=()=>{
+        clearTimeout(debounceTimer);
+        debounceTimer=setTimeout(_loadViewportTrails,800);
+      };
+      map.on('moveend',_viewportTrailsMoveHandler);
+    }
+  } else {
+    _clearViewportTrails();
+    if(_viewportTrailsMoveHandler){map.off('moveend',_viewportTrailsMoveHandler);_viewportTrailsMoveHandler=null;}
+  }
+}
+
+function _clearViewportTrails(){
+  try{if(map&&map.getLayer('viewport-trails-line'))map.removeLayer('viewport-trails-line');}catch{}
+  try{if(map&&map.getSource('viewport-trails-src'))map.removeSource('viewport-trails-src');}catch{}
+}
+
+async function _loadViewportTrails(){
+  if(!map||!_viewportTrailsOn)return;
+  const zoom=map.getZoom();
+  if(zoom<11){_clearViewportTrails();return;}
+  const b=map.getBounds();
+  const bbox=`${b.getSouth().toFixed(3)},${b.getWest().toFixed(3)},${b.getNorth().toFixed(3)},${b.getEast().toFixed(3)}`;
+  if(_viewportTrailsBounds===bbox)return;
+  _viewportTrailsBounds=bbox;
+  try{
+    let data;
+    if(_viewportTrailsCache.has(bbox)){
+      data=_viewportTrailsCache.get(bbox);
+    }else{
+      const q=`[out:json][timeout:20];way["highway"~"path|footway|track"](${bbox});out geom;`;
+      data=await _overpassFetchRetry(q,20000);
+      _viewportTrailsCache.set(bbox,data);
+    }
+    if(!_viewportTrailsOn)return; // toggled off while fetch was in flight
+    const features=(data.elements||[])
+      .filter(el=>el.type==='way'&&el.geometry?.length>1)
+      .map(el=>({type:'Feature',geometry:{type:'LineString',coordinates:el.geometry.map(p=>[p.lon,p.lat])},properties:{}}));
+    _clearViewportTrails();
+    if(!features.length)return;
+    map.addSource('viewport-trails-src',{type:'geojson',data:{type:'FeatureCollection',features}});
+    map.addLayer({id:'viewport-trails-line',type:'line',source:'viewport-trails-src',
+      layout:{'line-cap':'round','line-join':'round'},
+      paint:{'line-color':'#9CAF88','line-width':2,'line-opacity':.8}});
+  }catch(e){
+    console.warn('[Trails] viewport load failed:',e);
+    _viewportTrailsBounds=null;
+    _showMapNotice('Trails unavailable — data server busy');
+  }
+}
+
 function _toggleSidePanelLayer(layerId, rowEl){
   // Get the visual toggle element inside the row
   const toggleEl=rowEl?.querySelector('.side-layer-toggle')||rowEl;

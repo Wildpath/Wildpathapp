@@ -204,9 +204,14 @@
           <span style="font-size:13px;font-weight:600;color:var(--txt0);flex:1">County Lines</span>
           <div class="side-layer-toggle off"><div class="side-layer-knob"></div></div>
         </div>
-        <div onclick="_toggleSidePanelLayer('privateland',this)" class="side-layer-row" data-layer="privateland" style="display:flex;align-items:center;gap:12px;padding:11px 14px;background:var(--bg2);border:1px solid var(--border2);border-radius:0 0 12px 12px;cursor:pointer">
+        <div onclick="_toggleSidePanelLayer('privateland',this)" class="side-layer-row" data-layer="privateland" style="display:flex;align-items:center;gap:12px;padding:11px 14px;background:var(--bg2);border:1px solid var(--border2);border-radius:0;cursor:pointer;margin-bottom:1px">
           <div style="width:14px;height:14px;border-radius:3px;background:#c62828;flex-shrink:0"></div>
           <span style="font-size:13px;font-weight:600;color:var(--txt0);flex:1">Private Land</span>
+          <div class="side-layer-toggle off"><div class="side-layer-knob"></div></div>
+        </div>
+        <div onclick="toggleTrailsLayer(this)" class="side-layer-row" id="trailsToggleRow" style="display:flex;align-items:center;gap:12px;padding:11px 14px;background:var(--bg2);border:1px solid var(--border2);border-radius:0 0 12px 12px;cursor:pointer">
+          <div style="width:14px;height:14px;border-radius:3px;background:#9CAF88;flex-shrink:0"></div>
+          <span style="font-size:13px;font-weight:600;color:var(--txt0);flex:1">Show Trails</span>
           <div class="side-layer-toggle off"><div class="side-layer-knob"></div></div>
         </div>
       </div>
@@ -1956,7 +1961,7 @@
 </div><!-- #app -->
 
 
-<script src="data.js?v=14"></script>
-<script src="app.js?v=14"></script>
+<script src="data.js?v=15"></script>
+<script src="app.js?v=15"></script>
 </body>
 </html>
