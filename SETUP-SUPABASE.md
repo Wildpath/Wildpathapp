@@ -74,3 +74,87 @@ create policy "Community Covers authenticated update" on storage.objects for upd
 Verified live: an upload attempt to the Avatars bucket returns
 `{"statusCode":"403","error":"Unauthorized","message":"new row violates row-level security policy"}`
 before this SQL is run — confirming this is the real blocker.
+
+## Section 1 — REQUIRED: personal_spots and community_pending_spots tables
+
+Run this in the SQL editor to enable the three-tier spot system (Personal/Community/Global).
+
+```sql
+-- Personal spots: instant, zero review, visible only to their owner
+create table if not exists personal_spots (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid references profiles(id) not null,
+  name text not null,
+  type text not null,
+  lat float not null,
+  lng float not null,
+  notes text,
+  photo_urls text[],
+  created_at timestamptz default now()
+);
+alter table personal_spots enable row level security;
+create policy "personal_spots_select_own" on personal_spots for select to authenticated using (auth.uid() = user_id);
+create policy "personal_spots_insert_own" on personal_spots for insert to authenticated with check (auth.uid() = user_id);
+create policy "personal_spots_delete_own" on personal_spots for delete to authenticated using (auth.uid() = user_id);
+
+-- Community pending spots: instant submission, requires that community's admin/moderator approval
+create table if not exists community_pending_spots (
+  id uuid default gen_random_uuid() primary key,
+  community_id uuid references communities(id) not null,
+  user_id uuid references profiles(id) not null,
+  name text not null,
+  type text not null,
+  lat float not null,
+  lng float not null,
+  description text,
+  photo_urls text[],
+  status text default 'pending',
+  submitted_at timestamptz default now(),
+  reviewed_by uuid references profiles(id)
+);
+alter table community_pending_spots enable row level security;
+create policy "cps_select_member_or_submitter" on community_pending_spots for select to authenticated
+  using (
+    auth.uid() = user_id
+    or exists (select 1 from community_members cm where cm.community_id = community_pending_spots.community_id and cm.user_id = auth.uid())
+  );
+create policy "cps_insert_own" on community_pending_spots for insert to authenticated with check (auth.uid() = user_id);
+create policy "cps_update_admin_mod" on community_pending_spots for update to authenticated
+  using (
+    exists (select 1 from community_members cm where cm.community_id = community_pending_spots.community_id and cm.user_id = auth.uid() and cm.role in ('admin','moderator'))
+  );
+create policy "cps_delete_admin_mod_or_submitter" on community_pending_spots for delete to authenticated
+  using (
+    auth.uid() = user_id
+    or exists (select 1 from community_members cm where cm.community_id = community_pending_spots.community_id and cm.user_id = auth.uid() and cm.role in ('admin','moderator'))
+  );
+
+-- Community-approved spots need somewhere to live once approved — reuse the "spots" table
+-- with a community_id column so approved community spots can be filtered per-community.
+alter table spots add column if not exists community_id uuid references communities(id);
+```
+
+## Section 3 — REQUIRED: saved_places table (generalized save-anything)
+
+The existing `saved_spots` table only works for real rows in `spots` (its `spot_id` is a foreign
+key). Section 3 requires saving personal spots, community spots, and raw post locations too —
+none of which are guaranteed to have a `spots.id`. This new table has no such constraint and
+covers all four cases with one shape.
+
+```sql
+create table if not exists saved_places (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid references profiles(id) not null,
+  ref_type text not null, -- 'spot' | 'personal_spot' | 'community_spot' | 'raw_location'
+  ref_id text,            -- the underlying id when one exists (spots.id, personal_spots.id, etc.) — null for raw_location
+  name text not null,
+  lat float not null,
+  lng float not null,
+  folder_name text default 'General',
+  saved_at timestamptz default now()
+);
+alter table saved_places enable row level security;
+create policy "saved_places_select_own" on saved_places for select to authenticated using (auth.uid() = user_id);
+create policy "saved_places_insert_own" on saved_places for insert to authenticated with check (auth.uid() = user_id);
+create policy "saved_places_delete_own" on saved_places for delete to authenticated using (auth.uid() = user_id);
+```

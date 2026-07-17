@@ -350,6 +350,29 @@
         <div class="modal-title">Add New Spot</div>
         <div class="modal-sub">Share a hidden gem with the WildPath community</div>
         <div class="form-group">
+          <label class="form-label">Visibility</label>
+          <div id="aspTierTiles" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+            <div class="asp-tier-tile selected" data-tier="personal" onclick="selectAspTier('personal',this)" style="border:1.5px solid var(--accent);background:rgba(184,232,122,.1);border-radius:12px;padding:12px 8px;text-align:center;cursor:pointer">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#D4A843" stroke-width="2" style="margin:0 auto 4px;display:block"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              <div style="font-size:12px;font-weight:700;color:var(--txt0)">Personal</div>
+              <div style="font-size:9px;color:var(--txt3);margin-top:2px;line-height:1.3">Only you see this</div>
+            </div>
+            <div class="asp-tier-tile" data-tier="community" onclick="selectAspTier('community',this)" style="border:1.5px solid var(--border2);background:var(--bg2);border-radius:12px;padding:12px 8px;text-align:center;cursor:pointer">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--txt2)" stroke-width="2" style="margin:0 auto 4px;display:block"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              <div style="font-size:12px;font-weight:700;color:var(--txt0)">Community</div>
+              <div style="font-size:9px;color:var(--txt3);margin-top:2px;line-height:1.3">Share with a community</div>
+            </div>
+            <div class="asp-tier-tile" data-tier="global" onclick="selectAspTier('global',this)" style="border:1.5px solid var(--border2);background:var(--bg2);border-radius:12px;padding:12px 8px;text-align:center;cursor:pointer">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--txt2)" stroke-width="2" style="margin:0 auto 4px;display:block"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+              <div style="font-size:12px;font-weight:700;color:var(--txt0)">Global</div>
+              <div style="font-size:9px;color:var(--txt3);margin-top:2px;line-height:1.3">Submit to public map</div>
+            </div>
+          </div>
+          <div id="aspCommunityPicker" style="display:none;margin-top:10px">
+            <select id="aspCommunitySelect" class="form-input" style="width:100%"></select>
+          </div>
+        </div>
+        <div class="form-group">
           <label class="form-label">Spot Name</label>
           <input class="form-input" id="aspName" placeholder="e.g. Crystal Falls Swimming Hole" type="text">
         </div>
@@ -1189,6 +1212,14 @@
         </div>
       </div>
 
+      <!-- Create Post entry point -->
+      <div style="padding:0 14px 12px">
+        <button onclick="openCreatePost()" style="width:100%;padding:12px;background:rgba(184,232,122,.1);border:1px solid rgba(184,232,122,.3);border-radius:12px;color:var(--accent);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);display:flex;align-items:center;justify-content:center;gap:8px">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Create Post
+        </button>
+      </div>
+
       <!-- Posts / Tagged tab row -->
       <div style="display:flex;border-bottom:1px solid var(--border)">
         <div id="profileTabPosts" onclick="switchProfileTab('posts')" style="flex:1;display:flex;align-items:center;justify-content:center;padding:10px 0;border-bottom:2px solid var(--accent);cursor:pointer;gap:6px">
@@ -1965,7 +1996,7 @@
 </div><!-- #app -->
 
 
-<script src="data.js?v=16"></script>
-<script src="app.js?v=16"></script>
+<script src="data.js?v=19"></script>
+<script src="app.js?v=19"></script>
 </body>
 </html>

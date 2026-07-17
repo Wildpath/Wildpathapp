@@ -58,6 +58,7 @@ let hiddenGemFilterActive=false;
 let addSpotMode=false, addSpotTempLat=null, addSpotTempLng=null;
 let waypointMarkers=[], parkingMarker=null;
 let userSpots=[]; // hydrated from Supabase spots table (status=approved)
+let personalSpots=[]; // hydrated from Supabase personal_spots table — only this user's own, gold pins
 let favorites=new Set(JSON.parse(localStorage.getItem('wp_favs')||'[]'));
 
 const landLayerCache={nationalForest:{on:false},blm:{on:false},stateParks:{on:false},private:{on:false}};
@@ -285,7 +286,8 @@ async function _sbHydrate(){
     await Promise.allSettled([run('profiles',_sbLoadProfiles),run('communities',_sbLoadCommunities)]);
     await Promise.allSettled([
       run('posts',_sbLoadPosts),run('messages',_sbLoadMessages),run('follows',_sbLoadFollows),
-      run('notifications',_sbLoadNotifications),run('saved',_sbLoadSaved),run('pending spots',_sbLoadPendingSpots)
+      run('notifications',_sbLoadNotifications),run('saved',_sbLoadSaved),run('pending spots',_sbLoadPendingSpots),
+      run('personal spots',_sbLoadPersonalSpots)
     ]);
     _sbHydrated=true;
     try{_sbSubscribeRealtime();}catch(e){console.warn('[Supabase] realtime:',e);}
@@ -319,6 +321,22 @@ async function _sbLoadSpots(){
   if(error)throw error;
   userSpots.length=0;
   (data||[]).forEach(r=>userSpots.push(_sbAdaptSpot(r)));
+}
+
+async function _sbLoadPersonalSpots(){
+  if(isGuest())return;
+  const {data,error}=await db.from('personal_spots').select('*').eq('user_id',_myUid());
+  if(error)throw error;
+  personalSpots.length=0;
+  (data||[]).forEach(r=>{
+    const def=(typeof SPOT_TYPE_DEFS!=='undefined'&&SPOT_TYPE_DEFS[r.type])||{label:r.type,color:'#D4A843',icon:r.type};
+    personalSpots.push({
+      id:'personal_'+r.id,personalSpotId:r.id,name:r.name,lat:r.lat,lng:r.lng,type:r.type,
+      typeLabel:def.label,notes:r.notes||'',photos:r.photo_urls||[],
+      heroGradient:'linear-gradient(160deg,#2a2410,#3a3018,#1a1608)',
+      createdAt:r.created_at,tier:'personal'
+    });
+  });
 }
 
 async function _sbLoadPosts(){
@@ -813,6 +831,11 @@ function _buildSpotsGeoJSON(){
   getPendingSpots().filter(s=>String(s._submitterUid)===myUid&&s.lat&&s.lng).forEach(s=>{
     features.push({type:'Feature',geometry:{type:'Point',coordinates:[s.lng,s.lat]},
       properties:{id:s.id,name:s.name+' — Pending Review',type:s.type,color:'#D4874A',pending:1}});
+  });
+  // My personal spots — always gold, only I ever see these (RLS-scoped at the source)
+  personalSpots.forEach(s=>{
+    features.push({type:'Feature',geometry:{type:'Point',coordinates:[s.lng,s.lat]},
+      properties:{id:s.id,name:s.name,type:s.type,color:'#D4A843',personal:1}});
   });
   return{type:'FeatureCollection',features};
 }
@@ -2640,10 +2663,19 @@ function _renderAspPhotoGrid(){
 }
 function _removeAspPhoto(i){_aspPhotos.splice(i,1);_renderAspPhotoGrid();}
 
-function openAddSpot(){
-  if(isGuest()){showLoginScreen(()=>openAddSpot());return;}
+function openAddSpot(presetTier){
+  if(isGuest()){showLoginScreen(()=>openAddSpot(presetTier));return;}
   aspSelectedType=null; aspSelectedDiff='Easy'; aspStarVal=5;
   addSpotTempLat=null; addSpotTempLng=null;
+  // Reset visibility tier tiles to Personal (default) unless a preset was passed
+  const tier=presetTier||'personal';
+  document.querySelectorAll('#aspTierTiles .asp-tier-tile').forEach(t=>{
+    const isSel=t.dataset.tier===tier;
+    t.classList.toggle('selected',isSel);
+    t.style.borderColor=isSel?'var(--accent)':'var(--border2)';
+    t.style.background=isSel?'rgba(184,232,122,.1)':'var(--bg2)';
+  });
+  selectAspTier(tier,document.querySelector(`#aspTierTiles [data-tier="${tier}"]`));
   // Build type grid
   const grid=document.getElementById('aspTypeGrid');
   grid.innerHTML='';
@@ -2680,6 +2712,33 @@ function startMapPinMode(){
   addSpotMode=true;
   if(map)map.getCanvas().style.cursor='crosshair';
   showToast('Tap the map to place your spot');
+}
+
+let _aspVisibilityTier='personal';
+function selectAspTier(tier,el){
+  _aspVisibilityTier=tier;
+  document.querySelectorAll('#aspTierTiles .asp-tier-tile').forEach(t=>{
+    const isSel=t===el||t.dataset.tier===tier;
+    t.classList.toggle('selected',isSel);
+    t.style.borderColor=isSel?'var(--accent)':'var(--border2)';
+    t.style.background=isSel?'rgba(184,232,122,.1)':'var(--bg2)';
+  });
+  const picker=document.getElementById('aspCommunityPicker');
+  if(picker){
+    picker.style.display=tier==='community'?'block':'none';
+    if(tier==='community')_populateAspCommunitySelect();
+  }
+  const submitBtn=document.querySelector('.btn-submit-spot');
+  if(submitBtn)submitBtn.textContent=tier==='personal'?'Save Personal Spot':tier==='community'?'Submit to Community':'Submit for Review';
+}
+function _populateAspCommunitySelect(){
+  const sel=document.getElementById('aspCommunitySelect');
+  if(!sel)return;
+  const myUid=String(_myUid());
+  const myComms=getCommunities().filter(c=>getMembers(c.id).includes(myUid));
+  sel.innerHTML=myComms.length
+    ? myComms.map(c=>`<option value="${c.id}">${sanitize(c.name)}</option>`).join('')
+    : '<option value="">You have not joined any communities yet</option>';
 }
 
 function selectDiff(el){
@@ -2742,7 +2801,7 @@ function submitNewSpot(){
   };
   if(_aspPhotos.length)newSpot.heroGradient=`linear-gradient(160deg,#0f1410,#1e251e,#0a100a)`;
 
-  // Tag and save to community if opened from community map
+  // Tag and save to community if opened from community map (legacy entry point)
   if(_addSpotCommunityId){
     newSpot.communityId=_addSpotCommunityId;
     const cSpots=getCommunitySpots(_addSpotCommunityId);
@@ -2754,16 +2813,68 @@ function submitNewSpot(){
     _aspPhotos=[];
     closeAddSpot();
     addSpotMarkerToMap(newSpot);
-    // Return to community map showing the new spot
     showToast('Spot added to community map!');
     setTimeout(()=>openCommunityMap(savedCid),300);
     return;
   }
 
-  submitSpotForReview(newSpot);
+  // Three-tier visibility: Personal (instant), Community (that community's admin review), Global (app admin review)
+  if(_aspVisibilityTier==='personal'){
+    _submitPersonalSpot(name,aspSelectedType,lat,lng,desc,_aspPhotos);
+  } else if(_aspVisibilityTier==='community'){
+    const cid=document.getElementById('aspCommunitySelect')?.value;
+    if(!cid){showToast('Select a community first');return;}
+    _submitCommunityPendingSpot(cid,name,aspSelectedType,lat,lng,desc,_aspPhotos);
+  } else {
+    submitSpotForReview(newSpot);
+  }
   _aspPhotos=[];
   closeAddSpot();
   leafletMap.flyTo([lat,lng],14,{animate:true,duration:1.2});
+}
+
+async function _submitPersonalSpot(name,type,lat,lng,notes,photoDataUrls){
+  if(isGuest()){showLoginScreen();return;}
+  try{
+    const photoUrls=[];
+    for(const dataUrl of (photoDataUrls||[]).slice(0,6)){
+      try{photoUrls.push(await _sbUploadDataUrl('Spot Photos',dataUrl,'jpg'));}catch(e){console.warn('personal spot photo upload:',e);}
+    }
+    const {data,error}=await db.from('personal_spots').insert({
+      user_id:_myUid(),name,type,lat,lng,notes,photo_urls:photoUrls
+    }).select().single();
+    if(error)throw error;
+    const def=SPOT_TYPE_DEFS[type]||{label:type,color:'#D4A843'};
+    personalSpots.push({
+      id:'personal_'+data.id,personalSpotId:data.id,name,lat,lng,type,
+      typeLabel:def.label,notes,photos:photoUrls,
+      heroGradient:'linear-gradient(160deg,#2a2410,#3a3018,#1a1608)',
+      createdAt:data.created_at,tier:'personal'
+    });
+    refreshSpotMarkers();
+    showToast('Personal spot saved — only you can see it');
+  }catch(e){
+    console.warn('[Supabase] personal spot submit failed:',e);
+    showToast('Could not save spot — check connection');
+  }
+}
+
+async function _submitCommunityPendingSpot(communityId,name,type,lat,lng,description,photoDataUrls){
+  if(isGuest()){showLoginScreen();return;}
+  try{
+    const photoUrls=[];
+    for(const dataUrl of (photoDataUrls||[]).slice(0,6)){
+      try{photoUrls.push(await _sbUploadDataUrl('Spot Photos',dataUrl,'jpg'));}catch(e){console.warn('community spot photo upload:',e);}
+    }
+    const {error}=await db.from('community_pending_spots').insert({
+      community_id:communityId,user_id:_myUid(),name,type,lat,lng,description,photo_urls:photoUrls,status:'pending'
+    });
+    if(error)throw error;
+    showToast('Submitted — waiting for that community\'s approval');
+  }catch(e){
+    console.warn('[Supabase] community spot submit failed:',e);
+    showToast('Could not submit spot — check connection');
+  }
 }
 
 // ═══════════════════════════════════════════════════
@@ -3017,7 +3128,7 @@ let _terrainUserInteracting=false;
 function openDetail(spotIdOrObj){
   const myUid=String(_myUid?_myUid():'guest');
   const myPending=getPendingSpots().filter(s=>String(s._submitterUid)===myUid);
-  const allS=[...spots,...userSpots,...myPending];
+  const allS=[...spots,...userSpots,...myPending,...personalSpots];
   const spot=typeof spotIdOrObj==='object'?spotIdOrObj:allS.find(s=>s.id===spotIdOrObj)||allS[0];
   if(!spot)return;
   _detailSpotId=spot.id;
@@ -3032,6 +3143,7 @@ function openDetail(spotIdOrObj){
   if(nameEl){
     nameEl.textContent=spot.name;
     if(spot._pendingId)nameEl.innerHTML=sanitize(spot.name)+' <span style="display:inline-block;vertical-align:middle;background:rgba(212,135,74,.18);border:1px solid rgba(212,135,74,.45);color:#D4874A;font-size:10px;font-weight:700;letter-spacing:.5px;padding:3px 9px;border-radius:12px;text-transform:uppercase">Pending Review</span>';
+    else if(spot.tier==='personal')nameEl.innerHTML=sanitize(spot.name)+' <span style="display:inline-block;vertical-align:middle;background:rgba(212,168,67,.18);border:1px solid rgba(212,168,67,.45);color:#D4A843;font-size:10px;font-weight:700;letter-spacing:.5px;padding:3px 9px;border-radius:12px;text-transform:uppercase">Personal</span>';
   }
 
   // ── Permit suggestion chip ──
@@ -9794,6 +9906,8 @@ function _renderCommSettings(cid){
   if(!c)return;
   const members=getMembers(cid);
   const inviteLink=`wildpath://community/${cid}`;
+  const isCommAdmin=c.adminId===String(_myUid());
+  if(isCommAdmin)_loadCommunityPendingSpots(cid);
 
   const membersHtml=members.map(uid=>`<div class="member-row">
     ${_avatarHtml(uid,36)}
@@ -9828,6 +9942,10 @@ function _renderCommSettings(cid){
       <div style="font-size:12px;font-weight:700;color:var(--accent);letter-spacing:.4px;text-transform:uppercase;margin-bottom:10px">Join Requests${pending.length?` (${pending.length})`:''}</div>
       ${pendingHtml}
     </div>
+    ${isCommAdmin?`<div style="padding:12px 16px;border-bottom:1px solid var(--border)" id="commPendingSpotsSection">
+      <div style="font-size:12px;font-weight:700;color:var(--accent);letter-spacing:.4px;text-transform:uppercase;margin-bottom:10px">Pending Spot Approval</div>
+      <div id="commPendingSpotsList" style="font-size:12px;color:var(--txt3)">Loading…</div>
+    </div>`:''}
     <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
       <div style="font-size:12px;font-weight:700;color:var(--txt2);letter-spacing:.4px;text-transform:uppercase;margin-bottom:10px">Members (${members.length})</div>
       ${membersHtml}
@@ -9844,6 +9962,57 @@ function _renderCommSettings(cid){
       <button onclick="confirmDeleteCommunity('${cid}','${c.name}')" style="width:100%;padding:12px;background:rgba(196,82,74,.1);border:1.5px solid rgba(196,82,74,.4);border-radius:12px;color:var(--red);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Delete Community</button>
     </div>`;
 }
+async function _loadCommunityPendingSpots(cid){
+  const listEl=document.getElementById('commPendingSpotsList');
+  if(!listEl)return;
+  try{
+    const {data,error}=await db.from('community_pending_spots').select('*').eq('community_id',cid).eq('status','pending').order('submitted_at');
+    if(error)throw error;
+    const rows=data||[];
+    if(!rows.length){listEl.innerHTML='<div style="padding:4px 0">No spots pending approval</div>';return;}
+    listEl.innerHTML=rows.map(s=>`
+      <div style="background:var(--bg2);border-radius:12px;padding:12px;margin-bottom:8px">
+        ${(s.photo_urls&&s.photo_urls[0])?`<img src="${s.photo_urls[0]}" style="width:100%;height:100px;object-fit:cover;border-radius:8px;margin-bottom:8px">`:''}
+        <div style="font-size:13px;font-weight:700;color:var(--txt0)">${sanitize(s.name)}</div>
+        <div style="font-size:11px;color:var(--txt3);margin-top:2px">${sanitize(s.type)} · ${(+s.lat).toFixed(4)}, ${(+s.lng).toFixed(4)}</div>
+        ${s.description?`<div style="font-size:12px;color:var(--txt2);margin-top:6px;line-height:1.5">${sanitize(s.description)}</div>`:''}
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button onclick="_approveCommunityPendingSpot('${s.id}','${cid}')" style="flex:1;padding:8px;background:rgba(184,232,122,.15);border:1.5px solid var(--accent);border-radius:8px;color:var(--accent);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Approve</button>
+          <button onclick="_rejectCommunityPendingSpot('${s.id}','${cid}')" style="flex:1;padding:8px;background:rgba(196,82,74,.1);border:1.5px solid rgba(196,82,74,.4);border-radius:8px;color:var(--red);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Reject</button>
+        </div>
+      </div>`).join('');
+  }catch(e){
+    console.warn('[Supabase] community pending spots:',e);
+    listEl.innerHTML='<div style="padding:4px 0;color:var(--red)">Could not load pending spots</div>';
+  }
+}
+
+async function _approveCommunityPendingSpot(spotId,cid){
+  try{
+    const {data:pending,error:selErr}=await db.from('community_pending_spots').select('*').eq('id',spotId).single();
+    if(selErr)throw selErr;
+    const {error:insErr}=await db.from('spots').insert({
+      name:pending.name,type:pending.type,lat:pending.lat,lng:pending.lng,
+      legal_status:'caution',description:pending.description||'',
+      submitted_by:pending.user_id,status:'approved',community_id:cid
+    });
+    if(insErr)throw insErr;
+    await db.from('community_pending_spots').delete().eq('id',spotId);
+    showToast('Spot approved!');
+    _loadCommunityPendingSpots(cid);
+    _sbLoadSpots().then(()=>refreshSpotMarkers());
+  }catch(e){
+    console.warn('[Supabase] approve community spot:',e);
+    showToast('Could not approve — check connection');
+  }
+}
+
+function _rejectCommunityPendingSpot(spotId,cid){
+  _sbTry(db.from('community_pending_spots').delete().eq('id',spotId),'reject community spot');
+  showToast('Spot rejected');
+  setTimeout(()=>_loadCommunityPendingSpots(cid),300);
+}
+
 function showMemberMenu(cid,uid,btn){
   const menu=document.getElementById('commCtxMenu');
   const overlay=document.getElementById('commCtxOverlay');
