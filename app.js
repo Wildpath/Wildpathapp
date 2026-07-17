@@ -228,6 +228,7 @@ function _sbAdaptPost(r,likesMap){
     spotId:r.spot_id||null,spotName:spot?spot.name:null,
     lat:r.lat??spot?.lat??null,lng:r.lng??spot?.lng??null,
     privacy:r.privacy||'public',
+    showOnSpot:r.show_on_spot!==false,
     likes:(likesMap&&likesMap[r.id])||[],
     communityIds:[],
     createdAt:r.created_at
@@ -3188,11 +3189,15 @@ function openDetail(spotIdOrObj){
       </div>`;
   }
 
-  // ── Photos tab: user-uploaded only ──
+  // ── Photos tab: legacy uploads + posts tagged to this spot with show_on_spot=true ──
   const photosGridEl=document.getElementById('detailPhotosGrid');
   if(photosGridEl){
-    const communityPhotos=JSON.parse(localStorage.getItem(`wp_photos_${spot.id}`)||'[]');
-    if(!communityPhotos.length){
+    const communityPhotos=JSON.parse(localStorage.getItem(`wp_photos_${spot.id}`)||'[]').map(p=>({url:p.url,postId:null}));
+    const taggedPostPhotos=getPosts()
+      .filter(p=>String(p.spotId)===String(spot.id)&&p.showOnSpot!==false&&p.mediaUrl)
+      .map(p=>({url:p.mediaUrl,postId:p.id}));
+    const allPhotos=[...taggedPostPhotos,...communityPhotos];
+    if(!allPhotos.length){
       photosGridEl.innerHTML=`
         <div style="text-align:center;padding:48px 20px">
           <div style="width:80px;height:80px;border-radius:16px;background:${spot.heroGradient||'var(--bg3)'};margin:0 auto 16px;display:flex;align-items:center;justify-content:center">
@@ -3204,7 +3209,7 @@ function openDetail(spotIdOrObj){
         </div>`;
     } else {
       photosGridEl.innerHTML=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:2px">${
-        communityPhotos.map(p=>`<div style="aspect-ratio:1;overflow:hidden;border-radius:4px;cursor:pointer" onclick="openPhotoFull('${p.url}')"><img src="${p.url}" style="width:100%;height:100%;object-fit:cover" loading="lazy"></div>`).join('')
+        allPhotos.map(p=>`<div style="aspect-ratio:1;overflow:hidden;border-radius:4px;cursor:pointer" onclick="${p.postId?`openPostDetail('${p.postId}')`:`openPhotoFull('${p.url}')`}"><img src="${p.url}" style="width:100%;height:100%;object-fit:cover" loading="lazy"></div>`).join('')
       }</div>`;
     }
   }
@@ -7513,6 +7518,7 @@ let _dmConvUserId=null;
 let _cpStep=1, _cpType=null, _cpMediaDataUrl=null, _cpMediaFiles=[];
 let _cpTaggedSpotLat=null, _cpTaggedSpotLng=null, _cpSpotSearchTimer=null;
 let _cpTaggedSpotId=null, _cpTaggedSpotName='', _cpShareCommunities=[];
+let _cpShowOnSpot=true;
 let _ccStep=1, _ccCoverDataUrl=null, _ccPrivacy='public', _ccFocusTags=[];
 let _sdLat=37.5, _sdLng=-120.0, _sdPhotoDataUrl=null, _sdMap=null;
 let _commSortMode='hot'; // for community detail feed
@@ -9183,6 +9189,8 @@ function openCreatePost(targetCommunityId=null){
   _cpStep=1; _cpType=null; _cpMediaDataUrl=null; _cpMediaFiles=[];
   _cpTaggedSpotId=null; _cpTaggedSpotName=''; _cpTaggedSpotLat=null; _cpTaggedSpotLng=null;
   _cpShareCommunities=[];
+  _cpShowOnSpot=true;
+  document.getElementById('cpShowOnSpotToggle')?.classList.add('on');
   if(targetCommunityId)_cpShareCommunities=[targetCommunityId];
   const page=document.getElementById('createPostPage');
   if(!page)return;
@@ -9412,6 +9420,10 @@ function toggleShareTo(key,el){
   if(idx>-1)_cpShareCommunities.splice(idx,1);
   else _cpShareCommunities.push(cid);
 }
+function toggleShowOnSpot(el){
+  _cpShowOnSpot=!_cpShowOnSpot;
+  el.classList.toggle('on',_cpShowOnSpot);
+}
 function submitPost(){
   if(isGuest()){showLoginScreen();return;}
   const caption=(document.getElementById('cpCaption')?.value||'').trim();
@@ -9432,7 +9444,8 @@ function submitPost(){
         user_id:_myUid(),caption,photo_url,video_url,privacy:'public',
         spot_id:taggedSpot?taggedSpot.id:null,
         lat:_cpTaggedSpotLat??taggedSpot?.lat??null,
-        lng:_cpTaggedSpotLng??taggedSpot?.lng??null
+        lng:_cpTaggedSpotLng??taggedSpot?.lng??null,
+        show_on_spot:taggedSpot?_cpShowOnSpot:true
       };
       const {data,error}=await db.from('posts').insert(row).select('*, profiles!posts_user_id_fkey(username, avatar_url)').single();
       if(error)throw error;

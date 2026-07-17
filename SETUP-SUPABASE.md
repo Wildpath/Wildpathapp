@@ -31,3 +31,12 @@ community-covers — each marked PUBLIC in the bucket list.
 2. Open https://supabase.com/dashboard/project/nkrphmjzyzeplzcgndxg/editor
 3. Open the `profiles` table, find your row, change `role` from `explorer` to `admin`
 4. Save — the Admin Review section now appears in your Profile tab
+
+## Section 12 — show_on_spot column (run this in Supabase SQL editor)
+
+```sql
+alter table posts add column if not exists show_on_spot boolean default true;
+```
+
+Controls whether a post tagged to a spot also appears in that spot's Photos tab.
+Defaults to true for all existing and new rows.
