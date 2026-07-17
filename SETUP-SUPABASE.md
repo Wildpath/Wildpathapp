@@ -40,3 +40,37 @@ alter table posts add column if not exists show_on_spot boolean default true;
 
 Controls whether a post tagged to a spot also appears in that spot's Photos tab.
 Defaults to true for all existing and new rows.
+
+## Section 11 — REQUIRED: Storage bucket RLS policies (run this now — fixes broken photo uploads)
+
+This is the actual root cause of "profile photo never displays" (and would also silently break
+post photos, spot photos, and community covers). The four buckets exist and are marked Public,
+but Storage keeps row-level security enabled on `storage.objects` by default with zero policies —
+so every upload is rejected with "new row violates row-level security policy" even though reads
+work fine. Run this in the SQL editor:
+
+```sql
+-- Avatars
+create policy "Avatars public read" on storage.objects for select using (bucket_id = 'Avatars');
+create policy "Avatars authenticated upload" on storage.objects for insert to authenticated with check (bucket_id = 'Avatars');
+create policy "Avatars authenticated update" on storage.objects for update to authenticated using (bucket_id = 'Avatars');
+
+-- Post Media
+create policy "Post Media public read" on storage.objects for select using (bucket_id = 'Post Media');
+create policy "Post Media authenticated upload" on storage.objects for insert to authenticated with check (bucket_id = 'Post Media');
+create policy "Post Media authenticated update" on storage.objects for update to authenticated using (bucket_id = 'Post Media');
+
+-- Spot Photos
+create policy "Spot Photos public read" on storage.objects for select using (bucket_id = 'Spot Photos');
+create policy "Spot Photos authenticated upload" on storage.objects for insert to authenticated with check (bucket_id = 'Spot Photos');
+create policy "Spot Photos authenticated update" on storage.objects for update to authenticated using (bucket_id = 'Spot Photos');
+
+-- Community Covers
+create policy "Community Covers public read" on storage.objects for select using (bucket_id = 'Community Covers');
+create policy "Community Covers authenticated upload" on storage.objects for insert to authenticated with check (bucket_id = 'Community Covers');
+create policy "Community Covers authenticated update" on storage.objects for update to authenticated using (bucket_id = 'Community Covers');
+```
+
+Verified live: an upload attempt to the Avatars bucket returns
+`{"statusCode":"403","error":"Unauthorized","message":"new row violates row-level security policy"}`
+before this SQL is run — confirming this is the real blocker.

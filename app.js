@@ -5586,22 +5586,39 @@ function openAvatarPicker(){
 }
 function handleAvatarUpload(e){
   const file=e.target.files&&e.target.files[0];
+  console.log('[AVATAR STEP 1] file input change fired:',file?{name:file.name,type:file.type,size:file.size}:'NO FILE');
   if(!file)return;
   if(isGuest()){showLoginScreen();return;}
-  // Crop square, downscale to 200x200, upload to avatars bucket
+  // Crop square, downscale to 200x200, upload to Avatars bucket
   openCropModal(file,'square_locked',async(croppedDataUrl)=>{
     try{
       const small=await _resizeDataUrl(croppedDataUrl,200);
-      const url=await _sbUploadDataUrl('Avatars',small,'jpg');
-      const {error}=await db.from('profiles').update({avatar_url:url}).eq('id',_myUid());
-      if(error)throw error;
+      console.log('[AVATAR STEP 2] compressImage/resize complete, dataUrl length:',small?.length);
+
+      const path=`${_myUid()}/${Date.now()}-${Math.random().toString(36).slice(2,8)}.jpg`;
+      const blob=await (await fetch(small)).blob();
+      console.log('[AVATAR STEP 3] uploading to bucket "Avatars" at path:',path,'blob size:',blob.size);
+      const {data:uploadData,error:uploadError}=await db.storage.from('Avatars').upload(path,blob,{contentType:blob.type||'image/jpeg'});
+      console.log('[AVATAR STEP 3] upload response:',uploadData,'error:',uploadError);
+      if(uploadError)throw uploadError;
+
+      const url=db.storage.from('Avatars').getPublicUrl(path).data.publicUrl;
+      console.log('[AVATAR STEP 4] getPublicUrl:',url);
+      if(!url)throw new Error('getPublicUrl returned no URL');
+
+      const {data:updateData,error:updateError}=await db.from('profiles').update({avatar_url:url}).eq('id',_myUid()).select();
+      console.log('[AVATAR STEP 5] profiles.avatar_url update response:',updateData,'error:',updateError);
+      if(updateError)throw updateError;
+
       const pd=getUserProfile(_myUid())||{};
       pd.avatarUrl=url;
       setUserProfile(_myUid(),pd);
-      _applyAvatar(url);
+      const bustedUrl=url+(url.includes('?')?'&':'?')+'t='+Date.now();
+      _applyAvatar(bustedUrl);
+      console.log('[AVATAR STEP 6] img src updated with cache-busted URL:',bustedUrl);
       showToast('Profile photo updated');
     }catch(err){
-      console.warn('[Supabase] avatar:',err);
+      console.warn('[AVATAR] upload chain failed:',err);
       showToast('Could not upload photo — check connection');
     }
   });
@@ -8772,18 +8789,24 @@ function saveEditProfile(){
 }
 function handleEditAvatar(e){
   const file=e.target.files?.[0];if(!file)return;
+  console.log('[AVATAR STEP 1] (edit sheet) file input change fired:',file?{name:file.name,size:file.size}:'NO FILE');
   if(isGuest()){showLoginScreen();return;}
   compressImage(file,200).then(async dataUrl=>{
     try{
+      console.log('[AVATAR STEP 2] (edit sheet) compressImage complete, length:',dataUrl?.length);
       const url=await _sbUploadDataUrl('Avatars',dataUrl,'jpg');
-      const {error}=await db.from('profiles').update({avatar_url:url}).eq('id',_myUid());
+      console.log('[AVATAR STEP 3-4] (edit sheet) uploaded, public URL:',url);
+      const {data:updateData,error}=await db.from('profiles').update({avatar_url:url}).eq('id',_myUid()).select();
+      console.log('[AVATAR STEP 5] (edit sheet) profiles update response:',updateData,'error:',error);
       if(error)throw error;
+      const bustedUrl=url+(url.includes('?')?'&':'?')+'t='+Date.now();
       const av=document.getElementById('editProfileAvatar');
-      if(av)av.innerHTML=`<img src="${url}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
+      if(av)av.innerHTML=`<img src="${bustedUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
       const existing=getUserProfile(_myUid())||{};
       setUserProfile(_myUid(),{...existing,avatarUrl:url});
-      _applyAvatar(url);
-    }catch(err){console.warn('[Supabase] avatar:',err);showToast('Could not upload photo');}
+      _applyAvatar(bustedUrl);
+      console.log('[AVATAR STEP 6] (edit sheet) img src updated with cache-busted URL:',bustedUrl);
+    }catch(err){console.warn('[AVATAR] (edit sheet) upload chain failed:',err);showToast('Could not upload photo');}
   }).catch(()=>showToast('Could not read photo'));
 }
 
