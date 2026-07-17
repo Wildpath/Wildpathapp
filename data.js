@@ -358,3 +358,274 @@ const DEFAULT_ROUTE={
    ]
 };
 const interests=["Hiking","Swimming","Caves","Urban Exploration","Camping","Photography","Biking"];
+
+// ── Demo feed posts (shown when no user posts exist) ─────────────
+const DEMO_POSTS = [
+  {
+    id:'dp_001',
+    userId:'demo_u1',
+    username:'kai_explores',
+    caption:'Woke up at 4am to catch this. Half Dome reflected perfectly in the Merced River. Zero people, just fog and silence.',
+    photos:[
+      'https://images.unsplash.com/photo-1472396961693-142e6e269027?w=800',
+      'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=800'
+    ],
+    lat:37.7459, lng:-119.5332,
+    spotName:'Half Dome, Yosemite',
+    likes:['u2','u3','u4','u5','u6','u7','u8','u9','u10','u11','u12','u13'],
+    commentsCount:14,
+    createdAt:new Date(Date.now()-86400000*2).toISOString(),
+    privacy:'public',type:'post'
+  },
+  {
+    id:'dp_002',
+    userId:'demo_u2',
+    username:'sierralocal',
+    caption:'Secret swimming hole off Hwy 49. Water temp was perfect. Locals only spot — you have to scramble down a sketchy trail to get here.',
+    photos:[
+      'https://images.unsplash.com/photo-1504701954957-2010ec3bcec1?w=800',
+      'https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?w=800'
+    ],
+    lat:38.9132, lng:-120.3655,
+    spotName:'South Yuba River, Nevada County',
+    likes:['u1','u3','u5','u7','u9','u11','u13','u14','u15'],
+    commentsCount:22,
+    createdAt:new Date(Date.now()-86400000*3).toISOString(),
+    privacy:'public',type:'post'
+  },
+  {
+    id:'dp_003',
+    userId:'demo_u3',
+    username:'pointreyes.collective',
+    caption:'Tule elk at sunset on the ridge above Drakes Beach. This spot never gets old. Bring binoculars.',
+    photos:[
+      'https://images.unsplash.com/photo-1501854140801-50d01698950b?w=800'
+    ],
+    lat:38.0,lng:-122.95,
+    spotName:'Point Reyes National Seashore',
+    likes:['u1','u2','u4','u5','u6','u7','u8'],
+    commentsCount:8,
+    createdAt:new Date(Date.now()-86400000*4).toISOString(),
+    privacy:'public',type:'post'
+  },
+  {
+    id:'dp_004',
+    userId:'demo_u4',
+    username:'norcal.trails',
+    caption:'McCloud Falls lower pool. Best swimming in Shasta County hands down. Come early — the parking lot fills by 10am on weekends.',
+    photos:[
+      'https://images.unsplash.com/photo-1433086966358-54859d0ed716?w=800',
+      'https://images.unsplash.com/photo-1515705576963-95cad62945b6?w=800',
+      'https://images.unsplash.com/photo-1518098268026-4e89f1a2cd8e?w=800'
+    ],
+    lat:41.2500, lng:-122.0000,
+    spotName:'McCloud River Falls, Siskiyou County',
+    likes:['u1','u2','u3','u5','u6','u7','u8','u9','u10','u11','u12','u13','u14','u15','u16','u17'],
+    commentsCount:31,
+    createdAt:new Date(Date.now()-86400000*5).toISOString(),
+    privacy:'public',type:'post'
+  },
+  {
+    id:'dp_005',
+    userId:'demo_u5',
+    username:'wildpath_official',
+    caption:'Alamere Falls — one of the only tidal waterfalls in California. Low tide only. 8-mile RT hike from the Palomarin trailhead.',
+    photos:[
+      'https://images.unsplash.com/photo-1534430480872-3498386e7856?w=800',
+      'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=800'
+    ],
+    lat:37.9233, lng:-122.7100,
+    spotName:'Alamere Falls, Marin County',
+    likes:['u1','u2','u3','u4','u6','u7','u8','u9','u10','u11'],
+    commentsCount:19,
+    createdAt:new Date(Date.now()-86400000*6).toISOString(),
+    privacy:'public',type:'post'
+  },
+  {
+    id:'dp_006',
+    userId:'demo_u6',
+    username:'tahoe.wild',
+    caption:'Eagle Lake at sunrise. 6,600ft. The kind of stillness you can only find when you start hiking before dawn.',
+    photos:[
+      'https://images.unsplash.com/photo-1439853949212-36589f9a5aae?w=800',
+      'https://images.unsplash.com/photo-1495107334309-fcf20504a5ab?w=800'
+    ],
+    lat:38.9400, lng:-120.1100,
+    spotName:'Eagle Lake, Lake Tahoe Basin',
+    likes:['u1','u2','u3','u4','u5','u7','u8'],
+    commentsCount:12,
+    createdAt:new Date(Date.now()-86400000*7).toISOString(),
+    privacy:'public',type:'post'
+  },
+  {
+    id:'dp_007',
+    userId:'demo_u7',
+    username:'coastwatcher',
+    caption:'Sutro Baths sea cave at dead low tide. The tunnel opens up completely — you can walk all the way through. Check tide charts before you go.',
+    photos:[
+      'https://images.unsplash.com/photo-1499336315816-097655dcfbda?w=800'
+    ],
+    lat:37.7793, lng:-122.5132,
+    spotName:'Sutro Baths Sea Cave, San Francisco',
+    likes:['u1','u2','u3','u4','u5','u6','u8','u9','u10','u11','u12'],
+    commentsCount:27,
+    createdAt:new Date(Date.now()-86400000*8).toISOString(),
+    privacy:'public',type:'post'
+  },
+  {
+    id:'dp_008',
+    userId:'demo_u8',
+    username:'lassen.adventures',
+    caption:'Bumpass Hell hydrothermal area in Lassen Volcanic. Otherworldly. Smells like sulphur but the colors are unreal. Less than 3mi from the trailhead.',
+    photos:[
+      'https://images.unsplash.com/photo-1508739773434-c26b3d09e071?w=800',
+      'https://images.unsplash.com/photo-1469474968028-56623f02e42e?w=800'
+    ],
+    lat:40.4453, lng:-121.5281,
+    spotName:'Lassen Volcanic National Park',
+    likes:['u1','u3','u5','u7','u9','u10','u11','u12'],
+    commentsCount:16,
+    createdAt:new Date(Date.now()-86400000*10).toISOString(),
+    privacy:'public',type:'post'
+  },
+  {
+    id:'dp_009',
+    userId:'demo_u9',
+    username:'big.sur.daily',
+    caption:'Pfeiffer Beach at the keyhole arch. Purple sand only shows up at low tide when the waves wash over the manganese garnet. Timing is everything here.',
+    photos:[
+      'https://images.unsplash.com/photo-1465804575741-338df8554e02?w=800',
+      'https://images.unsplash.com/photo-1520116468816-95b69f847357?w=800'
+    ],
+    lat:36.2340, lng:-121.8150,
+    spotName:'Pfeiffer Beach, Big Sur',
+    likes:['u1','u2','u3','u4','u5','u6','u7','u8','u10','u11','u12','u13','u14','u15','u16','u17','u18'],
+    commentsCount:45,
+    createdAt:new Date(Date.now()-86400000*12).toISOString(),
+    privacy:'public',type:'post'
+  },
+  {
+    id:'dp_010',
+    userId:'demo_u10',
+    username:'humboldt.redwoods',
+    caption:'Avenue of the Giants — pull off anywhere and just walk into the old-growth. These trees are 1,500 years old. It resets something in your brain.',
+    photos:[
+      'https://images.unsplash.com/photo-1448375240586-882707db888b?w=800',
+      'https://images.unsplash.com/photo-1544735716-392fe2489ffa?w=800'
+    ],
+    lat:40.3000, lng:-124.0000,
+    spotName:'Humboldt Redwoods State Park',
+    likes:['u1','u2','u3','u4','u5','u6','u7','u8','u9','u11','u12','u13'],
+    commentsCount:33,
+    createdAt:new Date(Date.now()-86400000*14).toISOString(),
+    privacy:'public',type:'post'
+  }
+];
+
+// ── Demo communities with seeded posts ────────────────────────────
+const DEMO_COMMUNITIES = [
+  {
+    id:'comm_norcal_hikers',
+    name:'NorCal Hikers',
+    description:'Trails, peaks, and hidden routes across Northern California',
+    memberCount:1240,
+    privacy:'public',
+    adminId:'demo_u5',
+    coverGradient:'linear-gradient(135deg,#0d2a1a,#1a4a2a)',
+    posts:[
+      {id:'cp_001',userId:'demo_u1',username:'kai_explores',
+       caption:'Lost Coast Trail sections 2–4 are completely clear after last week\'s repairs. 25 miles of coastline with zero cell service and zero crowds.',
+       photos:['https://images.unsplash.com/photo-1465804575741-338df8554e02?w=800'],
+       likes:['u1','u2','u3','u4','u5'],commentsCount:7,
+       createdAt:new Date(Date.now()-86400000*1).toISOString(),communityId:'comm_norcal_hikers'},
+      {id:'cp_002',userId:'demo_u3',username:'pointreyes.collective',
+       caption:'Spring wildflower report: Marin Headlands is absolutely peaking right now. Tennessee Valley trail is the move.',
+       photos:['https://images.unsplash.com/photo-1501854140801-50d01698950b?w=800'],
+       likes:['u2','u3','u4'],commentsCount:4,
+       createdAt:new Date(Date.now()-86400000*3).toISOString(),communityId:'comm_norcal_hikers'},
+      {id:'cp_003',userId:'demo_u8',username:'lassen.adventures',
+       caption:'Chaos Crags summit yesterday. Snow is fully gone above 8k, trail conditions are perfect. Bring layers.',
+       photos:['https://images.unsplash.com/photo-1469474968028-56623f02e42e?w=800'],
+       likes:['u1','u2','u5','u6'],commentsCount:9,
+       createdAt:new Date(Date.now()-86400000*5).toISOString(),communityId:'comm_norcal_hikers'}
+    ]
+  },
+  {
+    id:'comm_bay_swimmers',
+    name:'Bay Area Swimmers',
+    description:'Open water swimming spots, conditions, and crew swims around the Bay',
+    memberCount:512,
+    privacy:'public',
+    adminId:'demo_u2',
+    coverGradient:'linear-gradient(135deg,#0a1a2e,#1a3a5c)',
+    posts:[
+      {id:'cp_004',userId:'demo_u2',username:'sierralocal',
+       caption:'Marshall Beach conditions this morning: 58°F, 2ft chop, visibility about 4ft. Doable with a wetsuit. Alcatraz looked close today.',
+       photos:['https://images.unsplash.com/photo-1504701954957-2010ec3bcec1?w=800'],
+       likes:['u1','u3','u4','u5','u6','u7'],commentsCount:11,
+       createdAt:new Date(Date.now()-86400000*1).toISOString(),communityId:'comm_bay_swimmers'},
+      {id:'cp_005',userId:'demo_u6',username:'tahoe.wild',
+       caption:'Anyone want to crew swim Tahoe to Fallen Leaf next month? Looking for 4-6 people, 5am start. Cold water experience required.',
+       photos:['https://images.unsplash.com/photo-1439853949212-36589f9a5aae?w=800'],
+       likes:['u2','u3','u4'],commentsCount:18,
+       createdAt:new Date(Date.now()-86400000*4).toISOString(),communityId:'comm_bay_swimmers'},
+      {id:'cp_006',userId:'demo_u7',username:'coastwatcher',
+       caption:'Ocean Beach rip currents are nasty this week. Stick to Aquatic Park or Crissy Field until conditions improve.',
+       photos:[],
+       likes:['u1','u2','u3','u5'],commentsCount:6,
+       createdAt:new Date(Date.now()-86400000*6).toISOString(),communityId:'comm_bay_swimmers'}
+    ]
+  },
+  {
+    id:'comm_cave_divers',
+    name:'NorCal Cave Divers',
+    description:'Caves, lava tubes, and underground exploration in Northern CA',
+    memberCount:187,
+    privacy:'public',
+    adminId:'demo_u4',
+    coverGradient:'linear-gradient(135deg,#1a0a2e,#2d1a50)',
+    posts:[
+      {id:'cp_007',userId:'demo_u4',username:'norcal.trails',
+       caption:'Subway Cave lava tube in Lassen NF: 1,300ft long, 55°F year-round, no permit needed. Perfect beginner cave.',
+       photos:['https://images.unsplash.com/photo-1508739773434-c26b3d09e071?w=800'],
+       likes:['u1','u2','u3','u4','u5','u6','u7','u8'],commentsCount:14,
+       createdAt:new Date(Date.now()-86400000*2).toISOString(),communityId:'comm_cave_divers'},
+      {id:'cp_008',userId:'demo_u1',username:'kai_explores',
+       caption:'Moaning Caverns vertical descent rescheduled to next Saturday. 4 spots still open. DM me if you want in — it\'s a 165ft free rappel.',
+       photos:[],
+       likes:['u2','u3','u4'],commentsCount:21,
+       createdAt:new Date(Date.now()-86400000*7).toISOString(),communityId:'comm_cave_divers'},
+      {id:'cp_009',userId:'demo_u9',username:'big.sur.daily',
+       caption:'Sea cave access at low tide this weekend: Partington Cove is a go. Bring a headlamp, the tunnel is about 120ft long.',
+       photos:['https://images.unsplash.com/photo-1499336315816-097655dcfbda?w=800'],
+       likes:['u1','u3','u5','u6'],commentsCount:8,
+       createdAt:new Date(Date.now()-86400000*9).toISOString(),communityId:'comm_cave_divers'}
+    ]
+  },
+  {
+    id:'comm_urban_explore',
+    name:'Urban Explorers CA',
+    description:'Abandoned buildings, rooftops, tunnels, and infrastructure — California chapter',
+    memberCount:893,
+    privacy:'public',
+    adminId:'demo_u7',
+    coverGradient:'linear-gradient(135deg,#1a0d0d,#3a1a1a)',
+    posts:[
+      {id:'cp_010',userId:'demo_u7',username:'coastwatcher',
+       caption:'Sutro Baths after-hours: the ruins take on a completely different energy at dusk. Bring a tripod if you shoot long exposure.',
+       photos:['https://images.unsplash.com/photo-1499336315816-097655dcfbda?w=800'],
+       likes:['u1','u2','u3','u4','u5','u6','u7','u8','u9'],commentsCount:19,
+       createdAt:new Date(Date.now()-86400000*1).toISOString(),communityId:'comm_urban_explore'},
+      {id:'cp_011',userId:'demo_u5',username:'wildpath_official',
+       caption:'The old Marin Civic Center tunnels are accessible again after the fence repair. Access point is on the west side near the parking structure.',
+       photos:[],
+       likes:['u1','u3','u5','u7'],commentsCount:34,
+       createdAt:new Date(Date.now()-86400000*5).toISOString(),communityId:'comm_urban_explore'},
+      {id:'cp_012',userId:'demo_u10',username:'humboldt.redwoods',
+       caption:'Pacific Gas & Electric substation ruins near Eureka. Incredible industrial decay. Access is technically public land.',
+       photos:['https://images.unsplash.com/photo-1448375240586-882707db888b?w=800'],
+       likes:['u2','u4','u6','u8'],commentsCount:12,
+       createdAt:new Date(Date.now()-86400000*8).toISOString(),communityId:'comm_urban_explore'}
+    ]
+  }
+];

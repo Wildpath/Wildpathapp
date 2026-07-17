@@ -5384,10 +5384,13 @@ function buildOfflineAreasList(){
   return areas.map((a,i)=>`
     <div class="offline-row">
       <div>
-        <div style="font-size:13px;font-weight:700;color:var(--txt0)">${a.name||'Unnamed Area'}</div>
+        <div style="font-size:13px;font-weight:700;color:var(--txt0)">${sanitize(a.name)||'Unnamed Area'}</div>
         <div style="font-size:11px;color:var(--txt3);margin-top:3px">${a.sizeMB||'?'} MB · ${a.date||'Unknown date'}</div>
       </div>
-      <button onclick="deleteOfflineArea(${i})" style="background:rgba(196,82,74,.15);color:var(--red);border:1px solid rgba(196,82,74,.25);padding:6px 12px;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">Delete</button>
+      <div style="display:flex;gap:6px;flex-shrink:0">
+        <button onclick="_sfViewOffline(${i})" style="background:rgba(184,232,122,.12);color:var(--accent);border:1px solid rgba(184,232,122,.25);padding:6px 12px;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">View</button>
+        <button onclick="deleteOfflineArea(${i})" style="background:rgba(196,82,74,.15);color:var(--red);border:1px solid rgba(196,82,74,.25);padding:6px 12px;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">Delete</button>
+      </div>
     </div>`).join('');
 }
 
@@ -5396,7 +5399,7 @@ function deleteOfflineArea(idx){
   const name=areas[idx]?.name||'Area';
   areas.splice(idx,1);
   localStorage.setItem('wp_offline_areas',JSON.stringify(areas));
-  showToast('${name} deleted');
+  showToast(`${name} deleted`);
   openSettingsPanel('offline');
 }
 
@@ -5411,8 +5414,23 @@ function closeOfflineDownload(){
 }
 
 function startOfflineDownload(){
+  if(!map){closeOfflineDownload();return;}
+  const nameInp=document.getElementById('offlineAreaName');
+  const name=(nameInp?.value||'').trim()||`Area ${(JSON.parse(localStorage.getItem('wp_offline_areas')||'[]')).length+1}`;
+  const b=map.getBounds();
+  const ne={lat:b.getNorthEast().lat,lng:b.getNorthEast().lng};
+  const sw={lat:b.getSouthWest().lat,lng:b.getSouthWest().lng};
+  const wFrac=(100-_offlineRect.left-_offlineRect.right)/100;
+  const hFrac=(100-_offlineRect.top-_offlineRect.bottom)/100;
+  const tileUrls=_getTileUrlsForBounds(b,8,_offlineZoom);
+  const sizeMB=Math.min(Math.round(_estimateTileCount(wFrac,hFrac,8,_offlineZoom)*0.015),999);
+  const allS=[...spots,...userSpots];
+  const spotIds=allS.filter(s=>s.lat>=sw.lat&&s.lat<=ne.lat&&s.lng>=sw.lng&&s.lng<=ne.lng).map(s=>s.id);
+  const areas=JSON.parse(localStorage.getItem('wp_offline_areas')||'[]');
+  areas.push({name,date:new Date().toLocaleDateString(),sizeMB,bounds:{ne,sw},zoomRange:`z8–${_offlineZoom}`,tileUrls,spotIds,createdAt:Date.now()});
+  localStorage.setItem('wp_offline_areas',JSON.stringify(areas));
   closeOfflineDownload();
-  showToast('Offline maps available in the mobile app');
+  showToast(`"${name}" saved for offline use`);
 }
 
 function _getTileUrlsForBounds(bounds,zMin,zMax){
@@ -6143,7 +6161,11 @@ function _buildOfflinePanel(panel){
       <div style="font-size:16px;font-weight:800;color:var(--txt0)">Download Area</div>
       <button onclick="closeOfflineDownload()" style="background:var(--bg3);border:none;color:var(--txt1);width:28px;height:28px;border-radius:50%;font-size:14px;cursor:pointer">×</button>
     </div>
-    <p style="font-size:12px;color:var(--txt2);margin-bottom:12px">Drag the corner handles to resize the area. Higher zoom = more detail but larger file.</p>
+    <p style="font-size:12px;color:var(--txt2);margin-bottom:12px">Pinch to zoom the map, or use the buttons below, then drag the corner handles to resize the area.</p>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <div onclick="_mapZoomStep(-1)" style="flex:1;text-align:center;padding:8px;background:var(--bg2);border:1px solid var(--border2);border-radius:10px;font-size:16px;font-weight:700;color:var(--txt1);cursor:pointer">−</div>
+      <div onclick="_mapZoomStep(1)" style="flex:1;text-align:center;padding:8px;background:var(--bg2);border:1px solid var(--border2);border-radius:10px;font-size:16px;font-weight:700;color:var(--txt1);cursor:pointer">+</div>
+    </div>
     <!-- Preset buttons -->
     <div style="display:flex;gap:8px;margin-bottom:12px">
       <button onclick="setOfflinePreset('small')" style="flex:1;padding:8px;background:var(--bg2);border:1px solid var(--border2);color:var(--txt1);border-radius:10px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit"> Small</button>
@@ -6396,6 +6418,13 @@ let _compassHeading=0;
 let _compassWatchId=null;
 let _compassAnimId=null;
 let _compassGpsWatchId=null;
+
+// ── Zoom pill: one level per tap, 300ms animation ──
+function _mapZoomStep(dir){
+  if(!map)return;
+  const target=map.getZoom()+dir;
+  map.easeTo({zoom:target,duration:300});
+}
 
 // ── Compass button: tap = reset map to north, long-press = open detailed panel ──
 function resetMapNorth(){
@@ -6766,10 +6795,13 @@ function _buildSettingsFull(){
 
   const offlineMapsHtml=offlineAreas.length?offlineAreas.map((a,i)=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
     <div>
-      <div style="font-size:13px;color:var(--txt0)">${a.name||'Downloaded Area '+(i+1)}</div>
-      <div style="font-size:11px;color:var(--txt3)">${a.date||''}</div>
+      <div style="font-size:13px;color:var(--txt0)">${sanitize(a.name)||'Downloaded Area '+(i+1)}</div>
+      <div style="font-size:11px;color:var(--txt3)">${a.sizeMB?a.sizeMB+' MB · ':''}${a.date||''}</div>
     </div>
-    <div onclick="_sfDeleteOffline(${i})" style="color:var(--red);font-size:13px;font-weight:600;cursor:pointer;padding:4px 8px">Remove</div>
+    <div style="display:flex;gap:4px;flex-shrink:0">
+      <div onclick="_sfViewOffline(${i})" style="color:var(--accent);font-size:13px;font-weight:600;cursor:pointer;padding:4px 8px">View</div>
+      <div onclick="_sfDeleteOffline(${i})" style="color:var(--red);font-size:13px;font-weight:600;cursor:pointer;padding:4px 8px">Remove</div>
+    </div>
   </div>`).join(''):'<div style="font-size:12px;color:var(--txt3);padding:8px 0">No areas downloaded</div>';
 
   body.innerHTML=`
@@ -6884,6 +6916,17 @@ function _sfSetMapStyle(s){
   showToast('Map style: '+s);
   _buildSettingsFull();
 }
+function _sfViewOffline(i){
+  const areas=JSON.parse(localStorage.getItem('wp_offline_areas')||'[]');
+  const a=areas[i];
+  if(!a||!map)return;
+  closeSettingsFull();
+  showTab('map');
+  setTimeout(()=>{
+    if(a.bounds)map.fitBounds([[a.bounds.sw.lng,a.bounds.sw.lat],[a.bounds.ne.lng,a.bounds.ne.lat]],{padding:40,duration:800});
+    showToast(`Viewing "${a.name||'downloaded area'}"`);
+  },350);
+}
 function _sfDeleteOffline(i){
   const areas=JSON.parse(localStorage.getItem('wp_offline_areas')||'[]');
   areas.splice(i,1);
@@ -6891,11 +6934,52 @@ function _sfDeleteOffline(i){
   showToast('Offline area removed');
   _buildSettingsFull();
 }
+function openMyDownloadsSheet(){
+  const areas=JSON.parse(localStorage.getItem('wp_offline_areas')||'[]');
+  const existing=document.getElementById('_myDownloadsSheet');
+  if(existing)existing.remove();
+  const sheet=document.createElement('div');
+  sheet.id='_myDownloadsSheet';
+  sheet.style.cssText='position:absolute;inset:0;z-index:800;background:rgba(0,0,0,.75);display:flex;align-items:flex-end';
+  sheet.onclick=(e)=>{if(e.target===sheet)sheet.remove();};
+  sheet.innerHTML=`<div style="background:var(--bg1);border-radius:20px 20px 0 0;width:100%;max-height:75vh;overflow-y:auto;padding:0 0 calc(env(safe-area-inset-bottom,0px)+16px)">
+    <div style="padding:16px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+      <div style="font-size:16px;font-weight:700;color:var(--txt0)">My Downloads</div>
+      <button onclick="document.getElementById('_myDownloadsSheet').remove()" style="background:var(--bg2);border:1px solid var(--border);color:var(--txt1);border-radius:50%;width:32px;height:32px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px">×</button>
+    </div>
+    ${areas.length?areas.map((a,i)=>`
+      <div onclick="_flyToDownloadedArea(${i})" style="padding:12px 14px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;gap:12px;align-items:center">
+        <div style="width:44px;height:44px;border-radius:12px;background:var(--bg3);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--accent)" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        </div>
+        <div style="flex:1">
+          <div style="font-size:14px;font-weight:700;color:var(--txt0)">${sanitize(a.name)||'Downloaded Area'}</div>
+          <div style="font-size:12px;color:var(--txt3);margin-top:2px">${a.sizeMB?a.sizeMB+' MB · ':''}${a.date||''}</div>
+        </div>
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--txt3)" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+      </div>`).join(''):`<div style="padding:32px;text-align:center;color:var(--txt3);font-size:13px">No areas downloaded yet.<br><br><span onclick="document.getElementById('_myDownloadsSheet')?.remove();openOfflineDownload()" style="color:var(--accent);font-weight:700;cursor:pointer">Download an area →</span></div>`}
+  </div>`;
+  document.getElementById('app').appendChild(sheet);
+}
+function _flyToDownloadedArea(i){
+  const areas=JSON.parse(localStorage.getItem('wp_offline_areas')||'[]');
+  const a=areas[i];
+  document.getElementById('_myDownloadsSheet')?.remove();
+  if(!a?.bounds||!map)return;
+  map.fitBounds([[a.bounds.sw.lng,a.bounds.sw.lat],[a.bounds.ne.lng,a.bounds.ne.lat]],{padding:40,duration:800});
+  showToast(`Viewing "${a.name||'downloaded area'}"`);
+}
+
 function _sfDownloadCurrentView(){
   const bounds=leafletMap.getBounds();
   const ne=bounds.getNorthEast();const sw=bounds.getSouthWest();
   const areas=JSON.parse(localStorage.getItem('wp_offline_areas')||'[]');
-  areas.push({name:`Area ${areas.length+1}`,date:new Date().toLocaleDateString(),bounds:{ne,sw}});
+  const allS=[...spots,...userSpots];
+  const spotIds=allS.filter(s=>s.lat>=sw.lat&&s.lat<=ne.lat&&s.lng>=sw.lng&&s.lng<=ne.lng).map(s=>s.id);
+  const zoom=map?Math.round(map.getZoom()):12;
+  const tileUrls=map?_getTileUrlsForBounds(bounds,8,zoom):[];
+  const sizeMB=Math.min(Math.round(tileUrls.length*0.015),999);
+  areas.push({name:`Area ${areas.length+1}`,date:new Date().toLocaleDateString(),sizeMB,zoomRange:`z8–${zoom}`,bounds:{ne,sw},tileUrls,spotIds,createdAt:Date.now()});
   localStorage.setItem('wp_offline_areas',JSON.stringify(areas));
   showToast('Map view saved for offline use');
   _buildSettingsFull();
