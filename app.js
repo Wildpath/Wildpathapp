@@ -288,7 +288,7 @@ async function _sbHydrate(){
     await Promise.allSettled([
       run('posts',_sbLoadPosts),run('messages',_sbLoadMessages),run('follows',_sbLoadFollows),
       run('notifications',_sbLoadNotifications),run('saved',_sbLoadSaved),run('pending spots',_sbLoadPendingSpots),
-      run('personal spots',_sbLoadPersonalSpots),run('saved places',_sbLoadSavedPlaces)
+      run('personal spots',_sbLoadPersonalSpots),run('saved places',_sbLoadSavedPlaces),run('my hikes',_loadMyHikes)
     ]);
     _sbHydrated=true;
     try{_sbSubscribeRealtime();}catch(e){console.warn('[Supabase] realtime:',e);}
@@ -5003,127 +5003,269 @@ function startHikeTracking(){
     </div>`;
   document.body.appendChild(modal);
 }
+let _lastHikePointTime=0;
 function _beginHikeTracking(){
   _hikePoints=[];
   _hikeStartTime=Date.now();
-  // Show pill
+  _lastHikePointTime=0;
+  _clearLiveHikeLine();
   const pill=document.getElementById('hikeTrackingPill');
   if(pill)pill.style.display='flex';
-  // Start timer
   _hikeTimerInterval=setInterval(_updateHikePill,1000);
-  // Watch position
+  // Record a GPS point every 5 seconds (per spec), high accuracy
   _hikeWatchId=navigator.geolocation.watchPosition(
     pos=>{
-      const pt={lat:pos.coords.latitude,lng:pos.coords.longitude,ts:Date.now()};
+      const now=Date.now();
+      if(now-_lastHikePointTime<5000)return;
+      _lastHikePointTime=now;
+      const pt={lat:pos.coords.latitude,lng:pos.coords.longitude,alt:pos.coords.altitude,ts:now};
       _hikePoints.push(pt);
       localStorage.setItem('wildpath-active-hike',JSON.stringify({points:_hikePoints,startTime:_hikeStartTime}));
       _updateHikePill();
+      _drawLiveHikeLine();
     },
     ()=>{},
-    {enableHighAccuracy:true,timeout:10000,maximumAge:5000}
+    {enableHighAccuracy:true,timeout:10000,maximumAge:0}
   );
   showToast('Hike tracking started');
+}
+function _drawLiveHikeLine(){
+  if(!map||_hikePoints.length<2)return;
+  const coords=_hikePoints.map(p=>[p.lng,p.lat]);
+  const geo={type:'Feature',geometry:{type:'LineString',coordinates:coords}};
+  if(map.getSource('live-hike-src')){map.getSource('live-hike-src').setData(geo);return;}
+  map.addSource('live-hike-src',{type:'geojson',data:geo});
+  map.addLayer({id:'live-hike-line',type:'line',source:'live-hike-src',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':'#B8E87A','line-width':4,'line-opacity':.9}});
+}
+function _clearLiveHikeLine(){
+  if(!map)return;
+  try{if(map.getLayer('live-hike-line'))map.removeLayer('live-hike-line');}catch(e){}
+  try{if(map.getSource('live-hike-src'))map.removeSource('live-hike-src');}catch(e){}
 }
 function _updateHikePill(){
   const pill=document.getElementById('hikeTrackingPill');
   if(!pill)return;
   const elapsedSec=Math.floor((Date.now()-(_hikeStartTime||Date.now()))/1000);
   const h=Math.floor(elapsedSec/3600),m=Math.floor((elapsedSec%3600)/60),s=elapsedSec%60;
-  const timeStr=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  const timeStr=h>0?`${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${m}:${String(s).padStart(2,'0')}`;
   const distMeters=_hikePoints.reduce((acc,pt,i)=>{
     if(i===0)return 0;
     return acc+_haversine(pt.lat,pt.lng,_hikePoints[i-1].lat,_hikePoints[i-1].lng);
   },0);
+  const distMi=distMeters*0.000621371;
   const useKm=localStorage.getItem('wp_units')==='km';
-  const distStr=useKm?(distMeters/1000).toFixed(2)+' km':(distMeters*0.000621371).toFixed(2)+' mi';
+  const distStr=useKm?(distMeters/1000).toFixed(2)+' km':distMi.toFixed(2)+' mi';
   const timeEl=document.getElementById('hikePillTime');
   const distEl=document.getElementById('hikePillDist');
+  const paceEl=document.getElementById('hikePillPace');
   if(timeEl)timeEl.textContent=timeStr;
   if(distEl)distEl.textContent=distStr;
+  if(paceEl){
+    if(distMi>0.05){
+      const paceMinPerMi=(elapsedSec/60)/distMi;
+      const pm=Math.floor(paceMinPerMi),ps=Math.round((paceMinPerMi-pm)*60);
+      paceEl.textContent=`${pm}:${String(ps).padStart(2,'0')}/mi`;
+    } else {
+      paceEl.textContent='—';
+    }
+  }
 }
 function stopHikeTracking(){
   if(_hikeWatchId!==null){navigator.geolocation.clearWatch(_hikeWatchId);_hikeWatchId=null;}
   clearInterval(_hikeTimerInterval);_hikeTimerInterval=null;
   const pill=document.getElementById('hikeTrackingPill');
   if(pill)pill.style.display='none';
+  _clearLiveHikeLine();
   const elapsedSec=Math.floor((Date.now()-(_hikeStartTime||Date.now()))/1000);
   const distMeters=_hikePoints.reduce((acc,pt,i)=>{
     if(i===0)return 0;
     return acc+_haversine(pt.lat,pt.lng,_hikePoints[i-1].lat,_hikePoints[i-1].lng);
   },0);
+  const distMi=distMeters*0.000621371;
   const useKm=localStorage.getItem('wp_units')==='km';
-  const distStr=useKm?(distMeters/1000).toFixed(2)+' km':(distMeters*0.000621371).toFixed(2)+' mi';
+  const distStr=useKm?(distMeters/1000).toFixed(2)+' km':distMi.toFixed(2)+' mi';
   const h=Math.floor(elapsedSec/3600),m=Math.floor((elapsedSec%3600)/60),s=elapsedSec%60;
   const timeStr=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-  _showHikeSummary({points:_hikePoints,distStr,timeStr,elapsedSec,distMeters});
+  // Elevation gain: sum of positive altitude deltas between consecutive points (meters -> feet)
+  let elevGainM=0;
+  for(let i=1;i<_hikePoints.length;i++){
+    const a0=_hikePoints[i-1].alt,a1=_hikePoints[i].alt;
+    if(a0!=null&&a1!=null&&a1>a0)elevGainM+=(a1-a0);
+  }
+  const elevGainFt=Math.round(elevGainM*3.28084);
+  const paceMinPerMi=distMi>0.05?(elapsedSec/60)/distMi:null;
+  const paceStr=paceMinPerMi?`${Math.floor(paceMinPerMi)}:${String(Math.round((paceMinPerMi-Math.floor(paceMinPerMi))*60)).padStart(2,'0')}/mi`:'—';
+  _showHikeSummary({points:_hikePoints,distStr,distMi,timeStr,elapsedSec,distMeters,elevGainFt,paceStr});
   localStorage.removeItem('wildpath-active-hike');
 }
 function _showHikeSummary(hike){
-  // Store in global so onclick buttons can reference it safely
   window._lastHikeData=hike;
   const overlay=document.createElement('div');
+  overlay.id='_hikeSummaryOverlay';
   overlay.style.cssText='position:fixed;inset:0;z-index:700;background:var(--bg0);display:flex;flex-direction:column;overflow:hidden';
+  const dateName='Hike '+new Date().toLocaleDateString('en-US',{month:'long',day:'numeric'});
   overlay.innerHTML=`
     <div style="display:flex;align-items:center;padding:52px 16px 14px;border-bottom:1px solid var(--border);flex-shrink:0">
-      <div onclick="this.closest('[style*=fixed]').remove()" style="font-size:22px;color:var(--txt0);cursor:pointer;padding:0 12px 0 0">←</div>
+      <div onclick="this.closest('#_hikeSummaryOverlay').remove()" style="font-size:22px;color:var(--txt0);cursor:pointer;padding:0 12px 0 0">←</div>
       <div style="flex:1;font-size:17px;font-weight:700;color:var(--txt0);text-align:center">Hike Summary</div>
       <div style="width:44px"></div>
     </div>
     <div style="flex:1;overflow-y:auto;padding:20px 16px">
-      <div style="display:flex;gap:12px;margin-bottom:20px">
-        <div style="flex:1;background:var(--bg2);border-radius:14px;padding:16px;text-align:center">
-          <div style="font-size:22px;font-weight:800;color:var(--accent)">${hike.distStr}</div>
-          <div style="font-size:11px;color:var(--txt3);margin-top:4px">Distance</div>
+      ${hike.points.length>1?`<div id="hikeSummaryMap" style="width:100%;height:200px;border-radius:14px;overflow:hidden;background:var(--bg2);margin-bottom:16px"></div>`:''}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px">
+        <div style="background:var(--bg2);border-radius:14px;padding:14px;text-align:center">
+          <div style="font-size:20px;font-weight:800;color:var(--txt0)">${hike.timeStr}</div>
+          <div style="font-size:10px;color:var(--txt3);margin-top:4px;text-transform:uppercase;letter-spacing:.5px">Total Time</div>
         </div>
-        <div style="flex:1;background:var(--bg2);border-radius:14px;padding:16px;text-align:center">
-          <div style="font-size:22px;font-weight:800;color:var(--txt0)">${hike.timeStr}</div>
-          <div style="font-size:11px;color:var(--txt3);margin-top:4px">Duration</div>
+        <div style="background:var(--bg2);border-radius:14px;padding:14px;text-align:center">
+          <div style="font-size:20px;font-weight:800;color:var(--accent)">${hike.distStr}</div>
+          <div style="font-size:10px;color:var(--txt3);margin-top:4px;text-transform:uppercase;letter-spacing:.5px">Total Distance</div>
+        </div>
+        <div style="background:var(--bg2);border-radius:14px;padding:14px;text-align:center">
+          <div style="font-size:20px;font-weight:800;color:var(--txt0)">${hike.paceStr}</div>
+          <div style="font-size:10px;color:var(--txt3);margin-top:4px;text-transform:uppercase;letter-spacing:.5px">Average Pace</div>
+        </div>
+        <div style="background:var(--bg2);border-radius:14px;padding:14px;text-align:center">
+          <div style="font-size:20px;font-weight:800;color:var(--txt0)">${hike.elevGainFt?hike.elevGainFt+' ft':'—'}</div>
+          <div style="font-size:10px;color:var(--txt3);margin-top:4px;text-transform:uppercase;letter-spacing:.5px">Elevation Gain</div>
         </div>
       </div>
-      ${hike.points.length?`<div id="hikeSummaryMap" style="width:100%;height:220px;border-radius:14px;overflow:hidden;background:var(--bg2);margin-bottom:20px"></div>`:''}
-      <div style="display:flex;gap:10px">
-        <button onclick="_saveLastHike('private');this.closest('[style*=fixed]').remove()" style="flex:1;padding:14px;background:var(--bg2);border:1.5px solid var(--border2);border-radius:12px;color:var(--txt0);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Save as Private Hike</button>
-        <button onclick="_saveLastHike('public');openCreatePost();this.closest('[style*=fixed]').remove()" style="flex:1;padding:14px;background:var(--accent);border:none;border-radius:12px;color:#0f1a0a;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Share as New Trail</button>
+      <div class="form-group">
+        <label class="form-label">Hike Name</label>
+        <input class="form-input" id="hikeNameInput" value="${dateName}" type="text">
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+        <button onclick="_confirmSaveHike('personal')" style="width:100%;padding:14px;background:var(--accent);border:none;border-radius:12px;color:#0f1a0a;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit">Save to My Hikes</button>
+        <button onclick="_openHikeCommunityPicker()" style="width:100%;padding:14px;background:var(--bg2);border:1.5px solid var(--border2);border-radius:12px;color:var(--txt0);font-size:14px;font-weight:700;cursor:pointer;font-family:inherit">Share to Community</button>
+        <button onclick="_discardHike()" style="width:100%;padding:14px;background:none;border:none;color:var(--red);font-size:13px;font-weight:600;cursor:pointer;font-family:inherit">Discard</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
-  // Try to render map
   if(hike.points.length>1){
-    const token=localStorage.getItem('mapbox-token')||'';
-    if(token){
-      setTimeout(()=>{
-        const mapEl=overlay.querySelector('#hikeSummaryMap');
-        if(!mapEl)return;
-        mapboxgl.accessToken=token;
-        const coords=hike.points.map(p=>[p.lng,p.lat]);
-        const bounds=coords.reduce((b,c)=>b.extend(c),new mapboxgl.LngLatBounds(coords[0],coords[0]));
-        try{
-          const m=new mapboxgl.Map({container:mapEl,style:'mapbox://styles/mapbox/dark-v11',bounds,fitBoundsOptions:{padding:30},interactive:false,attributionControl:false});
-          m.on('load',()=>{
-            m.addSource('route',{type:'geojson',data:{type:'Feature',geometry:{type:'LineString',coordinates:coords}}});
-            m.addLayer({id:'route-line',type:'line',source:'route',paint:{'line-color':'#B8E87A','line-width':3}});
-          });
-        }catch(e){}
-      },100);
-    }
+    setTimeout(()=>{
+      const mapEl=overlay.querySelector('#hikeSummaryMap');
+      if(!mapEl)return;
+      const coords=hike.points.map(p=>[p.lng,p.lat]);
+      const bounds=coords.reduce((b,c)=>b.extend(c),new mapboxgl.LngLatBounds(coords[0],coords[0]));
+      try{
+        const m=new mapboxgl.Map({container:mapEl,style:'mapbox://styles/mapbox/dark-v11',bounds,fitBoundsOptions:{padding:30},interactive:false,attributionControl:false});
+        m.on('load',()=>{
+          m.addSource('route',{type:'geojson',data:{type:'Feature',geometry:{type:'LineString',coordinates:coords}}});
+          m.addLayer({id:'route-line',type:'line',source:'route',paint:{'line-color':'#B8E87A','line-width':3}});
+          const startEl=document.createElement('div');
+          startEl.style.cssText='width:16px;height:16px;border-radius:50%;background:#4CAF50;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.4)';
+          new mapboxgl.Marker({element:startEl}).setLngLat(coords[0]).setPopup(new mapboxgl.Popup({offset:12}).setText('Start')).addTo(m);
+          const endEl=document.createElement('div');
+          endEl.style.cssText='width:16px;height:16px;border-radius:50%;background:#E05252;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.4)';
+          new mapboxgl.Marker({element:endEl}).setLngLat(coords[coords.length-1]).setPopup(new mapboxgl.Popup({offset:12}).setText('End')).addTo(m);
+        });
+      }catch(e){}
+    },100);
   }
 }
-function _saveHike(privacy,hike){
-  const hikes=JSON.parse(localStorage.getItem('wildpath-saved-hikes')||'[]');
-  hikes.push({...hike,privacy,date:new Date().toLocaleDateString(),id:'hike_'+Date.now()});
-  localStorage.setItem('wildpath-saved-hikes',JSON.stringify(hikes));
-  showToast('Hike saved');
-  buildProfile();
+
+function _discardHike(){
+  if(!window.confirm('Discard this hike? This cannot be undone.'))return;
+  document.getElementById('_hikeSummaryOverlay')?.remove();
+  window._lastHikeData=null;
+  showToast('Hike discarded');
 }
-function _saveLastHike(privacy){
+
+async function _confirmSaveHike(visibility,communityId){
+  if(isGuest()){showLoginScreen();return;}
   const hike=window._lastHikeData;
-  if(!hike)return;
-  _saveHike(privacy,hike);
+  if(!hike){showToast('No hike data');return;}
+  const name=(document.getElementById('hikeNameInput')?.value||'').trim()||'Untitled Hike';
+  const btn=event?.target;
+  if(btn){btn.disabled=true;btn.textContent='Saving…';}
+  try{
+    const coords=hike.points.map(p=>[p.lng,p.lat]);
+    const routeGeojson={type:'Feature',geometry:{type:'LineString',coordinates:coords},properties:{}};
+    const row={
+      user_id:_myUid(),name,route_geojson:routeGeojson,difficulty:'Moderate',
+      distance:Math.round((hike.distMi||0)*100)/100,duration:hike.elapsedSec,
+      elevation_gain:hike.elevGainFt||0,visibility,
+      community_id:communityId||null,
+      status:visibility==='global'?'pending':'approved'
+    };
+    const {error}=await db.from('hikes').insert(row);
+    if(error)throw error;
+    // Hikes are also saveable into the user's saved folders (Section 8 requirement)
+    if(coords.length){
+      const mid=coords[Math.floor(coords.length/2)];
+      _savePlaceToFolder('hike',null,name,mid[1],mid[0],'My Hikes').catch(()=>{});
+    }
+    document.getElementById('_hikeSummaryOverlay')?.remove();
+    showToast(visibility==='global'?'Hike submitted for review!':visibility==='community'?'Hike shared to community!':'Hike saved!');
+    _loadMyHikes();
+  }catch(e){
+    console.warn('[Supabase] hike save failed:',e);
+    showToast('Could not save hike — check connection');
+    if(btn){btn.disabled=false;btn.textContent=visibility==='personal'?'Save to My Hikes':'Share to Community';}
+  }
 }
-function _shareHikeAsPost(hike){
-  _saveHike('private',hike);
-  showToast('Opening post creator…');
-  setTimeout(()=>openCreatePost(),300);
+
+function _openHikeCommunityPicker(){
+  const myUid=String(_myUid());
+  const myComms=getCommunities().filter(c=>getMembers(c.id).includes(myUid));
+  if(!myComms.length){showToast('Join a community first');return;}
+  const existing=document.getElementById('_hikeCommPicker');
+  if(existing)existing.remove();
+  const sheet=document.createElement('div');
+  sheet.id='_hikeCommPicker';
+  sheet.style.cssText='position:fixed;inset:0;z-index:9500;display:flex;flex-direction:column;justify-content:flex-end';
+  sheet.onclick=(e)=>{if(e.target===sheet)sheet.remove();};
+  sheet.innerHTML=`<div style="background:var(--bg1);border-radius:20px 20px 0 0;padding:16px;max-height:60vh;overflow-y:auto">
+    <div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:12px">Share to Community</div>
+    ${myComms.map(c=>`<div onclick="document.getElementById('_hikeCommPicker').remove();_confirmSaveHike('community','${c.id}')" style="padding:12px 0;border-bottom:1px solid var(--border);cursor:pointer;font-size:14px;color:var(--txt0);font-weight:600">${sanitize(c.name)}</div>`).join('')}
+  </div>`;
+  document.body.appendChild(sheet);
+}
+
+// ── My Hikes (Profile tab) ──────────────────────────────────────
+let myHikes=[];
+async function _loadMyHikes(){
+  if(isGuest())return;
+  try{
+    const {data,error}=await db.from('hikes').select('*').eq('user_id',_myUid()).order('created_at',{ascending:false});
+    if(error)throw error;
+    myHikes=data||[];
+    _renderMyHikesSection();
+  }catch(e){console.warn('[Supabase] my hikes load:',e);}
+}
+function _renderMyHikesSection(){
+  const el=document.getElementById('myHikesGrid');
+  if(!el)return;
+  if(!myHikes.length){el.innerHTML='<div style="padding:16px;text-align:center;color:var(--txt3);font-size:12px">No hikes recorded yet</div>';return;}
+  el.innerHTML=myHikes.map(h=>{
+    const coords=h.route_geojson?.geometry?.coordinates||[];
+    const diffColor=h.difficulty==='Easy'?'#4CAF50':h.difficulty==='Hard'?'#E05252':'#D4A843';
+    return`<div onclick='_reopenHikeSummary(${JSON.stringify(h.id)})' style="background:var(--bg2);border-radius:14px;padding:12px;margin-bottom:8px;display:flex;gap:12px;align-items:center;cursor:pointer">
+      <div style="width:56px;height:56px;border-radius:10px;background:linear-gradient(135deg,#1a3a2a,#2d5a3a);flex-shrink:0;display:flex;align-items:center;justify-content:center">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#B8E87A" stroke-width="1.8"><path d="M8 3l4 8 5-5 5 15H2z"/></svg>
+      </div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:700;color:var(--txt0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sanitize(h.name)}</div>
+        <div style="font-size:11px;color:var(--txt3);margin-top:2px">${h.distance||0} mi · ${_fmtHikeDuration(h.duration)}</div>
+        <span style="display:inline-block;margin-top:4px;font-size:9px;font-weight:700;color:${diffColor};text-transform:uppercase">${h.difficulty||'Moderate'}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+function _fmtHikeDuration(sec){
+  if(!sec)return '0m';
+  const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60);
+  return h>0?`${h}h ${m}m`:`${m}m`;
+}
+function _reopenHikeSummary(hikeId){
+  const h=myHikes.find(x=>String(x.id)===String(hikeId));
+  if(!h)return;
+  const coords=h.route_geojson?.geometry?.coordinates||[];
+  const points=coords.map(c=>({lng:c[0],lat:c[1]}));
+  const m=Math.floor((h.duration||0)/60),s=(h.duration||0)%60;
+  const hh=Math.floor((h.duration||0)/3600);
+  const timeStr=`${String(hh).padStart(2,'0')}:${String(m%60).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  _showHikeSummary({points,distStr:(h.distance||0)+' mi',distMi:h.distance||0,timeStr,elapsedSec:h.duration||0,elevGainFt:h.elevation_gain||0,paceStr:'—'});
 }
 
 // ═══════════════════════════════════════════════════

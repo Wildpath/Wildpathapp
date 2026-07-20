@@ -158,3 +158,33 @@ create policy "saved_places_select_own" on saved_places for select to authentica
 create policy "saved_places_insert_own" on saved_places for insert to authenticated with check (auth.uid() = user_id);
 create policy "saved_places_delete_own" on saved_places for delete to authenticated using (auth.uid() = user_id);
 ```
+
+## Sections 8 & 9 — REQUIRED: hikes table
+
+```sql
+create table if not exists hikes (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid references profiles(id) not null,
+  name text not null,
+  description text,
+  route_geojson jsonb not null,
+  difficulty text default 'Moderate', -- 'Easy' | 'Moderate' | 'Hard'
+  distance float,          -- miles
+  duration int,            -- seconds
+  elevation_gain float,    -- feet
+  photo_urls text[],
+  visibility text default 'personal', -- 'personal' | 'community' | 'global'
+  community_id uuid references communities(id),
+  status text default 'approved', -- 'approved' for personal/community-approved, 'pending' for global review
+  created_at timestamptz default now()
+);
+alter table hikes enable row level security;
+create policy "hikes_select_own_or_visible" on hikes for select to authenticated
+  using (
+    auth.uid() = user_id
+    or (visibility='community' and exists (select 1 from community_members cm where cm.community_id = hikes.community_id and cm.user_id = auth.uid()))
+    or (visibility='global' and status='approved')
+  );
+create policy "hikes_insert_own" on hikes for insert to authenticated with check (auth.uid() = user_id);
+create policy "hikes_delete_own" on hikes for delete to authenticated using (auth.uid() = user_id);
+```

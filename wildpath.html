@@ -295,14 +295,24 @@
     </div>
 
 
-    <!-- Hike tracking pill -->
-    <div id="hikeTrackingPill" style="display:none;position:absolute;top:calc(52px + 8px);left:50%;transform:translateX(-50%);z-index:95;background:rgba(184,232,122,.15);border:1.5px solid rgba(184,232,122,.5);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-radius:24px;padding:8px 16px;display:none;align-items:center;gap:12px;white-space:nowrap">
+    <!-- Hike recording bar -->
+    <div id="hikeTrackingPill" style="display:none;position:absolute;top:calc(52px + 8px);left:12px;right:12px;z-index:95;background:rgba(20,25,18,.9);border:1.5px solid rgba(184,232,122,.5);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-radius:18px;padding:10px 14px;display:none;align-items:center;gap:14px">
       <div style="width:8px;height:8px;border-radius:50%;background:#ff4d6d;animation:pulse 1s ease-in-out infinite;flex-shrink:0"></div>
-      <div>
-        <div id="hikePillTime" style="font-size:13px;font-weight:700;color:#fff">00:00:00</div>
-        <div id="hikePillDist" style="font-size:11px;color:rgba(184,232,122,.8)">0.0 mi</div>
+      <div style="flex:1;display:flex;justify-content:space-around">
+        <div style="text-align:center">
+          <div id="hikePillTime" style="font-size:14px;font-weight:700;color:#fff">0:00:00</div>
+          <div style="font-size:9px;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.5px">Time</div>
+        </div>
+        <div style="text-align:center">
+          <div id="hikePillDist" style="font-size:14px;font-weight:700;color:#B8E87A">0.0 mi</div>
+          <div style="font-size:9px;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.5px">Distance</div>
+        </div>
+        <div style="text-align:center">
+          <div id="hikePillPace" style="font-size:14px;font-weight:700;color:#fff">—</div>
+          <div style="font-size:9px;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.5px">Pace</div>
+        </div>
       </div>
-      <div onclick="stopHikeTracking()" style="padding:6px 12px;background:rgba(196,82,74,.3);border:1px solid rgba(196,82,74,.5);border-radius:12px;font-size:12px;font-weight:700;color:#fff;cursor:pointer;-webkit-tap-highlight-color:transparent">Stop</div>
+      <div onclick="stopHikeTracking()" style="padding:8px 14px;background:#C4524A;border-radius:12px;font-size:12px;font-weight:700;color:#fff;cursor:pointer;-webkit-tap-highlight-color:transparent;flex-shrink:0">Stop</div>
     </div>
 
     <!-- Offline download overlay -->
@@ -1231,6 +1241,12 @@
         </button>
       </div>
 
+      <!-- My Hikes -->
+      <div style="padding:0 14px 14px">
+        <div style="font-size:13px;font-weight:700;color:var(--txt0);margin-bottom:8px">My Hikes</div>
+        <div id="myHikesGrid"></div>
+      </div>
+
       <!-- Posts / Tagged tab row -->
       <div style="display:flex;border-bottom:1px solid var(--border)">
         <div id="profileTabPosts" onclick="switchProfileTab('posts')" style="flex:1;display:flex;align-items:center;justify-content:center;padding:10px 0;border-bottom:2px solid var(--accent);cursor:pointer;gap:6px">
@@ -1991,7 +2007,7 @@
 </div><!-- #app -->
 
 
-<script src="data.js?v=23"></script>
-<script src="app.js?v=23"></script>
+<script src="data.js?v=24"></script>
+<script src="app.js?v=24"></script>
 </body>
 </html>
