@@ -1,5 +1,11 @@
 # WildPath — Supabase Setup (do these two things once)
 
+> **STATUS (2026-07-20): ALL SQL BLOCKS BELOW HAVE BEEN APPLIED to the live database**
+> (show_on_spot column, storage RLS policies, personal_spots, community_pending_spots,
+> spots.community_id, saved_places, hikes + all 8 hike policies). Verified via
+> information_schema/pg_policies after each block. Nothing below is pending; this file
+> is kept as the schema reference.
+
 ## 1. Create the database tables
 
 1. Open https://supabase.com/dashboard/project/nkrphmjzyzeplzcgndxg/sql/new
