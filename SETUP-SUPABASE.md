@@ -11,10 +11,12 @@
 
 Open https://supabase.com/dashboard/project/nkrphmjzyzeplzcgndxg/storage/buckets
 
-For EACH of these four buckets — `avatars`, `post-media`, `spot-photos`, `community-covers` — do this:
+For EACH of these four buckets — `Avatars`, `Post Media`, `Spot Photos`, `Community Covers` —
+(names must match this capitalization exactly; the app code and the Section 11 RLS policies
+below both reference these exact strings) do this:
 
 1. Click the green **New bucket** button (top right)
-2. In **Name of bucket** type the bucket name exactly (e.g. `avatars`)
+2. In **Name of bucket** type the bucket name exactly (e.g. `Avatars`)
 3. Toggle **Public bucket** ON (this lets the app display images via public URLs)
 4. Click **Additional configuration** to expand it
 5. Toggle **Restrict file upload size for bucket** ON and enter `10` MB
@@ -22,8 +24,8 @@ For EACH of these four buckets — `avatars`, `post-media`, `spot-photos`, `comm
 6. Click **Save** / **Create bucket**
 7. Repeat for the next bucket name
 
-After creating all four you should see: avatars, post-media, spot-photos,
-community-covers — each marked PUBLIC in the bucket list.
+After creating all four you should see: Avatars, Post Media, Spot Photos,
+Community Covers — each marked PUBLIC in the bucket list.
 
 ## 3. Make yourself admin (after you sign up in the app)
 
@@ -179,12 +181,37 @@ create table if not exists hikes (
   created_at timestamptz default now()
 );
 alter table hikes enable row level security;
+-- Members see only APPROVED community hikes; community admins/moderators can also
+-- see pending ones (needed for the approval queue); app admins see pending global
+-- hikes (needed for the Admin Panel review).
 create policy "hikes_select_own_or_visible" on hikes for select to authenticated
   using (
     auth.uid() = user_id
-    or (visibility='community' and exists (select 1 from community_members cm where cm.community_id = hikes.community_id and cm.user_id = auth.uid()))
+    or (visibility='community' and status='approved' and exists (select 1 from community_members cm where cm.community_id = hikes.community_id and cm.user_id = auth.uid()))
+    or (visibility='community' and exists (select 1 from community_members cm where cm.community_id = hikes.community_id and cm.user_id = auth.uid() and cm.role in ('admin','moderator')))
     or (visibility='global' and status='approved')
+    or (visibility='global' and exists (select 1 from profiles p where p.id = auth.uid() and p.role = 'admin'))
   );
 create policy "hikes_insert_own" on hikes for insert to authenticated with check (auth.uid() = user_id);
+-- Approvals are updates (status pending -> approved), so update policies are
+-- REQUIRED — without them RLS silently blocks every approve with 0 rows updated.
+create policy "hikes_update_comm_admin_mod" on hikes for update to authenticated
+  using (
+    visibility='community' and exists (select 1 from community_members cm where cm.community_id = hikes.community_id and cm.user_id = auth.uid() and cm.role in ('admin','moderator'))
+  );
+create policy "hikes_update_app_admin" on hikes for update to authenticated
+  using (
+    visibility='global' and exists (select 1 from profiles p where p.id = auth.uid() and p.role = 'admin')
+  );
+create policy "hikes_update_own" on hikes for update to authenticated using (auth.uid() = user_id);
+-- Rejection deletes the row, so approvers need delete too, not just the owner.
 create policy "hikes_delete_own" on hikes for delete to authenticated using (auth.uid() = user_id);
+create policy "hikes_delete_comm_admin_mod" on hikes for delete to authenticated
+  using (
+    visibility='community' and exists (select 1 from community_members cm where cm.community_id = hikes.community_id and cm.user_id = auth.uid() and cm.role in ('admin','moderator'))
+  );
+create policy "hikes_delete_app_admin" on hikes for delete to authenticated
+  using (
+    visibility='global' and exists (select 1 from profiles p where p.id = auth.uid() and p.role = 'admin')
+  );
 ```

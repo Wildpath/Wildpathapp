@@ -1393,6 +1393,9 @@ function _renderHikePins(){
   _hikeMarkers.forEach(mk=>{try{mk.remove();}catch(e){}});
   _hikeMarkers=[];
   allHikes.forEach(h=>{
+    // Pending hikes never show as map pins for anyone but their creator —
+    // they surface only in the relevant approval queue until approved.
+    if(h.status!=='approved'&&String(h.user_id)!==String(_myUid()))return;
     const coords=h.route_geojson?.geometry?.coordinates;
     if(!coords||!coords.length)return;
     const trailhead=coords[0]; // [lng,lat]
@@ -2797,6 +2800,9 @@ function _buildAdminSection(){
         <button onclick="_showPendingSpots()" style="flex:1;padding:10px;background:rgba(212,135,74,.15);border:1px solid rgba(212,135,74,.4);border-radius:10px;color:#D4874A;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">
           Pending Spots ${pending.length>0?`(${pending.length})`:''}
         </button>
+        <button onclick="_showPendingHikes()" style="flex:1;padding:10px;background:rgba(212,135,74,.15);border:1px solid rgba(212,135,74,.4);border-radius:10px;color:#D4874A;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">
+          Pending Hikes
+        </button>
         <button onclick="_showManageSpots()" style="flex:1;padding:10px;background:rgba(184,232,122,.1);border:1px solid rgba(184,232,122,.3);border-radius:10px;color:var(--accent);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">
           Manage Spots
         </button>
@@ -2831,11 +2837,62 @@ function _showPendingSpots(){
         <div style="font-size:11px;color:var(--txt3);margin-top:4px">${(+s.lat).toFixed(5)}, ${(+s.lng).toFixed(5)}</div>
         ${s.reviews_data?.[0]?.text?`<div style="font-size:12px;color:var(--txt2);margin-top:6px;line-height:1.5">${sanitize(s.reviews_data[0].text)}</div>`:''}
         <div class="pending-spot-btns">
-          <button class="pending-approve" onclick="approveSpot(${s._pendingId});this.closest('.pending-spot-row').remove();showToast('Approved!')">Approve</button>
-          <button class="pending-reject" onclick="rejectSpot(${s._pendingId});this.closest('.pending-spot-row').remove();showToast('Rejected')">Reject</button>
+          <button class="pending-approve" onclick="approveSpot('${s._pendingId}');this.closest('.pending-spot-row').remove();showToast('Approved!')">Approve</button>
+          <button class="pending-reject" onclick="rejectSpot('${s._pendingId}');this.closest('.pending-spot-row').remove();showToast('Rejected')">Reject</button>
         </div>
       </div>`).join('')}`;
   overlay.style.display='flex';
+}
+
+// Global-tier hikes need the same app-admin review path as global spots —
+// without this they would sit at status 'pending' forever.
+async function _showPendingHikes(){
+  if(!isAdmin())return;
+  let rows=[];
+  try{
+    const {data,error}=await db.from('hikes').select('*').eq('visibility','global').eq('status','pending').order('created_at');
+    if(error)throw error;
+    rows=data||[];
+  }catch(e){
+    console.warn('[Supabase] pending hikes load:',e);
+    showToast('Could not load pending hikes');
+    return;
+  }
+  if(!rows.length){showToast('No hikes pending review');return;}
+  let overlay=document.getElementById('pendingHikesOverlay');
+  if(!overlay){
+    overlay=document.createElement('div');
+    overlay.id='pendingHikesOverlay';
+    overlay.style.cssText='position:absolute;inset:0;background:var(--bg0);z-index:9100;overflow-y:auto;display:flex;flex-direction:column;padding:0 0 var(--nav-h) 0';
+    document.getElementById('app').appendChild(overlay);
+  }
+  overlay.innerHTML=`
+    <div style="display:flex;align-items:center;padding:54px 20px 16px;border-bottom:1px solid var(--border);gap:14px">
+      <div onclick="this.closest('#pendingHikesOverlay').remove()" style="width:36px;height:36px;border-radius:50%;background:var(--bg2);border:1px solid var(--border2);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:16px;color:var(--txt2)">←</div>
+      <div style="font-size:17px;font-weight:700;color:var(--txt0)">Pending Hikes (${rows.length})</div>
+    </div>
+    ${rows.map(h=>{
+      const diffColor=h.difficulty==='Easy'?'#4CAF50':h.difficulty==='Hard'?'#E05252':'#D4A843';
+      const submitter=(getUserProfile(h.user_id)||{}).username||'Explorer';
+      return`<div class="pending-spot-row">
+        <div class="pending-spot-name">${sanitize(h.name)}</div>
+        <div class="pending-spot-meta">${h.distance||0} mi · ${h.elevation_gain||0} ft gain · <span style="color:${diffColor};font-weight:700">${h.difficulty||'Moderate'}</span> · Submitted by ${sanitize(submitter)}</div>
+        ${h.description?`<div style="font-size:12px;color:var(--txt2);margin-top:6px;line-height:1.5">${sanitize(h.description)}</div>`:''}
+        <div class="pending-spot-btns">
+          <button class="pending-approve" onclick="_approveGlobalHike('${h.id}');this.closest('.pending-spot-row').remove()">Approve</button>
+          <button class="pending-reject" onclick="_rejectGlobalHike('${h.id}');this.closest('.pending-spot-row').remove()">Reject</button>
+        </div>
+      </div>`;}).join('')}`;
+  overlay.style.display='flex';
+}
+function _approveGlobalHike(hikeId){
+  _sbTry(db.from('hikes').update({status:'approved'}).eq('id',hikeId),'approve global hike');
+  showToast('Hike approved!');
+  setTimeout(()=>_sbLoadHikes(),300);
+}
+function _rejectGlobalHike(hikeId){
+  _sbTry(db.from('hikes').delete().eq('id',hikeId),'reject global hike');
+  showToast('Hike rejected');
 }
 
 function _showManageSpots(){
@@ -3228,19 +3285,15 @@ function submitNewSpot(){
   };
   if(_aspPhotos.length)newSpot.heroGradient=`linear-gradient(160deg,#0f1410,#1e251e,#0a100a)`;
 
-  // Tag and save to community if opened from community map (legacy entry point)
+  // Opened from a community map (legacy entry point): community-tier spots must
+  // go through that community's admin approval, same as the tier-picker path —
+  // never straight onto the live community map.
   if(_addSpotCommunityId){
-    newSpot.communityId=_addSpotCommunityId;
-    const cSpots=getCommunitySpots(_addSpotCommunityId);
-    cSpots.push(newSpot);
-    setCommunitySpots(_addSpotCommunityId,cSpots);
     const savedCid=_addSpotCommunityId;
     _addSpotCommunityId=null;
-    submitSpotForReview(newSpot);
+    _submitCommunityPendingSpot(savedCid,name,aspSelectedType,lat,lng,desc,_aspPhotos);
     _aspPhotos=[];
     closeAddSpot();
-    addSpotMarkerToMap(newSpot);
-    showToast('Spot added to community map!');
     setTimeout(()=>openCommunityMap(savedCid),300);
     return;
   }
