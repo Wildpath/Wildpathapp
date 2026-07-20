@@ -12333,54 +12333,211 @@ function _initProfileMapThumbnail(){
   }catch(e){console.warn('Profile map thumbnail failed',e);}
 }
 
+// ═══════════════════════════════════════════════════
+// REUSABLE FULL-FEATURED MAP (Section 4) — shared control
+// set (styles, search, boundary layers, compass, zoom,
+// long-press pin) applied to any Mapbox instance + pin filter.
+// ═══════════════════════════════════════════════════
+function _secondaryMapControlsHTML(prefix){
+  return `
+    <div style="position:absolute;top:16px;left:70px;right:14px;z-index:100">
+      <div style="position:relative;background:rgba(26,23,20,.88);border:1px solid rgba(255,255,255,.08);border-radius:26px;display:flex;align-items:center;gap:10px;padding:0 16px;height:52px;backdrop-filter:blur(20px)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--txt3)" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <input type="text" id="${prefix}SearchInput" placeholder="Search anywhere…" oninput="_secondaryMapSearch('${prefix}',this.value)" autocomplete="off" style="background:none;border:none;outline:none;color:var(--txt0);font-size:15px;flex:1;font-family:var(--font)">
+      </div>
+      <div id="${prefix}SearchDrop" style="display:none;background:var(--bg1);border:1px solid var(--border2);border-radius:14px;margin-top:6px;max-height:240px;overflow-y:auto"></div>
+    </div>
+    <div onclick="_toggleSecondaryLayers('${prefix}')" style="position:absolute;top:16px;left:16px;width:44px;height:52px;background:rgba(26,23,20,.88);border:1px solid rgba(255,255,255,.08);border-radius:22px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:100">
+      <svg width="20" height="14" viewBox="0 0 20 14" fill="none"><rect width="20" height="2.2" rx="1.1" fill="var(--txt1)"/><rect y="5.9" width="14" height="2.2" rx="1.1" fill="var(--txt1)"/><rect y="11.8" width="20" height="2.2" rx="1.1" fill="var(--txt1)"/></svg>
+    </div>
+    <div id="${prefix}LayersPanel" style="display:none;position:absolute;top:76px;left:16px;z-index:110;background:var(--bg1);border:1px solid var(--border2);border-radius:14px;padding:10px;width:200px;box-shadow:0 8px 24px rgba(0,0,0,.5)">
+      <div style="font-size:11px;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Map Style</div>
+      <div style="display:flex;gap:5px;margin-bottom:10px;flex-wrap:wrap">
+        ${['standard','terrain','satellite','hybrid'].map(s=>`<div onclick="_secondaryMapSetStyle('${prefix}','${s}')" style="flex:1 1 40%;padding:6px 4px;text-align:center;background:var(--bg2);border:1px solid var(--border2);border-radius:8px;font-size:10px;font-weight:700;color:var(--txt1);cursor:pointer;text-transform:capitalize">${s}</div>`).join('')}
+      </div>
+      <div style="font-size:11px;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Boundaries</div>
+      ${[['blm','BLM Land','#D4A843'],['nationalForest','National Forest','#4A7C59'],['stateParks','State Parks','#4A9EF5'],['countylines','County Lines','rgba(255,255,255,.5)'],['privateland','Private Land','#E8453C']].map(([id,label,color])=>`
+        <div onclick="_toggleSecondaryLandLayer('${prefix}','${id}',this)" data-layer="${id}" style="display:flex;align-items:center;gap:8px;padding:6px 2px;cursor:pointer">
+          <div style="width:10px;height:10px;border-radius:2px;background:${color};flex-shrink:0"></div>
+          <span style="font-size:12px;color:var(--txt1);flex:1">${label}</span>
+          <div class="side-layer-toggle off" style="transform:scale(.75);transform-origin:right center"><div class="side-layer-knob"></div></div>
+        </div>`).join('')}
+    </div>
+    <div id="${prefix}RightStack" style="position:absolute;bottom:20px;right:16px;z-index:100;display:flex;flex-direction:column-reverse;align-items:center;gap:10px">
+      <div class="map-zoom-pill">
+        <div class="map-zoom-btn" onclick="_secondaryMaps['${prefix}']?.easeTo({zoom:_secondaryMaps['${prefix}'].getZoom()+1,duration:300})">+</div>
+        <div class="map-zoom-divider"></div>
+        <div class="map-zoom-btn" onclick="_secondaryMaps['${prefix}']?.easeTo({zoom:_secondaryMaps['${prefix}'].getZoom()-1,duration:300})">−</div>
+      </div>
+      <div id="${prefix}CompassOverlay" onclick="_secondaryMaps['${prefix}']?.easeTo({bearing:0,duration:500})" style="width:44px;height:44px;border-radius:50%;background:rgba(0,0,0,.45);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.35)">
+        <svg viewBox="0 0 32 32" width="24" height="24"><circle cx="16" cy="16" r="15" fill="rgba(22,19,16,.7)" stroke="rgba(196,149,106,.4)" stroke-width="1"/>
+          <g id="${prefix}CompassNeedle" style="transform-origin:16px 16px;transition:transform .15s linear">
+            <polygon points="16,6 18.5,16 16,18 13.5,16" fill="#e05252"/>
+            <polygon points="16,18 18.5,16 16,26 13.5,16" fill="rgba(200,184,168,.6)"/>
+          </g>
+        </svg>
+      </div>
+    </div>
+  `;
+}
+
+const _secondaryMaps={}; // prefix -> Mapbox instance
+const _secondaryMapStyleState={};
+
+function _decorateSecondaryMap(prefix,m,container,pinFilterFn,onPinClick){
+  _secondaryMaps[prefix]=m;
+  _secondaryMapStyleState[prefix]='standard';
+  // Inject controls into the container's parent (sibling of the map div)
+  const controlsHost=document.createElement('div');
+  controlsHost.style.cssText='position:absolute;inset:0;pointer-events:none;z-index:50';
+  controlsHost.innerHTML=_secondaryMapControlsHTML(prefix);
+  [...controlsHost.children].forEach(c=>c.style.pointerEvents='auto');
+  container.parentElement.appendChild(controlsHost);
+  m.on('rotate',()=>{
+    const needle=document.getElementById(prefix+'CompassNeedle');
+    if(needle)needle.style.transform=`rotate(${-m.getBearing()}deg)`;
+  });
+  // Boundary layers — reuse already-cached GeoJSON, no re-fetch
+  Object.entries(LAND_STYLES).forEach(([type,sty])=>{
+    const empty={type:'FeatureCollection',features:[]};
+    if(!m.getSource('land-'+type))m.addSource('land-'+type,{type:'geojson',data:empty});
+    if(!m.getLayer('land-'+type+'-fill'))m.addLayer({id:'land-'+type+'-fill',type:'fill',source:'land-'+type,layout:{visibility:'none'},paint:{'fill-color':sty.fillColor,'fill-opacity':sty.fillOpacity}});
+    if(!m.getLayer('land-'+type+'-line'))m.addLayer({id:'land-'+type+'-line',type:'line',source:'land-'+type,layout:{visibility:'none'},paint:{'line-color':sty.color,'line-width':sty.width}});
+  });
+  _initLongPressPin(m);
+  _refreshSecondaryMapPins(prefix,m,pinFilterFn,onPinClick);
+}
+
+function _refreshSecondaryMapPins(prefix,m,pinFilterFn,onPinClick){
+  if(!m)return;
+  const pins=pinFilterFn();
+  (m._secondaryMarkers||[]).forEach(mk=>{try{mk.remove();}catch(e){}});
+  m._secondaryMarkers=[];
+  pins.forEach(p=>{
+    const el=document.createElement('div');
+    el.style.cssText=`width:16px;height:16px;border-radius:50%;background:${p.color};border:2px solid #fff;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.4)`;
+    const marker=new mapboxgl.Marker({element:el}).setLngLat([p.lng,p.lat]).addTo(m);
+    el.onclick=()=>{if(onPinClick)onPinClick(p);else openDetail(p.id);};
+    m._secondaryMarkers.push(marker);
+  });
+  if(pins.length>1){
+    const lngs=pins.map(p=>p.lng),lats=pins.map(p=>p.lat);
+    m.fitBounds([[Math.min(...lngs)-.3,Math.min(...lats)-.3],[Math.max(...lngs)+.3,Math.max(...lats)+.3]],{padding:60,duration:600,maxZoom:11});
+  } else if(pins.length===1){
+    m.flyTo({center:[pins[0].lng,pins[0].lat],zoom:11,duration:600});
+  }
+}
+
+function _secondaryMapSetStyle(prefix,styleKey){
+  const m=_secondaryMaps[prefix];
+  if(!m||!MAP_STYLES[styleKey])return;
+  _secondaryMapStyleState[prefix]=styleKey;
+  m.setStyle(MAP_STYLES[styleKey].url);
+  m.once('style.load',()=>{
+    Object.entries(LAND_STYLES).forEach(([type,sty])=>{
+      const empty={type:'FeatureCollection',features:[]};
+      if(!m.getSource('land-'+type))m.addSource('land-'+type,{type:'geojson',data:empty});
+      if(!m.getLayer('land-'+type+'-fill'))m.addLayer({id:'land-'+type+'-fill',type:'fill',source:'land-'+type,layout:{visibility:'none'},paint:{'fill-color':sty.fillColor,'fill-opacity':sty.fillOpacity}});
+      if(!m.getLayer('land-'+type+'-line'))m.addLayer({id:'land-'+type+'-line',type:'line',source:'land-'+type,layout:{visibility:'none'},paint:{'line-color':sty.color,'line-width':sty.width}});
+    });
+  });
+  document.getElementById(prefix+'LayersPanel').style.display='none';
+}
+
+function _toggleSecondaryLayers(prefix){
+  const panel=document.getElementById(prefix+'LayersPanel');
+  if(panel)panel.style.display=panel.style.display==='none'?'block':'none';
+}
+
+function _toggleSecondaryLandLayer(prefix,layerId,rowEl){
+  const m=_secondaryMaps[prefix];
+  if(!m)return;
+  const toggleEl=rowEl.querySelector('.side-layer-toggle');
+  const isOn=toggleEl.classList.contains('on');
+  const dataMap={blm:_blmGeoJSON,nationalForest:_nfGeoJSON,stateParks:_spGeoJSON};
+  const geo=dataMap[layerId];
+  if(!isOn&&geo){
+    const src=m.getSource('land-'+layerId);
+    if(src)src.setData(geo);
+    if(m.getLayer('land-'+layerId+'-fill'))m.setLayoutProperty('land-'+layerId+'-fill','visibility','visible');
+    if(m.getLayer('land-'+layerId+'-line'))m.setLayoutProperty('land-'+layerId+'-line','visibility','visible');
+    toggleEl.classList.add('on');toggleEl.classList.remove('off');
+  } else if(!isOn){
+    showToast('Boundary data not loaded yet — open the main Map tab first');
+  } else {
+    if(m.getLayer('land-'+layerId+'-fill'))m.setLayoutProperty('land-'+layerId+'-fill','visibility','none');
+    if(m.getLayer('land-'+layerId+'-line'))m.setLayoutProperty('land-'+layerId+'-line','visibility','none');
+    toggleEl.classList.remove('on');toggleEl.classList.add('off');
+  }
+}
+
+let _secondaryMapSearchTimer=null;
+function _secondaryMapSearch(prefix,q){
+  clearTimeout(_secondaryMapSearchTimer);
+  const drop=document.getElementById(prefix+'SearchDrop');
+  if(!q.trim()){if(drop)drop.style.display='none';return;}
+  _secondaryMapSearchTimer=setTimeout(async()=>{
+    try{
+      const res=await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=6`,{headers:{'Accept-Language':'en-US,en'}});
+      const data=await res.json();
+      if(!drop)return;
+      if(!data.length){drop.style.display='none';return;}
+      drop.innerHTML=data.map(d=>`<div onclick="_secondaryMapFlyTo('${prefix}',${d.lat},${d.lon});document.getElementById('${prefix}SearchDrop').style.display='none';document.getElementById('${prefix}SearchInput').value=''" style="padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px;color:var(--txt0)">${sanitize((d.display_name||'').split(',').slice(0,2).join(', '))}</div>`).join('');
+      drop.style.display='block';
+    }catch(e){}
+  },350);
+}
+function _secondaryMapFlyTo(prefix,lat,lng){
+  const m=_secondaryMaps[prefix];
+  if(m)m.flyTo({center:[lng,lat],zoom:13,duration:800});
+}
+
 function openProfileYourMap(){
+
   const page=document.getElementById('yourMapPage');
   if(!page)return;
   page.style.display='flex';
   _buildYourMap();
 }
+// Deterministic per-community pin color (hash id -> hue)
+function _communityColor(cid){
+  let h=0; for(let i=0;i<String(cid).length;i++)h=(h*31+String(cid).charCodeAt(i))>>>0;
+  return `hsl(${h%360},65%,58%)`;
+}
+
+function _yourMapPinFilter(){
+  const myUid=String(_myUid());
+  const savedIds=new Set(getSavedSpotIds());
+  const allGlobal=[...spots,...userSpots];
+  const pins=[];
+  // Personal spots — gold
+  personalSpots.forEach(s=>pins.push({id:s.id,name:s.name,lat:s.lat,lng:s.lng,color:'#D4A843'}));
+  // Saved spots (any type) — red
+  savedPlaces.forEach(p=>pins.push({id:'saved_'+p.id,name:p.name,lat:p.lat,lng:p.lng,color:'#E05252'}));
+  allGlobal.filter(s=>savedIds.has(s.id)).forEach(s=>pins.push({id:s.id,name:s.name,lat:s.lat,lng:s.lng,color:'#E05252'}));
+  // Community spots from communities the user belongs to — community color
+  getCommunities().filter(c=>getMembers(c.id).includes(myUid)).forEach(c=>{
+    getCommunitySpots(c.id).forEach(s=>{
+      if(s.lat&&s.lng)pins.push({id:s.id,name:s.name,lat:s.lat,lng:s.lng,color:_communityColor(c.id)});
+    });
+  });
+  return pins;
+}
+
 function _buildYourMap(){
   const container=document.getElementById('yourMapEl');
   if(!container)return;
-  if(container._mapInst){try{container._mapInst.remove();}catch(e){} container._mapInst=null; container.innerHTML='';}
-  const tok=localStorage.getItem('mapbox-token')||MAPBOX_TOKEN_DEFAULT||'';
-  mapboxgl.accessToken=tok||mapboxgl.accessToken;
-  // "Your spots" = spots you added (userSubmitted) + spots you've posted about
-  const myUid=String(_myUid());
-  const myPosts=getPosts().filter(p=>String(p.userId)===myUid&&p.spotId);
-  const visitedIds=new Set(myPosts.map(p=>p.spotId));
-  const allS=[...spots,...userSpots];
-  const visited=allS.filter(s=>visitedIds.has(s.id));
-  const added=userSpots.filter(s=>s.userSubmitted);
-  // Also include all demo spots so there's always something to show
-  const demoSpots=spots.slice(0,5);
-  const combined=new Map();
-  demoSpots.forEach(s=>combined.set(s.id,s));
-  added.forEach(s=>combined.set(s.id,{...s,_mine:true}));
-  visited.forEach(s=>{if(!combined.has(s.id))combined.set(s.id,s);});
-  const mySpots=[...combined.values()];
+  if(container._mapInst){try{container._mapInst.remove();}catch(e){}container._mapInst=null;container.innerHTML='';}
+  const parent=container.parentElement;
+  [...parent.children].forEach(c=>{if(c!==container)c.remove();}); // clear previously injected controls on rebuild
   try{
-    const m=new mapboxgl.Map({container,style:'mapbox://styles/mapbox/outdoors-v12',center:[-121.5,38.5],zoom:5,interactive:true,attributionControl:false});
+    const m=new mapboxgl.Map({container,style:MAP_STYLES.standard.url,center:[-121.5,38.5],zoom:6,interactive:true,attributionControl:false});
     container._mapInst=m;
     m.on('load',()=>{
-      const savedIds=new Set(getSavedSpotIds());
-      mySpots.forEach(s=>{
-        const isSaved=savedIds.has(s.id);
-        const isAdded=!!s._mine;
-        const color=isAdded?'#B8E87A':isSaved?'#74C4F5':'#F5C842';
-        const label=isAdded?'Your spot':isSaved?'Saved':'Visited';
-        const el=document.createElement('div');
-        el.style.cssText=`width:14px;height:14px;border-radius:50%;background:${color};border:2px solid #fff;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.4)`;
-        new mapboxgl.Marker({element:el}).setLngLat([s.lng,s.lat])
-          .setPopup(new mapboxgl.Popup({offset:16}).setHTML(`<div style="font-size:12px;font-weight:700;color:#fff">${s.name}</div><div style="font-size:11px;color:rgba(255,255,255,.7);margin-top:2px">${label}</div>`))
-          .addTo(m);
+      _decorateSecondaryMap('ym',m,container,_yourMapPinFilter,(p)=>{
+        const spot=[...spots,...userSpots,...personalSpots].find(s=>String(s.id)===String(p.id));
+        if(spot)openDetail(spot.id);
       });
-      if(mySpots.length>1){
-        const lngs=mySpots.map(s=>s.lng),lats=mySpots.map(s=>s.lat);
-        m.fitBounds([[Math.min(...lngs)-.5,Math.min(...lats)-.5],[Math.max(...lngs)+.5,Math.max(...lats)+.5]],{padding:60,duration:800,maxZoom:10});
-      } else {
-        m.fitBounds([[-124,36],[-117,39]],{padding:40,duration:800});
-      }
     });
   }catch(e){console.warn('Your map failed',e);}
 }
@@ -12423,23 +12580,29 @@ function _buildFriendsMap(){
   }
   if(container._mapInit)return;
   container._mapInit=true;
-  // Reuse the app-wide mapboxgl.accessToken — never a separate check or prompt
   try{
-    const m=new mapboxgl.Map({container,style:'mapbox://styles/mapbox/outdoors-v12',center:[-121.5,38.5],zoom:5,interactive:true,attributionControl:false});
+    const m=new mapboxgl.Map({container,style:MAP_STYLES.standard.url,center:[-121.5,38.5],zoom:6,interactive:true,attributionControl:false});
     container._mapInst=m;
     m.on('load',()=>{
-      // ── YOUR own spots (yellow dots) ──
-      const myPosts=allPosts.filter(p=>String(p.userId)===myUid&&p.spotId);
-      const visitedIds=new Set(myPosts.map(p=>p.spotId));
-      const mySaved=getSavedSpotIds();
-      const myVisited=[...allS.filter(s=>visitedIds.has(s.id)||mySaved.includes(s.id)),...userSpots.filter(s=>s.userSubmitted)];
-      const myUniq=new Map();myVisited.forEach(s=>myUniq.set(s.id,s));
-      [...myUniq.values()].forEach(s=>{
-        const el=document.createElement('div');
-        el.style.cssText='width:14px;height:14px;border-radius:50%;background:#F5C842;border:2px solid #fff;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.4)';
-        new mapboxgl.Marker({element:el}).setLngLat([s.lng,s.lat])
-          .setPopup(new mapboxgl.Popup({offset:16}).setHTML(`<div style="font-size:12px;font-weight:700;color:#fff">${s.name}</div><div style="font-size:11px;color:rgba(255,255,255,.7);margin-top:2px">Your spot</div>`))
-          .addTo(m);
+      // Standard reusable controls: search, boundary layers, compass, zoom, long-press
+      const friendsPinFilter=()=>{
+        const myPostsF=allPosts.filter(p=>String(p.userId)===myUid&&p.spotId);
+        const visitedIdsF=new Set(myPostsF.map(p=>p.spotId));
+        const mySavedF=getSavedSpotIds();
+        const myVisitedF=[...allS.filter(s=>visitedIdsF.has(s.id)||mySavedF.includes(s.id)),...userSpots.filter(s=>s.userSubmitted)];
+        const uniq=new Map();myVisitedF.forEach(s=>uniq.set(s.id,{id:s.id,name:s.name,lat:s.lat,lng:s.lng,color:'#F5C842'}));
+        // Spots posted about or saved by people I follow
+        followingUsers.forEach(uid=>{
+          allPosts.filter(p=>String(p.userId)===uid&&p.spotId).forEach(p=>{
+            const s=allS.find(x=>x.id===p.spotId);
+            if(s&&!uniq.has(s.id))uniq.set(s.id,{id:s.id,name:s.name,lat:s.lat,lng:s.lng,color:'#B8E87A'});
+          });
+        });
+        return[...uniq.values()];
+      };
+      _decorateSecondaryMap('fm',m,container,friendsPinFilter,(p)=>{
+        const spot=[...spots,...userSpots].find(s=>String(s.id)===String(p.id));
+        if(spot)openDetail(spot.id);
       });
 
       // ── FRIENDS spots (initials bubbles — tap to open profile) ──
