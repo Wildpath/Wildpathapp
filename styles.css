@@ -359,6 +359,12 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0F0D0B;
 .user-dot-wrap{position:relative;width:14px;height:14px}
 .user-dot-ring{position:absolute;inset:-6px;border-radius:50%;border:2px solid rgba(91,155,212,.5);animation:userDotPulse 2s ease-in-out infinite}
 .user-dot-inner{position:absolute;inset:1px;border-radius:50%;background:#5B9BD4;border:2px solid #fff;box-shadow:0 2px 8px rgba(91,155,212,.8)}
+/* Directional facing cone — like Apple Maps, rotates with device heading */
+.user-dot-cone{position:absolute;left:50%;top:50%;width:0;height:0;
+  border-left:14px solid transparent;border-right:14px solid transparent;
+  border-bottom:34px solid rgba(91,155,212,.35);
+  transform-origin:50% 0;transform:translate(-50%,-100%) rotate(0deg);
+  transition:transform .12s linear;pointer-events:none;display:none;z-index:-1}
 
 /* Spot dot markers */
 .wp-dot{width:10px;height:10px;border-radius:50%;background:var(--bg0);

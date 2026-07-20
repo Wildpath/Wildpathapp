@@ -4440,13 +4440,56 @@ function _placeUserDot(lat,lng){
   if(_userDotMarker){_userDotMarker.remove();_userDotMarker=null;}
   const el=document.createElement('div');
   el.className='user-dot-wrap';
-  el.innerHTML='<div class="user-dot-ring"></div><div class="user-dot-inner"></div>';
+  el.innerHTML='<div class="user-dot-cone" id="userDotCone"></div><div class="user-dot-ring"></div><div class="user-dot-inner"></div>';
   _userDotMarker=new mapboxgl.Marker({element:el,anchor:'center'})
     .setLngLat([lng,lat])
     .addTo(map);
   // Update Find Me button to show active state
   const btn=document.getElementById('findMeBtn');
   if(btn){btn.style.background='var(--blue)';btn.style.boxShadow='0 4px 20px rgba(74,143,223,.6)';}
+  const locBtn=document.getElementById('locateMeBtn');
+  if(locBtn)locBtn.style.background='rgba(91,155,212,.35)';
+  // Re-apply cone visibility/heading if orientation is already bound
+  if(_headingBound&&_lastHeading!=null)_updateUserDotCone(_lastHeading);
+}
+
+// ═══════════════════════════════════════════════════
+// FACING DIRECTION CONE (Section 7) — DeviceOrientationEvent
+// drives a translucent cone on the blue dot, like Apple Maps.
+// ═══════════════════════════════════════════════════
+let _headingBound=false, _lastHeading=null, _headingPermissionDenied=false;
+function _updateUserDotCone(heading){
+  _lastHeading=heading;
+  const cone=document.getElementById('userDotCone');
+  if(!cone)return;
+  cone.style.display='block';
+  cone.style.transform=`translate(-50%,-100%) rotate(${heading}deg)`;
+}
+function _onDeviceHeading(e){
+  let heading=null;
+  if(e.webkitCompassHeading!=null)heading=e.webkitCompassHeading; // iOS: true heading, 0=N clockwise
+  else if(e.alpha!=null)heading=(360-e.alpha)%360; // Android: alpha is counterclockwise from N
+  if(heading==null)return;
+  _updateUserDotCone(heading);
+}
+function _bindDeviceHeading(){
+  if(_headingBound)return;
+  _headingBound=true;
+  window.addEventListener('deviceorientationabsolute',_onDeviceHeading,true);
+  window.addEventListener('deviceorientation',_onDeviceHeading,true);
+}
+function _requestHeadingPermission(){
+  if(_headingPermissionDenied)return;
+  if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){
+    // iOS 13+: must be called from within a direct user-gesture handler (the locate-me tap)
+    DeviceOrientationEvent.requestPermission().then(state=>{
+      if(state==='granted')_bindDeviceHeading();
+      else _headingPermissionDenied=true; // dot-only, no cone, per spec
+    }).catch(()=>{_headingPermissionDenied=true;});
+  } else {
+    // Android / non-iOS: no permission prompt needed
+    _bindDeviceHeading();
+  }
 }
 
 function _refreshAllDistances(){
@@ -4463,6 +4506,8 @@ function _refreshAllDistances(){
 
 function findMe(){
   const btn=document.getElementById('findMeBtn');
+  // Must be requested directly inside this tap handler — iOS requires a user gesture
+  _requestHeadingPermission();
   if(_userLat!=null&&_userLng!=null){
     leafletMap.flyTo([_userLat,_userLng],14,{animate:true,duration:1.2});
     showToast('Centered on your location');

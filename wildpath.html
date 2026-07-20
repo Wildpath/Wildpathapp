@@ -101,6 +101,11 @@
       </svg>
     </div>
 
+    <!-- Locate Me — also requests iOS DeviceOrientation permission on first tap -->
+    <div id="locateMeBtn" title="Find my location" onclick="findMe()" style="position:absolute;top:114px;left:22px;width:32px;height:32px;z-index:99;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:50%;background:rgba(26,23,20,.7);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 2px 8px rgba(0,0,0,.3)">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="#5B9BD4" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+    </div>
+
     <!-- Search bar (left shifted to clear menu button) -->
     <div class="map-search-wrapper" style="position:absolute;top:16px;left:70px;right:14px;z-index:100">
       <div class="map-search" style="position:relative;left:auto;right:auto;top:auto">
@@ -1986,7 +1991,7 @@
 </div><!-- #app -->
 
 
-<script src="data.js?v=22"></script>
-<script src="app.js?v=22"></script>
+<script src="data.js?v=23"></script>
+<script src="app.js?v=23"></script>
 </body>
 </html>
