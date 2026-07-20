@@ -59,6 +59,7 @@ let addSpotMode=false, addSpotTempLat=null, addSpotTempLng=null;
 let waypointMarkers=[], parkingMarker=null;
 let userSpots=[]; // hydrated from Supabase spots table (status=approved)
 let personalSpots=[]; // hydrated from Supabase personal_spots table — only this user's own, gold pins
+let allHikes=[]; // hydrated from Supabase hikes table — RLS already scopes to what I can see
 let savedPlaces=[]; // hydrated from Supabase saved_places table — red want-to-go pins, any ref_type
 let favorites=new Set(JSON.parse(localStorage.getItem('wp_favs')||'[]'));
 
@@ -288,7 +289,7 @@ async function _sbHydrate(){
     await Promise.allSettled([
       run('posts',_sbLoadPosts),run('messages',_sbLoadMessages),run('follows',_sbLoadFollows),
       run('notifications',_sbLoadNotifications),run('saved',_sbLoadSaved),run('pending spots',_sbLoadPendingSpots),
-      run('personal spots',_sbLoadPersonalSpots),run('saved places',_sbLoadSavedPlaces),run('my hikes',_loadMyHikes)
+      run('personal spots',_sbLoadPersonalSpots),run('saved places',_sbLoadSavedPlaces),run('my hikes',_loadMyHikes),run('hikes',_sbLoadHikes)
     ]);
     _sbHydrated=true;
     try{_sbSubscribeRealtime();}catch(e){console.warn('[Supabase] realtime:',e);}
@@ -324,6 +325,15 @@ async function _sbLoadSpots(){
   (data||[]).forEach(r=>userSpots.push(_sbAdaptSpot(r)));
 }
 
+async function _sbLoadHikes(){
+  try{
+    const {data,error}=await db.from('hikes').select('*');
+    if(error)throw error;
+    allHikes.length=0;
+    (data||[]).forEach(h=>allHikes.push(h));
+    _renderHikePins();
+  }catch(e){console.warn('[Supabase] hikes load:',e);}
+}
 async function _sbLoadPersonalSpots(){
   if(isGuest())return;
   const {data,error}=await db.from('personal_spots').select('*').eq('user_id',_myUid());
@@ -1199,6 +1209,91 @@ const LAND_FETCH_URLS={
 
 // Fetch all three land datasets concurrently on app load
 // Data stored in _blmGeoJSON / _nfGeoJSON / _spGeoJSON
+// ═══════════════════════════════════════════════════
+// HIKES ON THE MAP (Section 9) — distinct trail-icon pins,
+// separate from spot circles. Tap draws the route + opens detail.
+// ═══════════════════════════════════════════════════
+let _hikeMarkers=[];
+function _renderHikePins(){
+  if(!map)return;
+  _hikeMarkers.forEach(mk=>{try{mk.remove();}catch(e){}});
+  _hikeMarkers=[];
+  allHikes.forEach(h=>{
+    const coords=h.route_geojson?.geometry?.coordinates;
+    if(!coords||!coords.length)return;
+    const trailhead=coords[0]; // [lng,lat]
+    const diffColor=h.difficulty==='Easy'?'#4CAF50':h.difficulty==='Hard'?'#E05252':'#D4A843';
+    const el=document.createElement('div');
+    el.style.cssText=`width:26px;height:26px;border-radius:6px;background:${diffColor};border:2px solid #fff;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.4)`;
+    el.innerHTML='<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#fff" stroke-width="2.2"><path d="M8 3l4 8 5-5 5 15H2z"/></svg>';
+    el.onclick=()=>openHikeDetail(h.id);
+    const marker=new mapboxgl.Marker({element:el}).setLngLat(trailhead).addTo(map);
+    _hikeMarkers.push(marker);
+  });
+}
+
+function openHikeDetail(hikeId){
+  const h=allHikes.find(x=>String(x.id)===String(hikeId));
+  if(!h)return;
+  const coords=h.route_geojson?.geometry?.coordinates||[];
+  // Draw the full route on the main map
+  _clearHikeRouteOnMap();
+  if(coords.length>1&&map){
+    map.addSource('active-hike-route-src',{type:'geojson',data:{type:'Feature',geometry:{type:'LineString',coordinates:coords}}});
+    map.addLayer({id:'active-hike-route-line',type:'line',source:'active-hike-route-src',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':'#B8E87A','line-width':4,'line-opacity':.9}});
+    const bounds=coords.reduce((b,c)=>b.extend(c),new mapboxgl.LngLatBounds(coords[0],coords[0]));
+    map.fitBounds(bounds,{padding:80,duration:600});
+  }
+  const diffColor=h.difficulty==='Easy'?'#4CAF50':h.difficulty==='Hard'?'#E05252':'#D4A843';
+  const trailhead=coords[0]||[0,0];
+  const existing=document.getElementById('_hikeDetailSheet');
+  if(existing)existing.remove();
+  const sheet=document.createElement('div');
+  sheet.id='_hikeDetailSheet';
+  sheet.style.cssText='position:absolute;inset:0;z-index:820;background:rgba(0,0,0,.75);display:flex;align-items:flex-end';
+  sheet.onclick=(e)=>{if(e.target===sheet){sheet.remove();_clearHikeRouteOnMap();}};
+  sheet.innerHTML=`<div style="background:var(--bg1);border-radius:20px 20px 0 0;width:100%;max-height:80vh;overflow-y:auto;padding:0 0 calc(env(safe-area-inset-bottom,0px)+16px)">
+    <div style="padding:16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+      <div style="font-size:17px;font-weight:700;color:var(--txt0)">${sanitize(h.name)}</div>
+      <button onclick="document.getElementById('_hikeDetailSheet').remove();_clearHikeRouteOnMap()" style="background:var(--bg2);border:1px solid var(--border);color:var(--txt1);border-radius:50%;width:30px;height:30px;cursor:pointer;font-size:14px">×</button>
+    </div>
+    <div style="padding:16px">
+      <span style="display:inline-block;background:${diffColor}22;border:1px solid ${diffColor};color:${diffColor};font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;padding:4px 10px;border-radius:10px;margin-bottom:14px">${h.difficulty||'Moderate'}</span>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">
+        <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
+          <div style="font-size:16px;font-weight:800;color:var(--txt0)">${h.distance||0} mi</div>
+          <div style="font-size:9px;color:var(--txt3);text-transform:uppercase;margin-top:2px">Distance</div>
+        </div>
+        <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
+          <div style="font-size:16px;font-weight:800;color:var(--txt0)">${h.elevation_gain||0} ft</div>
+          <div style="font-size:9px;color:var(--txt3);text-transform:uppercase;margin-top:2px">Elev Gain</div>
+        </div>
+        <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
+          <div style="font-size:16px;font-weight:800;color:var(--txt0)">${_fmtHikeDuration(h.duration)}</div>
+          <div style="font-size:9px;color:var(--txt3);text-transform:uppercase;margin-top:2px">Est. Time</div>
+        </div>
+      </div>
+      ${h.description?`<div style="font-size:13px;color:var(--txt1);line-height:1.6;margin-bottom:16px">${sanitize(h.description)}</div>`:''}
+      ${(h.photo_urls&&h.photo_urls.length)?`<div style="display:flex;gap:8px;overflow-x:auto;margin-bottom:16px">${h.photo_urls.map(u=>`<img src="${u}" style="width:100px;height:100px;object-fit:cover;border-radius:10px;flex-shrink:0">`).join('')}</div>`:''}
+      <button onclick="_startHikeNavigation(${trailhead[1]},${trailhead[0]})" style="width:100%;padding:14px;background:var(--accent);border:none;border-radius:12px;color:#0f1a0a;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:8px">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
+        Start Navigation
+      </button>
+    </div>
+  </div>`;
+  document.getElementById('app').appendChild(sheet);
+}
+function _clearHikeRouteOnMap(){
+  if(!map)return;
+  try{if(map.getLayer('active-hike-route-line'))map.removeLayer('active-hike-route-line');}catch(e){}
+  try{if(map.getSource('active-hike-route-src'))map.removeSource('active-hike-route-src');}catch(e){}
+}
+function _startHikeNavigation(lat,lng){
+  const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent);
+  const url=isIOS?`https://maps.apple.com/?daddr=${lat},${lng}`:`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
+  window.open(url,'_blank');
+}
+
 async function _prefetchLandData(){
   console.log('[WildPath] Land fetch URLs:');
   console.log('  BLM:', LAND_FETCH_URLS.blm);
@@ -4982,6 +5077,224 @@ function _haversine(lat1,lon1,lat2,lon2){
 // ═══════════════════════════════════════════════════
 let _hikeWatchId=null,_hikePoints=[],_hikeStartTime=null,_hikeTimerInterval=null;
 
+// ── Hike creation method chooser (Section 9: record / draw / manual) ──
+function openHikeCreateChooser(){
+  if(isGuest()){showLoginScreen();return;}
+  const existing=document.getElementById('_hikeChooserSheet');
+  if(existing)existing.remove();
+  const sheet=document.createElement('div');
+  sheet.id='_hikeChooserSheet';
+  sheet.style.cssText='position:fixed;inset:0;z-index:800;display:flex;flex-direction:column;justify-content:flex-end';
+  sheet.innerHTML=`
+    <div style="position:absolute;inset:0;background:rgba(0,0,0,.5)" onclick="this.parentElement.remove()"></div>
+    <div style="position:relative;background:var(--bg1);border-radius:20px 20px 0 0;padding:16px 16px calc(env(safe-area-inset-bottom,0px)+16px)">
+      <div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:14px">New Hike</div>
+      <div onclick="document.getElementById('_hikeChooserSheet').remove();startHikeTracking()" style="display:flex;align-items:center;gap:12px;padding:14px;background:var(--bg2);border-radius:12px;cursor:pointer;margin-bottom:8px">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--accent)" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        <div><div style="font-size:14px;font-weight:700;color:var(--txt0)">Record with GPS</div><div style="font-size:11px;color:var(--txt3)">Track your route live as you hike</div></div>
+      </div>
+      <div onclick="document.getElementById('_hikeChooserSheet').remove();startDrawHikeMode()" style="display:flex;align-items:center;gap:12px;padding:14px;background:var(--bg2);border-radius:12px;cursor:pointer;margin-bottom:8px">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
+        <div><div style="font-size:14px;font-weight:700;color:var(--txt0)">Draw on Map</div><div style="font-size:11px;color:var(--txt3)">Tap waypoints to trace a route</div></div>
+      </div>
+      <div onclick="document.getElementById('_hikeChooserSheet').remove();openManualHikeForm()" style="display:flex;align-items:center;gap:12px;padding:14px;background:var(--bg2);border-radius:12px;cursor:pointer">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--accent)" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+        <div><div style="font-size:14px;font-weight:700;color:var(--txt0)">Enter Manually</div><div style="font-size:11px;color:var(--txt3)">Fill in the details yourself</div></div>
+      </div>
+    </div>`;
+  document.body.appendChild(sheet);
+}
+
+// ── Draw-on-map hike creation ──────────────────────────────────
+let _drawHikeActive=false, _drawHikePoints=[];
+function startDrawHikeMode(){
+  _drawHikeActive=true;_drawHikePoints=[];
+  showToast('Tap points on the map to draw your route');
+  _showDrawHikeCard();
+  if(map)map.on('click',_onDrawHikeMapClick);
+}
+function _onDrawHikeMapClick(e){
+  if(!_drawHikeActive)return;
+  _drawHikePoints.push({lat:e.lngLat.lat,lng:e.lngLat.lng});
+  _renderDrawHikeLine();
+  _updateDrawHikeCard();
+}
+function _renderDrawHikeLine(){
+  if(!map)return;
+  const coords=_drawHikePoints.map(p=>[p.lng,p.lat]);
+  const geo={type:'Feature',geometry:{type:'LineString',coordinates:coords}};
+  if(map.getSource('draw-hike-src')){map.getSource('draw-hike-src').setData(geo);return;}
+  map.addSource('draw-hike-src',{type:'geojson',data:geo});
+  map.addLayer({id:'draw-hike-line',type:'line',source:'draw-hike-src',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':'#B8E87A','line-width':4,'line-dasharray':[1,1]}});
+}
+function _drawHikeDistanceMi(){
+  let m=0;
+  for(let i=1;i<_drawHikePoints.length;i++)m+=_haversine(_drawHikePoints[i-1].lat,_drawHikePoints[i-1].lng,_drawHikePoints[i].lat,_drawHikePoints[i].lng);
+  return m*0.000621371;
+}
+function _showDrawHikeCard(){
+  const existing=document.getElementById('_drawHikeCard');
+  if(existing)existing.remove();
+  const card=document.createElement('div');
+  card.id='_drawHikeCard';
+  card.style.cssText='position:absolute;left:12px;right:12px;bottom:calc(var(--nav-h) + 12px);z-index:850;background:var(--bg1);border:1px solid var(--border2);border-radius:16px;padding:14px;box-shadow:0 8px 24px rgba(0,0,0,.5)';
+  card.innerHTML=`
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <div><span id="_drawHikeDist" style="font-size:16px;font-weight:800;color:var(--accent)">0.00 mi</span> <span style="font-size:11px;color:var(--txt3)">· <span id="_drawHikePtCount">0</span> points</span></div>
+      <div onclick="_cancelDrawHike()" style="width:26px;height:26px;border-radius:50%;background:var(--bg2);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px;color:var(--txt2)">×</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button onclick="_undoDrawHikePoint()" style="flex:1;padding:10px;background:var(--bg2);border:1px solid var(--border2);color:var(--txt1);border-radius:10px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font)">Undo</button>
+      <button onclick="_finishDrawHike()" style="flex:1;padding:10px;background:var(--accent);border:none;color:#0f1a0a;border-radius:10px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font)">Finish</button>
+    </div>`;
+  document.getElementById('app').appendChild(card);
+}
+function _updateDrawHikeCard(){
+  const distEl=document.getElementById('_drawHikeDist');
+  const cntEl=document.getElementById('_drawHikePtCount');
+  if(distEl)distEl.textContent=_drawHikeDistanceMi().toFixed(2)+' mi';
+  if(cntEl)cntEl.textContent=_drawHikePoints.length;
+}
+function _undoDrawHikePoint(){
+  _drawHikePoints.pop();
+  _renderDrawHikeLine();
+  _updateDrawHikeCard();
+}
+function _cancelDrawHike(){
+  _drawHikeActive=false;
+  if(map){map.off('click',_onDrawHikeMapClick);try{if(map.getLayer('draw-hike-line'))map.removeLayer('draw-hike-line');}catch(e){}try{if(map.getSource('draw-hike-src'))map.removeSource('draw-hike-src');}catch(e){}}
+  document.getElementById('_drawHikeCard')?.remove();
+  _drawHikePoints=[];
+}
+function _finishDrawHike(){
+  if(_drawHikePoints.length<2){showToast('Add at least 2 points');return;}
+  const distMi=_drawHikeDistanceMi();
+  _cancelDrawHike();
+  _showHikeSummary({points:_drawHikePoints,distStr:distMi.toFixed(2)+' mi',distMi,timeStr:'—',elapsedSec:0,elevGainFt:0,paceStr:'—'});
+}
+
+// ── Manual hike form entry ───────────────────────────────────────
+function openManualHikeForm(){
+  if(isGuest()){showLoginScreen();return;}
+  const existing=document.getElementById('_manualHikeOverlay');
+  if(existing)existing.remove();
+  const overlay=document.createElement('div');
+  overlay.id='_manualHikeOverlay';
+  overlay.style.cssText='position:fixed;inset:0;z-index:700;background:var(--bg0);display:flex;flex-direction:column;overflow:hidden';
+  overlay.innerHTML=`
+    <div style="display:flex;align-items:center;padding:52px 16px 14px;border-bottom:1px solid var(--border);flex-shrink:0">
+      <div onclick="this.closest('#_manualHikeOverlay').remove()" style="font-size:22px;color:var(--txt0);cursor:pointer;padding:0 12px 0 0">←</div>
+      <div style="flex:1;font-size:17px;font-weight:700;color:var(--txt0);text-align:center">New Hike</div>
+      <div style="width:44px"></div>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:20px 16px">
+      <div class="form-group"><label class="form-label">Hike Name</label><input class="form-input" id="mhName" type="text" placeholder="e.g. Mist Falls Trail"></div>
+      <div class="form-group"><label class="form-label">Description</label><textarea class="form-input" id="mhDesc" rows="3" style="resize:none"></textarea></div>
+      <div class="form-group">
+        <label class="form-label">Difficulty</label>
+        <div class="diff-btns">
+          <div class="diff-btn selected" data-diff="Easy" onclick="selectDiff(this)">Easy</div>
+          <div class="diff-btn" data-diff="Moderate" onclick="selectDiff(this)">Moderate</div>
+          <div class="diff-btn" data-diff="Hard" onclick="selectDiff(this)">Hard</div>
+        </div>
+      </div>
+      <div class="form-group"><label class="form-label">Distance (miles)</label><input class="form-input" id="mhDist" type="number" step="0.1" placeholder="e.g. 4.2"></div>
+      <div class="form-group"><label class="form-label">Elevation Gain (feet)</label><input class="form-input" id="mhElev" type="number" placeholder="e.g. 850"></div>
+      <div class="form-group">
+        <label class="form-label">Trailhead Location</label>
+        <input class="form-input" id="mhLocSearch" placeholder="Search for the trailhead…" oninput="_manualHikeLocSearch(this.value)" autocomplete="off">
+        <div id="mhLocDrop" class="ac-drop"></div>
+        <div id="mhLocDisplay" style="display:none;font-size:12px;color:var(--accent);margin-top:6px"></div>
+      </div>
+      <button class="btn-submit-spot" onclick="_submitManualHike()">Continue</button>
+      <button class="btn-cancel-modal" onclick="document.getElementById('_manualHikeOverlay').remove()">Cancel</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  aspSelectedDiff='Easy';
+}
+let _mhLat=null,_mhLng=null;
+function _manualHikeLocSearch(q){
+  const drop=document.getElementById('mhLocDrop');
+  if(!q.trim()){drop.classList.remove('open');return;}
+  clearTimeout(window._mhSearchTimer);
+  window._mhSearchTimer=setTimeout(async()=>{
+    try{
+      const res=await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5`,{headers:{'Accept-Language':'en-US,en'}});
+      const data=await res.json();
+      drop.innerHTML=data.map(d=>`<div class="ac-item" onclick="_selectManualHikeLoc(${d.lat},${d.lon},'${(d.display_name||'').replace(/'/g,"\\'").slice(0,50)}')"><div class="ac-name">${sanitize((d.display_name||'').split(',')[0])}</div></div>`).join('');
+      drop.classList.add('open');
+    }catch(e){}
+  },350);
+}
+function _selectManualHikeLoc(lat,lng,name){
+  _mhLat=parseFloat(lat);_mhLng=parseFloat(lng);
+  document.getElementById('mhLocSearch').value=name;
+  document.getElementById('mhLocDrop').classList.remove('open');
+  const disp=document.getElementById('mhLocDisplay');
+  disp.style.display='block';disp.textContent=`📍 ${lat},${lng}`;
+}
+function _submitManualHike(){
+  const name=(document.getElementById('mhName').value||'').trim();
+  if(!name){showToast('Enter a hike name');return;}
+  if(_mhLat==null){showToast('Search and select a trailhead location');return;}
+  const desc=(document.getElementById('mhDesc').value||'').trim();
+  const distMi=parseFloat(document.getElementById('mhDist').value)||0;
+  const elevFt=parseFloat(document.getElementById('mhElev').value)||0;
+  const difficulty=aspSelectedDiff;
+  document.getElementById('_manualHikeOverlay').remove();
+  // Manual entry has no real route geometry — represent as a single trailhead point
+  window._manualHikeData={name,description:desc,distMi,elevFt,difficulty,lat:_mhLat,lng:_mhLng};
+  _showManualHikeTierPicker();
+}
+function _showManualHikeTierPicker(){
+  const sheet=document.createElement('div');
+  sheet.id='_manualHikeTierSheet';
+  sheet.style.cssText='position:fixed;inset:0;z-index:800;display:flex;flex-direction:column;justify-content:flex-end';
+  sheet.innerHTML=`
+    <div style="position:absolute;inset:0;background:rgba(0,0,0,.5)" onclick="this.parentElement.remove()"></div>
+    <div style="position:relative;background:var(--bg1);border-radius:20px 20px 0 0;padding:16px 16px calc(env(safe-area-inset-bottom,0px)+16px)">
+      <div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:14px">Who can see this hike?</div>
+      <button onclick="_submitManualHikeFinal('personal')" style="width:100%;padding:14px;background:var(--accent);border:none;border-radius:12px;color:#0f1a0a;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;margin-bottom:8px">Personal — only me</button>
+      <button onclick="document.getElementById('_manualHikeTierSheet').remove();_pickManualHikeCommunity()" style="width:100%;padding:14px;background:var(--bg2);border:1.5px solid var(--border2);border-radius:12px;color:var(--txt0);font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;margin-bottom:8px">Community — needs approval</button>
+      <button onclick="_submitManualHikeFinal('global')" style="width:100%;padding:14px;background:var(--bg2);border:1.5px solid var(--border2);border-radius:12px;color:var(--txt0);font-size:14px;font-weight:700;cursor:pointer;font-family:inherit">Global — app admin review</button>
+    </div>`;
+  document.body.appendChild(sheet);
+}
+function _pickManualHikeCommunity(){
+  const myUid=String(_myUid());
+  const myComms=getCommunities().filter(c=>getMembers(c.id).includes(myUid));
+  if(!myComms.length){showToast('Join a community first');return;}
+  const sheet=document.createElement('div');
+  sheet.id='_manualHikeCommPicker';
+  sheet.style.cssText='position:fixed;inset:0;z-index:800;display:flex;flex-direction:column;justify-content:flex-end';
+  sheet.innerHTML=`<div style="background:var(--bg1);border-radius:20px 20px 0 0;padding:16px;max-height:60vh;overflow-y:auto">
+    <div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:12px">Choose Community</div>
+    ${myComms.map(c=>`<div onclick="document.getElementById('_manualHikeCommPicker').remove();_submitManualHikeFinal('community','${c.id}')" style="padding:12px 0;border-bottom:1px solid var(--border);cursor:pointer;font-size:14px;color:var(--txt0);font-weight:600">${sanitize(c.name)}</div>`).join('')}
+  </div>`;
+  document.body.appendChild(sheet);
+}
+async function _submitManualHikeFinal(visibility,communityId){
+  document.getElementById('_manualHikeTierSheet')?.remove();
+  const d=window._manualHikeData;
+  if(!d)return;
+  try{
+    const routeGeojson={type:'Feature',geometry:{type:'LineString',coordinates:[[d.lng,d.lat],[d.lng,d.lat]]},properties:{}};
+    const {error}=await db.from('hikes').insert({
+      user_id:_myUid(),name:d.name,description:d.description,route_geojson:routeGeojson,
+      difficulty:d.difficulty,distance:d.distMi,duration:0,elevation_gain:d.elevFt,
+      visibility,community_id:communityId||null,
+      status:visibility==='personal'?'approved':'pending'
+    });
+    if(error)throw error;
+    showToast(visibility==='personal'?'Hike saved!':'Hike submitted for review!');
+    window._manualHikeData=null;
+    _loadMyHikes();_sbLoadHikes();
+  }catch(e){
+    console.warn('[Supabase] manual hike save failed:',e);
+    showToast('Could not save hike — check connection');
+  }
+}
+
 function startHikeTracking(){
   if(_hikeWatchId!==null){showToast('Already tracking a hike');return;}
   // Show custom confirmation modal instead of confirm()
@@ -5186,7 +5499,9 @@ async function _confirmSaveHike(visibility,communityId){
       distance:Math.round((hike.distMi||0)*100)/100,duration:hike.elapsedSec,
       elevation_gain:hike.elevGainFt||0,visibility,
       community_id:communityId||null,
-      status:visibility==='global'?'pending':'approved'
+      // Personal is instant. Community and Global both require approval — Community by
+      // that community's admin, Global by the app admin (same rule as spots).
+      status:visibility==='personal'?'approved':'pending'
     };
     const {error}=await db.from('hikes').insert(row);
     if(error)throw error;
@@ -5196,7 +5511,7 @@ async function _confirmSaveHike(visibility,communityId){
       _savePlaceToFolder('hike',null,name,mid[1],mid[0],'My Hikes').catch(()=>{});
     }
     document.getElementById('_hikeSummaryOverlay')?.remove();
-    showToast(visibility==='global'?'Hike submitted for review!':visibility==='community'?'Hike shared to community!':'Hike saved!');
+    showToast(visibility==='global'?'Hike submitted for admin review!':visibility==='community'?'Hike submitted for community review!':'Hike saved!');
     _loadMyHikes();
   }catch(e){
     console.warn('[Supabase] hike save failed:',e);
@@ -10328,7 +10643,7 @@ function _renderCommSettings(cid){
   const members=getMembers(cid);
   const inviteLink=`wildpath://community/${cid}`;
   const isCommAdmin=c.adminId===String(_myUid());
-  if(isCommAdmin)_loadCommunityPendingSpots(cid);
+  if(isCommAdmin){_loadCommunityPendingSpots(cid);_loadCommunityPendingHikes(cid);}
 
   const membersHtml=members.map(uid=>`<div class="member-row">
     ${_avatarHtml(uid,36)}
@@ -10366,6 +10681,10 @@ function _renderCommSettings(cid){
     ${isCommAdmin?`<div style="padding:12px 16px;border-bottom:1px solid var(--border)" id="commPendingSpotsSection">
       <div style="font-size:12px;font-weight:700;color:var(--accent);letter-spacing:.4px;text-transform:uppercase;margin-bottom:10px">Pending Spot Approval</div>
       <div id="commPendingSpotsList" style="font-size:12px;color:var(--txt3)">Loading…</div>
+    </div>`:''}
+    ${isCommAdmin?`<div style="padding:12px 16px;border-bottom:1px solid var(--border)" id="commPendingHikesSection">
+      <div style="font-size:12px;font-weight:700;color:var(--accent);letter-spacing:.4px;text-transform:uppercase;margin-bottom:10px">Pending Hike Approval</div>
+      <div id="commPendingHikesList" style="font-size:12px;color:var(--txt3)">Loading…</div>
     </div>`:''}
     <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
       <div style="font-size:12px;font-weight:700;color:var(--txt2);letter-spacing:.4px;text-transform:uppercase;margin-bottom:10px">Members (${members.length})</div>
@@ -10432,6 +10751,41 @@ function _rejectCommunityPendingSpot(spotId,cid){
   _sbTry(db.from('community_pending_spots').delete().eq('id',spotId),'reject community spot');
   showToast('Spot rejected');
   setTimeout(()=>_loadCommunityPendingSpots(cid),300);
+}
+
+async function _loadCommunityPendingHikes(cid){
+  const listEl=document.getElementById('commPendingHikesList');
+  if(!listEl)return;
+  try{
+    const {data,error}=await db.from('hikes').select('*').eq('community_id',cid).eq('visibility','community').eq('status','pending');
+    if(error)throw error;
+    const rows=data||[];
+    if(!rows.length){listEl.innerHTML='<div style="padding:4px 0">No hikes pending approval</div>';return;}
+    listEl.innerHTML=rows.map(h=>{
+      const diffColor=h.difficulty==='Easy'?'#4CAF50':h.difficulty==='Hard'?'#E05252':'#D4A843';
+      return`<div style="background:var(--bg2);border-radius:12px;padding:12px;margin-bottom:8px">
+        <div style="font-size:13px;font-weight:700;color:var(--txt0)">${sanitize(h.name)}</div>
+        <div style="font-size:11px;color:var(--txt3);margin-top:2px">${h.distance||0} mi · ${h.elevation_gain||0} ft gain · <span style="color:${diffColor};font-weight:700">${h.difficulty}</span></div>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button onclick="_approveCommunityPendingHike('${h.id}','${cid}')" style="flex:1;padding:8px;background:rgba(184,232,122,.15);border:1.5px solid var(--accent);border-radius:8px;color:var(--accent);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Approve</button>
+          <button onclick="_rejectCommunityPendingHike('${h.id}','${cid}')" style="flex:1;padding:8px;background:rgba(196,82,74,.1);border:1.5px solid rgba(196,82,74,.4);border-radius:8px;color:var(--red);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Reject</button>
+        </div>
+      </div>`;
+    }).join('');
+  }catch(e){
+    console.warn('[Supabase] community pending hikes:',e);
+    listEl.innerHTML='<div style="padding:4px 0;color:var(--red)">Could not load pending hikes</div>';
+  }
+}
+function _approveCommunityPendingHike(hikeId,cid){
+  _sbTry(db.from('hikes').update({status:'approved'}).eq('id',hikeId),'approve community hike');
+  showToast('Hike approved!');
+  setTimeout(()=>{_loadCommunityPendingHikes(cid);_sbLoadHikes();},300);
+}
+function _rejectCommunityPendingHike(hikeId,cid){
+  _sbTry(db.from('hikes').delete().eq('id',hikeId),'reject community hike');
+  showToast('Hike rejected');
+  setTimeout(()=>_loadCommunityPendingHikes(cid),300);
 }
 
 function showMemberMenu(cid,uid,btn){
