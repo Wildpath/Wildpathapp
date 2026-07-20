@@ -45,6 +45,8 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0F0D0B;
 @keyframes userDotPulse{0%,100%{transform:translate(-50%,-50%) scale(1);opacity:.85}50%{transform:translate(-50%,-50%) scale(1.45);opacity:.2}}
 @keyframes drawCheck{from{stroke-dashoffset:40}to{stroke-dashoffset:0}}
 @keyframes pulse{0%,100%{opacity:.5}50%{opacity:1}}
+@keyframes measureBorderPulse{0%,100%{box-shadow:inset 0 0 0 2px rgba(184,232,122,.9)}50%{box-shadow:inset 0 0 0 2px rgba(184,232,122,.35)}}
+.measure-mode-border{position:absolute;inset:0;z-index:90;pointer-events:none;animation:measureBorderPulse 1.6s ease-in-out infinite}
 @keyframes pinPulseRing{0%{transform:scale(.3);opacity:.9}100%{transform:scale(3.2);opacity:0}}
 .pin-pulse-marker{width:24px;height:24px;border-radius:50%;border:3px solid #B8E87A;pointer-events:none;animation:pinPulseRing 1.4s ease-out 2}
 @keyframes _feedBurst{0%{opacity:1;transform:translate(-50%,-50%) scale(.5)}50%{opacity:1;transform:translate(-50%,-50%) scale(1.15)}100%{opacity:0;transform:translate(-50%,-50%) scale(1.3)}}

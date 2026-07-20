@@ -779,7 +779,10 @@ function initMap(){
     if(e.features&&e.features.length){
       const id=e.features[0].properties.id;
       const spot=[...spots,...userSpots,...personalSpots].find(s=>String(s.id)===String(id));
-      if(spot)openDetail(spot.id);
+      if(!spot)return;
+      // Measure mode: tapping a spot pin adds it as a measure point instead of opening detail
+      if(_measureModeActive){_addMeasurePoint(spot.lat,spot.lng);e.preventDefault();return;}
+      openDetail(spot.id);
       e.preventDefault();
     }
   });
@@ -788,6 +791,7 @@ function initMap(){
 
   // Map click — add-spot mode and sheet close
   map.on('click',e=>{
+    if(_measureModeActive){_addMeasurePoint(e.lngLat.lat,e.lngLat.lng);return;}
     if(addSpotMode){
       addSpotTempLat=e.lngLat.lat; addSpotTempLng=e.lngLat.lng;
       addSpotMode=false;
@@ -967,6 +971,176 @@ function _qpCreateFull(){
 function _cancelQuickPin(){
   if(_quickPinMarker){try{_quickPinMarker.remove();}catch(e){}_quickPinMarker=null;}
   document.getElementById('_quickPinCard')?.remove();
+}
+
+// ═══════════════════════════════════════════════════
+// DISTANCE MEASURING TOOL (Section 10) — three input
+// methods: tap points, type From/To locations, or tap
+// two spot pins in sequence (handled in spot-circles click).
+// ═══════════════════════════════════════════════════
+let _measureModeActive=false, _measurePoints=[], _measureDriving=false;
+
+function startMeasureMode(){
+  if(_measureModeActive){showToast('Already measuring');return;}
+  _measureModeActive=true;_measurePoints=[];_measureDriving=false;
+  const border=document.createElement('div');
+  border.id='_measureBorder';
+  border.className='measure-mode-border';
+  document.getElementById('map-screen')?.appendChild(border);
+  _showMeasureCard();
+  showToast('Tap points on the map to measure distance');
+}
+
+function _measureSegmentDistanceMi(lat1,lng1,lat2,lng2){
+  const straightMi=_haversine(lat1,lng1,lat2,lng2)*0.000621371;
+  return _measureDriving?straightMi*1.3:straightMi;
+}
+function _measureTotalDistanceMi(){
+  let total=0;
+  for(let i=1;i<_measurePoints.length;i++){
+    const a=_measurePoints[i-1],b=_measurePoints[i];
+    total+=_measureSegmentDistanceMi(a.lat,a.lng,b.lat,b.lng);
+  }
+  return total;
+}
+
+function _addMeasurePoint(lat,lng){
+  _measurePoints.push({lat,lng});
+  _renderMeasureOverlay();
+  _updateMeasureCard();
+}
+
+function _renderMeasureOverlay(){
+  if(!map)return;
+  const coords=_measurePoints.map(p=>[p.lng,p.lat]);
+  const lineGeo={type:'Feature',geometry:{type:'LineString',coordinates:coords}};
+  if(map.getSource('measure-line-src')){map.getSource('measure-line-src').setData(lineGeo);}
+  else{
+    map.addSource('measure-line-src',{type:'geojson',data:lineGeo});
+    map.addLayer({id:'measure-line',type:'line',source:'measure-line-src',layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':'#ffffff','line-width':2.5,'line-dasharray':[2,2]}});
+  }
+  const dotFeatures=_measurePoints.map(p=>({type:'Feature',geometry:{type:'Point',coordinates:[p.lng,p.lat]},properties:{}}));
+  const dotGeo={type:'FeatureCollection',features:dotFeatures};
+  if(map.getSource('measure-dots-src')){map.getSource('measure-dots-src').setData(dotGeo);}
+  else{
+    map.addSource('measure-dots-src',{type:'geojson',data:dotGeo});
+    map.addLayer({id:'measure-dots',type:'circle',source:'measure-dots-src',paint:{'circle-radius':5,'circle-color':'#ffffff','circle-stroke-width':1.5,'circle-stroke-color':'#000'}});
+  }
+  // Per-segment midpoint distance labels
+  const labelFeatures=[];
+  for(let i=1;i<_measurePoints.length;i++){
+    const a=_measurePoints[i-1],b=_measurePoints[i];
+    const mid=[(a.lng+b.lng)/2,(a.lat+b.lat)/2];
+    const segMi=_measureSegmentDistanceMi(a.lat,a.lng,b.lat,b.lng);
+    labelFeatures.push({type:'Feature',geometry:{type:'Point',coordinates:mid},properties:{label:segMi.toFixed(2)+' mi'}});
+  }
+  const labelGeo={type:'FeatureCollection',features:labelFeatures};
+  if(map.getSource('measure-labels-src')){map.getSource('measure-labels-src').setData(labelGeo);}
+  else{
+    map.addSource('measure-labels-src',{type:'geojson',data:labelGeo});
+    map.addLayer({id:'measure-labels',type:'symbol',source:'measure-labels-src',layout:{'text-field':['get','label'],'text-size':11,'text-font':['Open Sans Bold','Arial Unicode MS Bold']},paint:{'text-color':'#fff','text-halo-color':'rgba(0,0,0,.8)','text-halo-width':1.5}});
+  }
+}
+
+function _showMeasureCard(){
+  const existing=document.getElementById('_measureCard');
+  if(existing)existing.remove();
+  const card=document.createElement('div');
+  card.id='_measureCard';
+  card.style.cssText='position:absolute;left:12px;right:12px;bottom:calc(var(--nav-h) + 12px);z-index:850;background:var(--bg1);border:1px solid var(--border2);border-radius:16px;padding:14px;box-shadow:0 8px 24px rgba(0,0,0,.5)';
+  card.innerHTML=`
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <div>
+        <span id="_measureTotal" style="font-size:18px;font-weight:800;color:var(--accent)">0.00 mi</span>
+      </div>
+      <div onclick="_exitMeasureMode()" style="width:26px;height:26px;border-radius:50%;background:var(--bg2);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px;color:var(--txt2)">×</div>
+    </div>
+    <div style="display:flex;background:var(--bg2);border-radius:10px;padding:3px;margin-bottom:10px">
+      <div id="_measureModeStraight" onclick="_setMeasureDriveMode(false)" style="flex:1;text-align:center;padding:7px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;background:var(--accent);color:#0f1a0a">Straight Line</div>
+      <div id="_measureModeDriving" onclick="_setMeasureDriveMode(true)" style="flex:1;text-align:center;padding:7px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;color:var(--txt2)">Est. Driving</div>
+    </div>
+    <div id="_measureLocSearchRow" style="display:none;gap:8px;margin-bottom:10px;flex-direction:column">
+      <input id="_measureFromInput" placeholder="From…" oninput="_measureLocSearch('from',this.value)" style="background:var(--bg2);border:1px solid var(--border2);border-radius:8px;color:var(--txt0);padding:8px 10px;font-size:12px;font-family:var(--font);outline:none">
+      <div id="_measureFromDrop" class="ac-drop"></div>
+      <input id="_measureToInput" placeholder="To…" oninput="_measureLocSearch('to',this.value)" style="background:var(--bg2);border:1px solid var(--border2);border-radius:8px;color:var(--txt0);padding:8px 10px;font-size:12px;font-family:var(--font);outline:none">
+      <div id="_measureToDrop" class="ac-drop"></div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <div onclick="_toggleMeasureLocSearch()" style="flex:1;text-align:center;padding:9px;background:var(--bg2);border:1px solid var(--border2);border-radius:9px;font-size:11px;font-weight:700;color:var(--txt1);cursor:pointer">Type Locations</div>
+      <div onclick="_undoMeasurePoint()" style="flex:1;text-align:center;padding:9px;background:var(--bg2);border:1px solid var(--border2);border-radius:9px;font-size:11px;font-weight:700;color:var(--txt1);cursor:pointer">Undo</div>
+      <div onclick="_clearMeasurePoints()" style="flex:1;text-align:center;padding:9px;background:var(--bg2);border:1px solid var(--border2);border-radius:9px;font-size:11px;font-weight:700;color:var(--txt1);cursor:pointer">Clear</div>
+    </div>
+  `;
+  document.getElementById('app').appendChild(card);
+}
+function _updateMeasureCard(){
+  const el=document.getElementById('_measureTotal');
+  if(el)el.textContent=_measureTotalDistanceMi().toFixed(2)+' mi';
+}
+function _setMeasureDriveMode(driving){
+  _measureDriving=driving;
+  const straightEl=document.getElementById('_measureModeStraight');
+  const drivingEl=document.getElementById('_measureModeDriving');
+  if(straightEl){straightEl.style.background=driving?'':'var(--accent)';straightEl.style.color=driving?'var(--txt2)':'#0f1a0a';}
+  if(drivingEl){drivingEl.style.background=driving?'var(--accent)':'';drivingEl.style.color=driving?'#0f1a0a':'var(--txt2)';}
+  _renderMeasureOverlay();
+  _updateMeasureCard();
+}
+function _undoMeasurePoint(){
+  _measurePoints.pop();
+  _renderMeasureOverlay();
+  _updateMeasureCard();
+}
+function _clearMeasurePoints(){
+  _measurePoints=[];
+  _renderMeasureOverlay();
+  _updateMeasureCard();
+}
+function _toggleMeasureLocSearch(){
+  const row=document.getElementById('_measureLocSearchRow');
+  if(row)row.style.display=row.style.display==='none'?'flex':'none';
+}
+let _measureFromLL=null,_measureToLL=null;
+async function _measureLocSearch(which,q){
+  const dropId=which==='from'?'_measureFromDrop':'_measureToDrop';
+  const drop=document.getElementById(dropId);
+  if(!drop)return;
+  if(!q.trim()){drop.classList.remove('open');return;}
+  clearTimeout(window['_measureSearchTimer_'+which]);
+  window['_measureSearchTimer_'+which]=setTimeout(async()=>{
+    try{
+      const res=await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5`,{headers:{'Accept-Language':'en-US,en'}});
+      const data=await res.json();
+      drop.innerHTML=data.map(d=>`<div class="ac-item" onclick='_selectMeasureLoc("${which}",${d.lat},${d.lon},${JSON.stringify((d.display_name||'').split(',')[0])})'><div class="ac-name">${sanitize((d.display_name||'').split(',')[0])}</div></div>`).join('');
+      drop.classList.add('open');
+    }catch(e){}
+  },350);
+}
+function _selectMeasureLoc(which,lat,lng,name){
+  const inp=document.getElementById(which==='from'?'_measureFromInput':'_measureToInput');
+  const drop=document.getElementById(which==='from'?'_measureFromDrop':'_measureToDrop');
+  if(inp)inp.value=name;
+  if(drop)drop.classList.remove('open');
+  if(which==='from')_measureFromLL={lat:parseFloat(lat),lng:parseFloat(lng)};
+  else _measureToLL={lat:parseFloat(lat),lng:parseFloat(lng)};
+  if(_measureFromLL&&_measureToLL){
+    _measurePoints=[_measureFromLL,_measureToLL];
+    _renderMeasureOverlay();
+    _updateMeasureCard();
+    const bounds=[[Math.min(_measureFromLL.lng,_measureToLL.lng),Math.min(_measureFromLL.lat,_measureToLL.lat)],[Math.max(_measureFromLL.lng,_measureToLL.lng),Math.max(_measureFromLL.lat,_measureToLL.lat)]];
+    if(map)map.fitBounds(bounds,{padding:80,duration:600});
+  }
+}
+function _exitMeasureMode(){
+  _measureModeActive=false;
+  _measurePoints=[];
+  _measureFromLL=null;_measureToLL=null;
+  document.getElementById('_measureBorder')?.remove();
+  document.getElementById('_measureCard')?.remove();
+  if(map){
+    ['measure-line','measure-dots','measure-labels'].forEach(id=>{try{if(map.getLayer(id))map.removeLayer(id);}catch(e){}});
+    ['measure-line-src','measure-dots-src','measure-labels-src'].forEach(id=>{try{if(map.getSource(id))map.removeSource(id);}catch(e){}});
+  }
 }
 
 function _buildSpotsGeoJSON(){
