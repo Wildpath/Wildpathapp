@@ -528,22 +528,38 @@ function _sbSubscribeRealtime(){
 // INIT
 // ═══════════════════════════════════════════════════
 let _guestMode=false,_sbSession=null;
+const _LAUNCH_SCREEN_MIN_MS=800;
 window.onload=async()=>{
   _migrateStorageKeys();
+  const launchStart=Date.now();
   try{
     const {data}=await db.auth.getSession();
     _sbSession=data?.session||null;
   }catch(e){console.warn('[Supabase] getSession failed:',e);}
+  // Keep the launch screen up for a minimum ~800ms so it never just flashes,
+  // regardless of how fast (or slow) the session check resolves.
+  const elapsed=Date.now()-launchStart;
+  if(elapsed<_LAUNCH_SCREEN_MIN_MS)await new Promise(r=>setTimeout(r,_LAUNCH_SCREEN_MIN_MS-elapsed));
   if(_sbSession){
     await _sbLoadCurrentUser(_sbSession.user);
+    _hideLaunchScreen();
     _hideLoginScreen();
     _launchApp();
     _sbHydrate().catch(e=>console.warn('[Supabase] hydrate error (non-blocking):',e));
   } else {
     _currentUser=null;
+    _hideLaunchScreen();
     _showLoginScreen();
   }
 };
+function _hideLaunchScreen(){
+  const ls=document.getElementById('launchScreen');
+  if(ls){
+    ls.style.opacity='0';
+    ls.style.transition='opacity 0.3s ease';
+    setTimeout(()=>{ls.style.display='none';},310);
+  }
+}
 
 // Load (or lazily create) the profiles row for the signed-in auth user
 async function _sbLoadCurrentUser(authUser){
@@ -725,8 +741,6 @@ function initMap(){
     const bearing=-map.getBearing();
     const needle=document.getElementById('compassNeedle');
     if(needle)needle.style.transform=`rotate(${bearing}deg)`;
-    const miniNeedle=document.getElementById('miniCompassNeedle');
-    if(miniNeedle)miniNeedle.style.transform=`rotate(${bearing}deg)`;
   });
 
   map.on('load',()=>{
@@ -2099,8 +2113,8 @@ function showTab(tabName) {
   _tabAnimTimers.forEach(t=>clearTimeout(t));
   _tabAnimTimers=[];
 
-  var screens = ['map-screen','community-screen','profile-screen','explore-screen','screen-plan'];
-  var navs = ['nav-map','nav-community','nav-profile','nav-explore'];
+  var screens = ['map-screen','community-screen','profile-screen','screen-plan'];
+  var navs = ['nav-map','nav-community','nav-profile'];
 
   // Determine slide direction based on tab order
   const prevIdx=_tabOrder.indexOf(_prevTab);
@@ -2153,7 +2167,6 @@ function showTab(tabName) {
   if (tabName === 'map' && map) setTimeout(function(){ map.resize(); }, 50);
   if (tabName === 'community') buildCommunityScreen();
   if (tabName === 'profile') buildProfile();
-  if (tabName === 'explore') buildExploreScreen();
   if (tabName === 'plan') _onShowPlanScreen();
   // Show messages FAB only when Community tab is active; reset to community view
   const msgFab = document.getElementById('commMsgFab');
@@ -3423,120 +3436,16 @@ document.addEventListener('click',e=>{
   if(!e.target.closest('.ac-wrap'))document.querySelectorAll('.ac-drop').forEach(d=>d.classList.remove('open'));
 });
 
-// ═══════════════════════════════════════════════════
-// EXPLORE SCREEN
-// ═══════════════════════════════════════════════════
-const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-function buildExploreScreen(){
-  buildSeasonalList();
-  buildHiddenGems();
-  buildRecentlyAdded();
-  // Reset search state
-  const inp=document.getElementById('exploreSearchInput');
-  if(inp&&inp.value){inp.value='';filterExplore('');}
-}
-
-function filterExplore(query){
-  const q=(query||'').trim().toLowerCase();
-  const mainContent=document.getElementById('exploreMainContent');
-  const searchResults=document.getElementById('exploreSearchResults');
-  const clearBtn=document.getElementById('exploreClearBtn');
-  if(clearBtn)clearBtn.style.display=q?'block':'none';
-  if(!q){
-    if(mainContent)mainContent.style.display='';
-    if(searchResults)searchResults.style.display='none';
-    return;
-  }
-  if(mainContent)mainContent.style.display='none';
-  if(searchResults)searchResults.style.display='block';
-  const all=[...spots,...userSpots];
-  const matches=all.filter(s=>{
-    return s.name.toLowerCase().includes(q)||
-      (s.typeLabel||'').toLowerCase().includes(q)||
-      (s.type||'').toLowerCase().includes(q);
-  });
-  if(!matches.length){
-    searchResults.innerHTML=`<div style="padding:48px 20px;text-align:center;color:var(--txt3)"><div style="margin-bottom:12px"><svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="var(--txt3)" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div><div style="font-size:15px;font-weight:600;color:var(--txt2)">No spots found</div><div style="font-size:13px;margin-top:6px">for "<strong>${query}</strong>"</div></div>`;
-    return;
-  }
-  searchResults.innerHTML=matches.map(s=>spotCardHTML(s)).join('');
-}
-function clearExploreSearch(){
-  const inp=document.getElementById('exploreSearchInput');
-  if(inp)inp.value='';
-  filterExplore('');
-}
-
+// goToSpot — fly to a spot on the Map and open its detail sheet.
+// Retained from the removed Explore screen because the favorites list uses it.
 function goToSpot(id){
-  const s=[...spots,...userSpots].find(x=>x.id===id);
+  const s=[...spots,...userSpots].find(x=>String(x.id)===String(id));
   if(!s)return;
   showTab('map');
   setTimeout(()=>{
     if(map)map.flyTo({center:[s.lng,s.lat],zoom:14,duration:1200,essential:true});
     setTimeout(()=>openDetail(s.id),1300);
   },200);
-}
-
-function buildSeasonalList(){
-  const mo=new Date().getMonth();
-  const inSeason=spots.filter(s=>s.season&&s.season[mo]===2).slice(0,5);
-  const el=document.getElementById('seasonalList');
-  el.innerHTML=inSeason.map(s=>spotCardHTML(s,`Best in ${MONTHS[mo]}`)).join('');
-}
-
-function buildHiddenGems(){
-  const gems=spots.filter(s=>s.hiddenGem).sort((a,b)=>b.rating-a.rating).slice(0,6);
-  document.getElementById('hiddenGemsList').innerHTML=gems.map(s=>spotCardHTML(s,null,true)).join('');
-}
-
-function buildRecentlyAdded(){
-  // Show user-submitted spots first, then last 8 spots in array (most recently added to the app)
-  const recent=[...userSpots,...spots.slice(-8)].slice(0,6);
-  document.getElementById('recentlyAddedList').innerHTML=recent.map(s=>spotCardHTML(s,s.userSubmitted?'You added':'New spot')).join('');
-}
-
-function spotCardHTML(s,badge,showGem){
-  return`<div class="spot-card-h" onclick="goToSpot('${s.id}')">
-    <div class="spot-card-thumb" style="background:${s.heroGradient}"></div>
-    <div class="spot-card-info">
-      <div class="spot-card-name">${sanitize(s.name)}${showGem?'<span class="gem-badge">Hidden Gem</span>':''}</div>
-      <div class="spot-card-meta">${s.rating} · ${s.distance}</div>
-      <span class="spot-card-type" style="background:${s.typeColor}22;color:${s.typeColor}">${s.typeLabel}</span>
-      ${badge?`<span style="font-size:10px;color:var(--txt3);margin-left:6px">${badge}</span>`:''}
-    </div>
-  </div>`;
-}
-
-function goToSpot(id){
-  const s=[...spots,...userSpots].find(x=>x.id===id);
-  if(!s)return;
-  showTab('map');
-  setTimeout(()=>{
-    leafletMap.flyTo([s.lat,s.lng],14,{animate:true,duration:1.2});
-    setTimeout(()=>openSheet(s.id),1200);
-  },200);
-}
-
-
-let activeDriveTime=0;
-function setDriveFilter(el,minutes){
-  document.querySelectorAll('.dt-chip').forEach(c=>c.classList.remove('active'));
-  if(minutes!==0&&(_userLat==null||_userLng==null)){
-    document.querySelector('.dt-chip[data-dt="0"]')?.classList.add('active');
-    activeDriveTime=0;
-    showToast('Enable location to filter by drive time');
-    return;
-  }
-  el.classList.add('active'); activeDriveTime=minutes;
-  buildExploreScreen();
-  const filtered=minutes===0?[...spots,...userSpots]:[...spots,...userSpots].filter(s=>{
-    const distMi=_haversineDistMi(_userLat,_userLng,s.lat,s.lng);
-    const hrs=distMi/45; // estimate avg speed 45 mph
-    return hrs*60<=minutes;
-  });
-  document.getElementById('seasonalList').innerHTML=filtered.filter(s=>{
-    const mo=new Date().getMonth();return s.season&&s.season[mo]===2;
-  }).slice(0,5).map(s=>spotCardHTML(s)).join('');
 }
 
 // ═══════════════════════════════════════════════════
@@ -4822,8 +4731,6 @@ function _refreshAllDistances(){
     s._realDistMi=d;
     s._realDistStr=d<1?`${Math.round(d*5280)} ft away`:d<10?`${d.toFixed(1)} mi away`:`${Math.round(d)} mi away`;
   });
-  // Re-sort explore screen by real distance
-  buildExploreScreen();
 }
 
 function findMe(){
@@ -7185,11 +7092,7 @@ function _buildOfflinePanel(panel){
       <div style="font-size:16px;font-weight:800;color:var(--txt0)">Download Area</div>
       <button onclick="closeOfflineDownload()" style="background:var(--bg3);border:none;color:var(--txt1);width:28px;height:28px;border-radius:50%;font-size:14px;cursor:pointer">×</button>
     </div>
-    <p style="font-size:12px;color:var(--txt2);margin-bottom:12px">Pinch to zoom the map, or use the buttons below, then drag the corner handles to resize the area.</p>
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      <div onclick="_mapZoomStep(-1)" style="flex:1;text-align:center;padding:8px;background:var(--bg2);border:1px solid var(--border2);border-radius:10px;font-size:16px;font-weight:700;color:var(--txt1);cursor:pointer">−</div>
-      <div onclick="_mapZoomStep(1)" style="flex:1;text-align:center;padding:8px;background:var(--bg2);border:1px solid var(--border2);border-radius:10px;font-size:16px;font-weight:700;color:var(--txt1);cursor:pointer">+</div>
-    </div>
+    <p style="font-size:12px;color:var(--txt2);margin-bottom:12px">Pinch or double-tap to zoom the map, then drag the corner handles to resize the area.</p>
     <!-- Preset buttons -->
     <div style="display:flex;gap:8px;margin-bottom:12px">
       <button onclick="setOfflinePreset('small')" style="flex:1;padding:8px;background:var(--bg2);border:1px solid var(--border2);color:var(--txt1);border-radius:10px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit"> Small</button>
@@ -7442,19 +7345,6 @@ let _compassHeading=0;
 let _compassWatchId=null;
 let _compassAnimId=null;
 let _compassGpsWatchId=null;
-
-// ── Zoom pill: one level per tap, 300ms animation ──
-function _mapZoomStep(dir){
-  if(!map)return;
-  const target=map.getZoom()+dir;
-  map.easeTo({zoom:target,duration:300});
-}
-
-// ── Mini persistent compass indicator: tap resets map to north-up ──
-function resetMapNorth(){
-  if(!map)return;
-  map.easeTo({bearing:0,duration:500,easing:t=>t*(2-t)});
-}
 
 function openCompassPanel(){
   const panel=document.getElementById('compassPanel');
@@ -11239,47 +11129,6 @@ function revokeVerifiedExplorer(userId){
   showToast('Verified status revoked');
 }
 
-// ── Enhanced explore/search integration ───────────────────────
-function buildEnhancedSearch(query){
-  if(!query.trim()){
-    _buildSearchDefault();
-    return;
-  }
-  const q=query.toLowerCase();
-  const allS=[...spots,...userSpots];
-  const spotRes=allS.filter(s=>s.name.toLowerCase().includes(q));
-  const users=JSON.parse(localStorage.getItem('wildpath-users')||'[]');
-  const userRes=users.filter(u=>(u.username||'').toLowerCase().includes(q));
-  const commRes=getCommunities().filter(c=>c.name.toLowerCase().includes(q)||c.desc?.toLowerCase().includes(q));
-  const postRes=getPosts().filter(p=>p.caption?.toLowerCase().includes(q)||p.spotName?.toLowerCase().includes(q));
-  // Save to recent
-  const recent=_cgGet(CK.searches)||[];
-  if(!recent.includes(query)){recent.unshift(query);_cgSet(CK.searches,recent.slice(0,10));}
-  return {spots:spotRes,users:userRes,communities:commRes,posts:postRes};
-}
-
-function _buildSearchDefault(){
-  // Show recent searches + trending
-  const recent=_cgGet(CK.searches)||[];
-  const trending=[...spots,...userSpots].slice(0,5);
-  const container=document.getElementById('exploreSearchResults');
-  if(!container)return;
-  let html='';
-  if(recent.length){
-    html+=`<div style="padding:10px 14px;font-size:11px;font-weight:700;color:var(--txt3);letter-spacing:.4px;text-transform:uppercase">Recent Searches</div>`;
-    html+=recent.map(r=>`<div class="search-result-item" onclick="doExploreSearch('${r}')">
-      <div class="search-result-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--txt3)" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
-      <div class="search-result-info"><div class="search-result-title">${r}</div></div>
-    </div>`).join('');
-  }
-  html+=`<div style="padding:10px 14px;font-size:11px;font-weight:700;color:var(--txt3);letter-spacing:.4px;text-transform:uppercase">Trending Spots</div>`;
-  html+=trending.map(s=>`<div class="search-result-item" onclick="openDetail('${s.id}')">
-    <div class="search-result-icon" style="background:${s.heroGradient||'var(--bg3)'}"></div>
-    <div class="search-result-info"><div class="search-result-title">${s.name}</div><div class="search-result-sub">${s.typeLabel||''}</div></div>
-  </div>`).join('');
-  container.innerHTML=html;
-}
-
 // ── Community is wired via showTab('community') → buildCommunityScreen() ──
 
 // ── Notification helper from admin ─────────────────────────────
@@ -13132,11 +12981,6 @@ function _secondaryMapControlsHTML(prefix){
         </div>`).join('')}
     </div>
     <div id="${prefix}RightStack" style="position:absolute;bottom:20px;right:16px;z-index:100;display:flex;flex-direction:column-reverse;align-items:center;gap:10px">
-      <div class="map-zoom-pill">
-        <div class="map-zoom-btn" onclick="_secondaryMaps['${prefix}']?.easeTo({zoom:_secondaryMaps['${prefix}'].getZoom()+1,duration:300})">+</div>
-        <div class="map-zoom-divider"></div>
-        <div class="map-zoom-btn" onclick="_secondaryMaps['${prefix}']?.easeTo({zoom:_secondaryMaps['${prefix}'].getZoom()-1,duration:300})">−</div>
-      </div>
       <div id="${prefix}CompassOverlay" onclick="_secondaryMaps['${prefix}']?.easeTo({bearing:0,duration:500})" style="width:44px;height:44px;border-radius:50%;background:rgba(0,0,0,.45);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.35)">
         <svg viewBox="0 0 32 32" width="24" height="24"><circle cx="16" cy="16" r="15" fill="rgba(22,19,16,.7)" stroke="rgba(196,149,106,.4)" stroke-width="1"/>
           <g id="${prefix}CompassNeedle" style="transform-origin:16px 16px;transition:transform .15s linear">

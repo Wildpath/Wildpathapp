@@ -20,15 +20,29 @@
 <script src="supabase.js"></script>
 <link href="https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.css" rel="stylesheet"/>
 <script src="https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.js"></script>
-<link rel="stylesheet" href="styles.css?v=11">
+<link rel="stylesheet" href="styles.css?v=12">
 </head>
 <body>
 
+<!-- ── APP LAUNCH SCREEN — shown briefly (~800ms) on cold start while session
+     state resolves, then fades to either the Map (existing session) or the
+     Login screen (new visitor). Same bundled photo + overlay as Login. ── -->
+<div id="launchScreen" style="position:fixed;inset:0;z-index:100000;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0d120d">
+  <div style="position:absolute;inset:0;background-image:url('assets/launch-bg.jpg');background-size:cover;background-position:center"></div>
+  <div style="position:absolute;inset:0;background:linear-gradient(to bottom,rgba(10,20,15,0.75) 0%,rgba(10,20,15,0.92) 100%)"></div>
+  <div style="position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;gap:10px">
+    <svg width="52" height="52" viewBox="0 0 48 48" fill="none"><path d="M4 40 L16 18 L24 28 L32 16 L44 40 Z" fill="#B8E87A" opacity=".9"/><path d="M2 40 Q8 36 14 38 Q20 40 26 37 Q32 34 38 36 Q42 38 46 40" stroke="#B8E87A" stroke-width="1.5" stroke-linecap="round" fill="none" opacity=".45"/></svg>
+    <div style="font-size:30px;font-weight:700;letter-spacing:-0.03em;color:#fff">WildPath</div>
+    <div style="font-size:12px;color:rgba(255,255,255,0.45)">Explore the unknown</div>
+  </div>
+</div>
+
 <!-- ── LOGIN SCREEN ──────────────────────────────── -->
 <div id="loginScreen" style="position:fixed;inset:0;z-index:99999;background:#0d120d;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;padding-bottom:40px">
-  <!-- Background photo -->
-  <div style="position:absolute;inset:0;background:linear-gradient(160deg,#0d1a0e 0%,#1a2e1b 50%,#0f1f10 100%)"></div>
-  <div style="position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,0.6) 0%,transparent 60%)"></div>
+  <!-- Background photo — bundled local asset (assets/launch-bg.jpg), never an external/hotlinked URL,
+       so this screen can never break due to a third-party image service going down. -->
+  <div style="position:absolute;inset:0;background-image:url('assets/launch-bg.jpg');background-size:cover;background-position:center"></div>
+  <div style="position:absolute;inset:0;background:linear-gradient(to bottom,rgba(10,20,15,0.75) 0%,rgba(10,20,15,0.92) 100%)"></div>
   <!-- Logo -->
   <div style="position:absolute;top:15%;left:0;right:0;display:flex;flex-direction:column;align-items:center;gap:10px;z-index:2">
     <svg width="48" height="48" viewBox="0 0 48 48" fill="none"><path d="M4 40 L16 18 L24 28 L32 16 L44 40 Z" fill="#B8E87A" opacity=".9"/><path d="M2 40 Q8 36 14 38 Q20 40 26 37 Q32 34 38 36 Q42 38 46 40" stroke="#B8E87A" stroke-width="1.5" stroke-linecap="round" fill="none" opacity=".45"/></svg>
@@ -90,19 +104,8 @@
       </svg>
     </div>
 
-    <!-- Small persistent bearing indicator — always visible, no tap needed to rotate; tap resets north -->
-    <div id="miniCompassIndicator" title="Reset to North" onclick="resetMapNorth()">
-      <svg viewBox="0 0 32 32" width="20" height="20">
-        <circle cx="16" cy="16" r="15" fill="rgba(22,19,16,.85)" stroke="rgba(196,149,106,.35)" stroke-width="1"/>
-        <g id="miniCompassNeedle" style="transform-origin:16px 16px;transition:transform .15s linear">
-          <polygon points="16,6 18.5,16 16,18 13.5,16" fill="#e05252"/>
-          <polygon points="16,18 18.5,16 16,26 13.5,16" fill="rgba(200,184,168,.6)"/>
-        </g>
-      </svg>
-    </div>
-
     <!-- Locate Me — also requests iOS DeviceOrientation permission on first tap -->
-    <div id="locateMeBtn" title="Find my location" onclick="findMe()" style="position:absolute;top:114px;left:22px;width:32px;height:32px;z-index:99;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:50%;background:rgba(26,23,20,.7);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 2px 8px rgba(0,0,0,.3)">
+    <div id="locateMeBtn" title="Find my location" onclick="findMe()" style="position:absolute;top:76px;left:22px;width:32px;height:32px;z-index:99;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:50%;background:rgba(26,23,20,.7);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);box-shadow:0 2px 8px rgba(0,0,0,.3)">
       <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="#5B9BD4" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
     </div>
 
@@ -264,13 +267,6 @@
       <!-- My Saved Places quick access -->
       <div id="savedPlacesBtn" class="map-saved-btn" title="My Saved Places" onclick="openSavedPlacesSheet()">
         <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="#fff" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
-      </div>
-
-      <!-- Zoom controls -->
-      <div class="map-zoom-pill">
-        <div class="map-zoom-btn" onclick="_mapZoomStep(1)">+</div>
-        <div class="map-zoom-divider"></div>
-        <div class="map-zoom-btn" onclick="_mapZoomStep(-1)">−</div>
       </div>
 
       <!-- Compass — tap opens the full detailed compass panel (heading/altitude/GPS) -->
@@ -1111,58 +1107,6 @@
 
   </div><!-- end screen-home -->
 
-  <!-- ── EXPLORE SCREEN ───────────────────────────── -->
-  <div class="screen" id="explore-screen">
-    <div class="explore-header">
-      <div class="screen-title">Explore</div>
-      <div class="screen-sub">Discover your next adventure</div>
-    </div>
-    <!-- Search bar -->
-    <div style="padding:0 16px 12px;background:var(--bg0);flex-shrink:0">
-      <div style="display:flex;align-items:center;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.1);border-radius:50px;height:44px;padding:0 14px;gap:10px">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input id="exploreSearchInput" type="search" placeholder="Search spots, trails, locations…"
-          style="flex:1;background:none;border:none;outline:none;color:#fff;font-size:14px;font-family:inherit"
-          oninput="filterExplore(this.value)" autocomplete="off">
-        <svg id="exploreClearBtn" onclick="clearExploreSearch()" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2.5" style="cursor:pointer;display:none"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </div>
-    </div>
-    <!-- Search results (shown when query active) -->
-    <div id="exploreSearchResults" style="display:none;flex:1;overflow-y:auto;padding:0 16px"></div>
-    <div class="explore-scroll" id="exploreMainContent">
-
-      <!-- Drive time filter -->
-      <div class="explore-section">
-        <div class="explore-section-title">Filter by Drive Time</div>
-        <div class="drivetime-strip">
-          <div class="dt-chip active" data-dt="0" onclick="setDriveFilter(this,0)">Any</div>
-          <div class="dt-chip" data-dt="30" onclick="setDriveFilter(this,30)">30 min</div>
-          <div class="dt-chip" data-dt="60" onclick="setDriveFilter(this,60)">1 hour</div>
-          <div class="dt-chip" data-dt="120" onclick="setDriveFilter(this,120)">2 hours</div>
-          <div class="dt-chip" data-dt="180" onclick="setDriveFilter(this,180)">3 hours</div>
-        </div>
-      </div>
-
-      <!-- Seasonal spotlight -->
-      <div class="explore-section">
-        <div class="explore-section-title">In Season Now</div>
-        <div id="seasonalList"></div>
-      </div>
-
-      <!-- Hidden gems -->
-      <div class="explore-section">
-        <div class="explore-section-title">Hidden Gems</div>
-        <div id="hiddenGemsList"></div>
-      </div>
-
-      <!-- Recently added -->
-      <div class="explore-section">
-        <div class="explore-section-title">Recently Added</div>
-        <div id="recentlyAddedList"></div>
-      </div>
-    </div>
-  </div>
-
   <!-- ── PROFILE SCREEN ────────────────────────────── -->
   <div class="screen" id="profile-screen">
     <!-- Fixed header -->
@@ -1889,10 +1833,6 @@
       <div class="nav-icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg></div>
       <div class="nav-label">Map</div>
     </div>
-    <div id="nav-explore" class="nav-item" data-screen="explore" onclick="showTab('explore')" style="flex:1">
-      <div class="nav-icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>
-      <div class="nav-label">Explore</div>
-    </div>
     <div id="nav-community" class="nav-item" data-screen="community" onclick="showTab('community')" style="flex:1;position:relative">
       <div class="nav-icon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
       <div class="nav-label">Community</div>
@@ -2012,7 +1952,7 @@
 </div><!-- #app -->
 
 
-<script src="data.js?v=27"></script>
-<script src="app.js?v=27"></script>
+<script src="data.js?v=28"></script>
+<script src="app.js?v=28"></script>
 </body>
 </html>
