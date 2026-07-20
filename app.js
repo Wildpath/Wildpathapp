@@ -768,7 +768,7 @@ function initMap(){
   map.on('click','spot-circles',e=>{
     if(e.features&&e.features.length){
       const id=e.features[0].properties.id;
-      const spot=[...spots,...userSpots].find(s=>s.id===id);
+      const spot=[...spots,...userSpots,...personalSpots].find(s=>String(s.id)===String(id));
       if(spot)openDetail(spot.id);
       e.preventDefault();
     }
@@ -790,6 +790,8 @@ function initMap(){
     }
     if(sheetOpen){closeSheet();}
   });
+
+  _initLongPressPin(map);
 
   // Sheet swipe dismiss
   const sheet=document.getElementById('spotSheet');
@@ -815,6 +817,147 @@ const SPOT_TYPE_COLORS={
   waterfall:'#6ABCD4',natural_slide:'#6ABCD4',rock_climbing:'#D4A843'
 };
 function _spotColor(type){return SPOT_TYPE_COLORS[type]||'#B8E87A';}
+
+// ═══════════════════════════════════════════════════
+// LONG-PRESS QUICK PIN (Section 2) — hold 500ms within
+// 10px tolerance anywhere on a map to drop a temp pin
+// with inline Personal/Community/Global tier tiles.
+// ═══════════════════════════════════════════════════
+let _mapLpTimer=null, _lpStartPoint=null, _lpActive=false, _lpMapRef=null;
+let _quickPinMarker=null, _quickPinLat=null, _quickPinLng=null, _quickPinTier='personal';
+
+function _initLongPressPin(mapInstance){
+  const start=e=>{
+    _lpActive=true;
+    _lpStartPoint=e.point;
+    clearTimeout(_mapLpTimer);
+    _mapLpTimer=setTimeout(()=>{
+      if(_lpActive)_dropQuickPin(mapInstance,e.lngLat.lat,e.lngLat.lng);
+    },500);
+  };
+  const move=e=>{
+    if(!_lpActive||!_lpStartPoint)return;
+    const dx=e.point.x-_lpStartPoint.x, dy=e.point.y-_lpStartPoint.y;
+    if(Math.hypot(dx,dy)>10){clearTimeout(_mapLpTimer);_lpActive=false;}
+  };
+  const end=()=>{_lpActive=false;clearTimeout(_mapLpTimer);};
+  mapInstance.on('touchstart',start);
+  mapInstance.on('touchmove',move);
+  mapInstance.on('touchend',end);
+  mapInstance.on('mousedown',start);
+  mapInstance.on('mousemove',move);
+  mapInstance.on('mouseup',end);
+}
+
+function _dropQuickPin(mapInstance,lat,lng){
+  _lpActive=false;
+  _quickPinLat=lat;_quickPinLng=lng;_quickPinTier='personal';
+  _lpMapRef=mapInstance;
+  if(_quickPinMarker){try{_quickPinMarker.remove();}catch(e){}}
+  const el=document.createElement('div');
+  el.style.cssText='width:26px;height:26px;border-radius:50% 50% 50% 0;background:#B8E87A;border:2px solid #fff;transform:rotate(-45deg);box-shadow:0 2px 8px rgba(0,0,0,.4)';
+  _quickPinMarker=new mapboxgl.Marker({element:el,anchor:'bottom'}).setLngLat([lng,lat]).addTo(mapInstance);
+  _pulseAtLocation(lat,lng);
+  _showQuickPinCard(lat,lng);
+}
+
+async function _showQuickPinCard(lat,lng){
+  const existing=document.getElementById('_quickPinCard');
+  if(existing)existing.remove();
+  const card=document.createElement('div');
+  card.id='_quickPinCard';
+  card.style.cssText='position:absolute;left:12px;right:12px;bottom:calc(var(--nav-h) + 12px);z-index:850;background:var(--bg1);border:1px solid var(--border2);border-radius:16px;padding:14px;box-shadow:0 8px 24px rgba(0,0,0,.5)';
+  card.innerHTML=`
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:10px">
+      <div>
+        <div id="_qpAddress" style="font-size:13px;font-weight:700;color:var(--txt0)">Looking up address…</div>
+        <div style="font-size:11px;color:var(--txt3);margin-top:2px">${lat.toFixed(5)}, ${lng.toFixed(5)}</div>
+      </div>
+      <div onclick="_cancelQuickPin()" style="width:26px;height:26px;border-radius:50%;background:var(--bg2);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px;color:var(--txt2);flex-shrink:0">×</div>
+    </div>
+    <div id="_qpTierTiles" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px">
+      <div data-tier="personal" onclick="_qpSelectTier('personal')" style="border:1.5px solid var(--accent);background:rgba(184,232,122,.1);border-radius:10px;padding:8px 4px;text-align:center;cursor:pointer">
+        <div style="font-size:11px;font-weight:700;color:var(--txt0)">Personal</div>
+      </div>
+      <div data-tier="community" onclick="_qpSelectTier('community')" style="border:1.5px solid var(--border2);background:var(--bg2);border-radius:10px;padding:8px 4px;text-align:center;cursor:pointer">
+        <div style="font-size:11px;font-weight:700;color:var(--txt0)">Community</div>
+      </div>
+      <div data-tier="global" onclick="_qpSelectTier('global')" style="border:1.5px solid var(--border2);background:var(--bg2);border-radius:10px;padding:8px 4px;text-align:center;cursor:pointer">
+        <div style="font-size:11px;font-weight:700;color:var(--txt0)">Global</div>
+      </div>
+    </div>
+    <div id="_qpCommunityPicker" style="display:none;margin-bottom:10px">
+      <select id="_qpCommunitySelect" style="width:100%;background:var(--bg2);border:1px solid var(--border2);border-radius:8px;color:var(--txt0);padding:8px;font-size:12px;font-family:var(--font)"></select>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button onclick="_qpSaveNow()" style="flex:1;padding:11px;background:var(--accent);color:#0f1a0a;border:none;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">Save as Personal Spot</button>
+      <button onclick="_qpCreateFull()" style="flex:1;padding:11px;background:var(--bg2);border:1px solid var(--border2);color:var(--txt0);border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font)">Create Full Spot</button>
+    </div>
+  `;
+  document.getElementById('app').appendChild(card);
+  try{
+    const res=await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=16`,{headers:{'Accept-Language':'en-US,en'}});
+    const data=await res.json();
+    const addrEl=document.getElementById('_qpAddress');
+    if(addrEl)addrEl.textContent=data.display_name?data.display_name.split(',').slice(0,3).join(', '):'Unnamed location';
+  }catch(e){
+    const addrEl=document.getElementById('_qpAddress');
+    if(addrEl)addrEl.textContent='Unnamed location';
+  }
+}
+
+function _qpSelectTier(tier){
+  _quickPinTier=tier;
+  document.querySelectorAll('#_qpTierTiles [data-tier]').forEach(t=>{
+    const isSel=t.dataset.tier===tier;
+    t.style.borderColor=isSel?'var(--accent)':'var(--border2)';
+    t.style.background=isSel?'rgba(184,232,122,.1)':'var(--bg2)';
+  });
+  const picker=document.getElementById('_qpCommunityPicker');
+  if(picker){
+    picker.style.display=tier==='community'?'block':'none';
+    if(tier==='community'){
+      const sel=document.getElementById('_qpCommunitySelect');
+      const myUid=String(_myUid());
+      const myComms=getCommunities().filter(c=>getMembers(c.id).includes(myUid));
+      sel.innerHTML=myComms.length?myComms.map(c=>`<option value="${c.id}">${sanitize(c.name)}</option>`).join(''):'<option value="">Join a community first</option>';
+    }
+  }
+  const saveBtn=document.querySelector('#_quickPinCard button');
+  if(saveBtn)saveBtn.textContent=tier==='personal'?'Save as Personal Spot':tier==='community'?'Submit to Community':'Submit for Review';
+}
+
+function _qpSaveNow(){
+  if(isGuest()){showLoginScreen();return;}
+  const addrEl=document.getElementById('_qpAddress');
+  const name=(addrEl?.textContent||'New Spot').split(',')[0].trim()||'New Spot';
+  if(_quickPinTier==='personal'){
+    _submitPersonalSpot(name,'scenic',_quickPinLat,_quickPinLng,'',[]);
+  } else if(_quickPinTier==='community'){
+    const cid=document.getElementById('_qpCommunitySelect')?.value;
+    if(!cid){showToast('Select a community first');return;}
+    _submitCommunityPendingSpot(cid,name,'scenic',_quickPinLat,_quickPinLng,'',[]);
+  } else {
+    submitSpotForReview({name,type:'scenic',lat:_quickPinLat,lng:_quickPinLng,legal:'caution',photos:[]});
+  }
+  _cancelQuickPin();
+}
+
+function _qpCreateFull(){
+  const lat=_quickPinLat,lng=_quickPinLng,tier=_quickPinTier;
+  _cancelQuickPin();
+  addSpotTempLat=lat;addSpotTempLng=lng;
+  openAddSpot(tier);
+  setTimeout(()=>{
+    const disp=document.getElementById('aspLocDisplay');
+    if(disp){disp.textContent=`${lat.toFixed(5)}, ${lng.toFixed(5)}`;disp.style.display='block';}
+  },100);
+}
+
+function _cancelQuickPin(){
+  if(_quickPinMarker){try{_quickPinMarker.remove();}catch(e){}_quickPinMarker=null;}
+  document.getElementById('_quickPinCard')?.remove();
+}
 
 function _buildSpotsGeoJSON(){
   // Merge global spots, user-added spots, and spots from all communities the user is in
