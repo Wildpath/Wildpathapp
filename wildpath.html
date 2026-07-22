@@ -63,8 +63,9 @@
         style="width:100%;height:48px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:12px;color:#fff;padding:0 14px;font-size:14px;box-sizing:border-box;outline:none;font-family:inherit;margin-bottom:10px"
         onkeydown="if(event.key==='Enter')doLogin()">
       <input id="loginPassword" type="password" placeholder="Password" autocomplete="current-password"
-        style="width:100%;height:48px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:12px;color:#fff;padding:0 14px;font-size:14px;box-sizing:border-box;outline:none;font-family:inherit;margin-bottom:14px"
+        style="width:100%;height:48px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:12px;color:#fff;padding:0 14px;font-size:14px;box-sizing:border-box;outline:none;font-family:inherit;margin-bottom:8px"
         onkeydown="if(event.key==='Enter')doLogin()">
+      <div onclick="openForgotPassword()" style="text-align:right;font-size:12px;color:rgba(255,255,255,0.45);cursor:pointer;margin-bottom:14px;-webkit-tap-highlight-color:transparent">Forgot Password?</div>
       <div onclick="doLogin()" style="width:100%;height:48px;background:#B8E87A;color:#0f1a0a;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:inherit;-webkit-tap-highlight-color:transparent">Sign In</div>
     </div>
     <!-- Sign Up panel -->
@@ -83,6 +84,39 @@
   </div>
   <!-- Continue as guest -->
   <div onclick="continueAsGuest()" style="position:relative;z-index:2;margin-top:16px;font-size:13px;color:rgba(255,255,255,0.35);cursor:pointer;padding:8px 20px;-webkit-tap-highlight-color:transparent">Continue as Guest</div>
+</div>
+
+<!-- ── FORGOT PASSWORD SCREEN — email input, sends a Supabase reset link ── -->
+<div id="forgotPasswordScreen" style="position:fixed;inset:0;z-index:100001;background:#0d120d;display:none;flex-direction:column;align-items:center;justify-content:center;padding:20px;box-sizing:border-box">
+  <div style="position:absolute;inset:0;background-image:url('assets/launch-bg.jpg');background-size:cover;background-position:center"></div>
+  <div style="position:absolute;inset:0;background:linear-gradient(to bottom,rgba(10,20,15,0.75) 0%,rgba(10,20,15,0.92) 100%)"></div>
+  <div style="position:relative;z-index:2;width:100%;max-width:420px;background:rgba(15,20,16,0.85);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.08);border-radius:24px;padding:24px;box-sizing:border-box">
+    <div style="font-size:18px;font-weight:700;color:#fff;margin-bottom:6px">Reset Password</div>
+    <div id="fpIntro" style="font-size:13px;color:rgba(255,255,255,0.5);margin-bottom:18px;line-height:1.5">Enter your email and we'll send you a link to reset your password.</div>
+    <div id="fpForm">
+      <input id="fpEmail" type="email" placeholder="Email address" autocomplete="email"
+        style="width:100%;height:48px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:12px;color:#fff;padding:0 14px;font-size:14px;box-sizing:border-box;outline:none;font-family:inherit;margin-bottom:14px"
+        onkeydown="if(event.key==='Enter')sendPasswordReset()">
+      <div onclick="sendPasswordReset()" style="width:100%;height:48px;background:#B8E87A;color:#0f1a0a;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:inherit;-webkit-tap-highlight-color:transparent">Send Reset Link</div>
+    </div>
+    <div id="fpSentMsg" style="display:none;font-size:13px;color:#B8E87A;line-height:1.5;text-align:center;padding:6px 0 2px">Check your email for a password reset link.</div>
+    <div onclick="closeForgotPassword()" style="text-align:center;margin-top:16px;font-size:13px;color:rgba(255,255,255,0.4);cursor:pointer;-webkit-tap-highlight-color:transparent">Back to Sign In</div>
+  </div>
+</div>
+
+<!-- ── NEW PASSWORD SCREEN — shown after the user clicks the reset link in their email ── -->
+<div id="newPasswordScreen" style="position:fixed;inset:0;z-index:100002;background:#0d120d;display:none;flex-direction:column;align-items:center;justify-content:center;padding:20px;box-sizing:border-box">
+  <div style="position:absolute;inset:0;background-image:url('assets/launch-bg.jpg');background-size:cover;background-position:center"></div>
+  <div style="position:absolute;inset:0;background:linear-gradient(to bottom,rgba(10,20,15,0.75) 0%,rgba(10,20,15,0.92) 100%)"></div>
+  <div style="position:relative;z-index:2;width:100%;max-width:420px;background:rgba(15,20,16,0.85);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.08);border-radius:24px;padding:24px;box-sizing:border-box">
+    <div style="font-size:18px;font-weight:700;color:#fff;margin-bottom:6px">Set a New Password</div>
+    <div style="font-size:13px;color:rgba(255,255,255,0.5);margin-bottom:18px;line-height:1.5">Choose a new password for your account.</div>
+    <div id="npError" style="display:none;background:rgba(196,82,74,0.15);border:1px solid rgba(196,82,74,0.4);border-radius:10px;padding:10px 12px;font-size:12px;color:#e88080;margin-bottom:12px"></div>
+    <input id="npPassword" type="password" placeholder="New password (6+ characters)" autocomplete="new-password"
+      style="width:100%;height:48px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:12px;color:#fff;padding:0 14px;font-size:14px;box-sizing:border-box;outline:none;font-family:inherit;margin-bottom:14px"
+      onkeydown="if(event.key==='Enter')confirmNewPassword()">
+    <div onclick="confirmNewPassword()" style="width:100%;height:48px;background:#B8E87A;color:#0f1a0a;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:inherit;-webkit-tap-highlight-color:transparent">Confirm</div>
+  </div>
 </div>
 
 <div id="app">
@@ -1190,6 +1224,9 @@
         </button>
       </div>
 
+      <!-- Admin Panel (only populated/visible for admin accounts, see _buildAdminSection) -->
+      <div id="adminPanelAnchor" style="padding:0 14px"></div>
+
       <!-- My Hikes -->
       <div style="padding:0 14px 14px">
         <div style="font-size:13px;font-weight:700;color:var(--txt0);margin-bottom:8px">My Hikes</div>
@@ -1726,7 +1763,7 @@
     <div class="wizard-step active" id="ccStep1">
       <div class="wizard-content">
         <div style="font-size:15px;font-weight:700;color:var(--txt0);margin-bottom:14px">Name your community</div>
-        <input class="wiz-input" id="ccName" placeholder="e.g. NorCal Cave Divers">
+        <input class="wiz-input" id="ccName" placeholder="e.g. Bay Area Trail Runners">
         <textarea class="wiz-textarea" id="ccDesc" rows="4" placeholder="What is this community about?"></textarea>
       </div>
       <div class="wizard-footer"><button class="wizard-next-btn" onclick="ccNext()">Continue →</button></div>
@@ -1952,7 +1989,7 @@
 </div><!-- #app -->
 
 
-<script src="data.js?v=28"></script>
-<script src="app.js?v=28"></script>
+<script src="data.js?v=30"></script>
+<script src="app.js?v=30"></script>
 </body>
 </html>

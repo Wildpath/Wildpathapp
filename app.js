@@ -529,9 +529,17 @@ function _sbSubscribeRealtime(){
 // ═══════════════════════════════════════════════════
 let _guestMode=false,_sbSession=null;
 const _LAUNCH_SCREEN_MIN_MS=800;
+// Supabase's client parses a `#access_token=...&type=recovery` hash automatically
+// (detectSessionInUrl) and fires this event once that session is established —
+// used as a fallback in case the direct hash check in window.onload below ever
+// races the client's own parsing.
+db.auth.onAuthStateChange((event)=>{
+  if(event==='PASSWORD_RECOVERY')_showNewPasswordScreen();
+});
 window.onload=async()=>{
   _migrateStorageKeys();
   const launchStart=Date.now();
+  const isRecovery=/type=recovery/.test(window.location.hash);
   try{
     const {data}=await db.auth.getSession();
     _sbSession=data?.session||null;
@@ -540,18 +548,29 @@ window.onload=async()=>{
   // regardless of how fast (or slow) the session check resolves.
   const elapsed=Date.now()-launchStart;
   if(elapsed<_LAUNCH_SCREEN_MIN_MS)await new Promise(r=>setTimeout(r,_LAUNCH_SCREEN_MIN_MS-elapsed));
+  _hideLaunchScreen();
+  if(isRecovery){
+    // Clean the token out of the URL/history, then show the New Password screen
+    // instead of the normal Map/Login branch below.
+    history.replaceState(null,'',window.location.pathname+window.location.search);
+    _showNewPasswordScreen();
+    return;
+  }
   if(_sbSession){
     await _sbLoadCurrentUser(_sbSession.user);
-    _hideLaunchScreen();
     _hideLoginScreen();
     _launchApp();
     _sbHydrate().catch(e=>console.warn('[Supabase] hydrate error (non-blocking):',e));
   } else {
     _currentUser=null;
-    _hideLaunchScreen();
     _showLoginScreen();
   }
 };
+function _showNewPasswordScreen(){
+  document.getElementById('loginScreen')?.style.setProperty('display','none');
+  const np=document.getElementById('newPasswordScreen');
+  if(np)np.style.display='flex';
+}
 function _hideLaunchScreen(){
   const ls=document.getElementById('launchScreen');
   if(ls){
@@ -665,6 +684,54 @@ function continueAsGuest(){
   _hideLoginScreen();
   if(!_appInitialized)_launchApp();
   _sbHydrate().catch(e=>console.warn('[Supabase] hydrate error (non-blocking):',e)); // guests still see public spots and posts (RLS allows anon reads)
+}
+
+// The live GitHub Pages URL — where Supabase redirects back to after the user
+// clicks the password-reset link in their email.
+const _LIVE_APP_URL='https://wildpath.github.io/Wildpathapp/wildpath.html';
+function openForgotPassword(){
+  document.getElementById('fpForm').style.display='block';
+  document.getElementById('fpIntro').style.display='block';
+  document.getElementById('fpSentMsg').style.display='none';
+  const emailInput=document.getElementById('fpEmail');
+  if(emailInput)emailInput.value=(document.getElementById('loginEmail')?.value||'').trim();
+  document.getElementById('forgotPasswordScreen').style.display='flex';
+}
+function closeForgotPassword(){
+  document.getElementById('forgotPasswordScreen').style.display='none';
+}
+async function sendPasswordReset(){
+  const email=(document.getElementById('fpEmail')?.value||'').trim().toLowerCase();
+  if(!email){showToast('Enter your email address');return;}
+  try{
+    await db.auth.resetPasswordForEmail(email,{redirectTo:_LIVE_APP_URL});
+  }catch(e){console.warn('[Supabase] resetPasswordForEmail:',e);}
+  // Same confirmation whether or not the email exists in the system —
+  // never reveal account existence through this flow.
+  document.getElementById('fpForm').style.display='none';
+  document.getElementById('fpIntro').style.display='none';
+  document.getElementById('fpSentMsg').style.display='block';
+}
+async function confirmNewPassword(){
+  const pw=document.getElementById('npPassword')?.value||'';
+  const errEl=document.getElementById('npError');
+  const showErr=m=>{if(errEl){errEl.textContent=m;errEl.style.display='block';}};
+  if(errEl)errEl.style.display='none';
+  if(!pw||pw.length<6){showErr('Password must be at least 6 characters.');return;}
+  try{
+    const {error}=await db.auth.updateUser({password:pw});
+    if(error){showErr(error.message||'Could not update password.');return;}
+    document.getElementById('newPasswordScreen').style.display='none';
+    showToast('Password updated');
+    if(!_appInitialized){
+      const {data}=await db.auth.getSession();
+      if(data?.session){_sbSession=data.session;await _sbLoadCurrentUser(data.session.user);}
+      _launchApp();
+      _sbHydrate().catch(e=>console.warn('[Supabase] hydrate error (non-blocking):',e));
+    } else {
+      showTab('map');
+    }
+  }catch(e){showErr('Could not reach the server — check your connection.');}
 }
 
 function _launchApp(){
@@ -1018,8 +1085,8 @@ function _measureTotalDistanceMi(){
   return total;
 }
 
-function _addMeasurePoint(lat,lng){
-  _measurePoints.push({lat,lng});
+function _addMeasurePoint(lat,lng,label){
+  _measurePoints.push({lat,lng,label:label||null});
   _renderMeasureOverlay();
   _updateMeasureCard();
 }
@@ -1067,12 +1134,18 @@ function _showMeasureCard(){
       <div>
         <span id="_measureTotal" style="font-size:18px;font-weight:800;color:var(--accent)">0.00 mi</span>
       </div>
-      <div onclick="_exitMeasureMode()" style="width:26px;height:26px;border-radius:50%;background:var(--bg2);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px;color:var(--txt2)">×</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div onclick="_measureUseMyLocation()" title="Use my location" style="width:26px;height:26px;border-radius:50%;background:var(--bg2);display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--txt1)">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+        </div>
+        <div onclick="_exitMeasureMode()" style="width:26px;height:26px;border-radius:50%;background:var(--bg2);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px;color:var(--txt2)">×</div>
+      </div>
     </div>
     <div style="display:flex;background:var(--bg2);border-radius:10px;padding:3px;margin-bottom:10px">
       <div id="_measureModeStraight" onclick="_setMeasureDriveMode(false)" style="flex:1;text-align:center;padding:7px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;background:var(--accent);color:#0f1a0a">Straight Line</div>
       <div id="_measureModeDriving" onclick="_setMeasureDriveMode(true)" style="flex:1;text-align:center;padding:7px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;color:var(--txt2)">Est. Driving</div>
     </div>
+    <div id="_measureNavRow" style="display:none;gap:8px;margin-bottom:10px"></div>
     <div id="_measureLocSearchRow" style="display:none;gap:8px;margin-bottom:10px;flex-direction:column">
       <input id="_measureFromInput" placeholder="From…" oninput="_measureLocSearch('from',this.value)" style="background:var(--bg2);border:1px solid var(--border2);border-radius:8px;color:var(--txt0);padding:8px 10px;font-size:12px;font-family:var(--font);outline:none">
       <div id="_measureFromDrop" class="ac-drop"></div>
@@ -1086,10 +1159,55 @@ function _showMeasureCard(){
     </div>
   `;
   document.getElementById('app').appendChild(card);
+  _updateMeasureNavButtons();
 }
 function _updateMeasureCard(){
   const el=document.getElementById('_measureTotal');
   if(el)el.textContent=_measureTotalDistanceMi().toFixed(2)+' mi';
+  _updateMeasureNavButtons();
+}
+// Nav buttons only need the first and last point — turn-by-turn apps don't
+// support arbitrary waypoint chains the way this tool's line does.
+function _updateMeasureNavButtons(){
+  const row=document.getElementById('_measureNavRow');
+  if(!row)return;
+  if(_measurePoints.length<2){row.style.display='none';row.innerHTML='';return;}
+  row.style.display='flex';
+  row.innerHTML=`
+    <div onclick="_openAppleMapsNav()" style="flex:1;text-align:center;padding:9px;background:transparent;border:1.5px solid var(--border2);border-radius:9px;font-size:11px;font-weight:700;color:var(--txt0);cursor:pointer">Open in Apple Maps</div>
+    <div onclick="_openGoogleMapsNav()" style="flex:1;text-align:center;padding:9px;background:transparent;border:1.5px solid var(--border2);border-radius:9px;font-size:11px;font-weight:700;color:var(--txt0);cursor:pointer">Open in Google Maps</div>
+  `;
+}
+function _openAppleMapsNav(){
+  if(_measurePoints.length<2)return;
+  const o=_measurePoints[0],d=_measurePoints[_measurePoints.length-1];
+  window.open(`maps://maps.apple.com/?saddr=${o.lat},${o.lng}&daddr=${d.lat},${d.lng}&dirflg=d`,'_blank');
+}
+function _openGoogleMapsNav(){
+  if(_measurePoints.length<2)return;
+  const o=_measurePoints[0],d=_measurePoints[_measurePoints.length-1];
+  window.open(`https://www.google.com/maps/dir/?api=1&origin=${o.lat},${o.lng}&destination=${d.lat},${d.lng}&travelmode=driving`,'_blank');
+}
+// Reuse the already-cached GPS fix (_userLat/_userLng) if the blue dot is already
+// active, so this never triggers a second permission prompt on top of Locate Me.
+function _measureUseMyLocation(){
+  if(_userLat!=null&&_userLng!=null){
+    _addMeasurePoint(_userLat,_userLng,'My Location');
+    showToast('Added your current location');
+    return;
+  }
+  if(!navigator.geolocation){showToast('Location not available on this device');return;}
+  navigator.geolocation.getCurrentPosition(
+    pos=>{
+      const lat=pos.coords.latitude,lng=pos.coords.longitude;
+      _userLat=lat;_userLng=lng;window._lastUserLat=lat;window._lastUserLng=lng;
+      _placeUserDot(lat,lng);
+      _addMeasurePoint(lat,lng,'My Location');
+      showToast('Added your current location');
+    },
+    ()=>showToast('Could not get your location'),
+    {enableHighAccuracy:true,timeout:10000}
+  );
 }
 function _setMeasureDriveMode(driving){
   _measureDriving=driving;
@@ -2820,10 +2938,91 @@ function _buildAdminSection(){
           Manage Spots
         </button>
       </div>
+      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
+        <div style="font-size:12px;font-weight:700;color:var(--txt2);letter-spacing:.4px;text-transform:uppercase;margin-bottom:10px">Unified Pending Review</div>
+        <div id="unifiedPendingReviewList" style="font-size:12px;color:var(--txt3)">Loading…</div>
+      </div>
     </div>`;
-  // Insert at top of profile content (before first profile-section)
-  const firstSection=document.querySelector('#profile-screen .profile-section');
-  if(firstSection)firstSection.parentNode.insertBefore(section,firstSection);
+  // adminPanelAnchor sits in the always-visible profile header (unlike the legacy
+  // #profileAboutContent/.profile-section markup, which is display:none — kept only
+  // for older JS compat and never actually shown in the current Profile layout).
+  const anchor=document.getElementById('adminPanelAnchor');
+  if(anchor)anchor.appendChild(section);
+  _buildUnifiedPendingReview();
+}
+
+// Combines Global pending spots, Global pending hikes, and Community pending
+// spots/hikes across every community this account created, into one list sorted
+// most-recent-first — so the app admin doesn't have to check the global queue
+// and every individual community separately.
+async function _buildUnifiedPendingReview(){
+  const container=document.getElementById('unifiedPendingReviewList');
+  if(!container)return;
+  const items=[];
+  getPendingSpots().forEach(s=>{
+    items.push({
+      tierLabel:'Global',name:s.name,
+      meta:sanitize(s.typeLabel||s.type||'')+' · Submitted by '+sanitize(s._submittedBy||'Unknown'),
+      submittedAt:s._submittedAt||0,
+      approve:`approveSpot('${s._pendingId}')`,reject:`rejectSpot('${s._pendingId}')`
+    });
+  });
+  try{
+    const {data,error}=await db.from('hikes').select('*').eq('visibility','global').eq('status','pending').order('created_at');
+    if(!error)(data||[]).forEach(h=>{
+      const submitter=(getUserProfile(h.user_id)||{}).username||'Explorer';
+      items.push({
+        tierLabel:'Global',name:h.name,
+        meta:(h.distance||0)+' mi · '+(h.difficulty||'Moderate')+' hike · Submitted by '+sanitize(submitter),
+        submittedAt:h.created_at,
+        approve:`_approveGlobalHike('${h.id}')`,reject:`_rejectGlobalHike('${h.id}')`
+      });
+    });
+  }catch(e){console.warn('[Supabase] unified review — global hikes:',e);}
+  const myUid=String(_myUid());
+  const myAdminComms=getCommunities().filter(c=>String(c.adminId)===myUid);
+  for(const c of myAdminComms){
+    try{
+      const {data,error}=await db.from('community_pending_spots').select('*').eq('community_id',c.id).eq('status','pending').order('submitted_at');
+      if(!error)(data||[]).forEach(s=>{
+        items.push({
+          tierLabel:c.name||'Community',name:s.name,
+          meta:sanitize(s.type||'')+' · '+(+s.lat).toFixed(4)+', '+(+s.lng).toFixed(4),
+          submittedAt:s.submitted_at,
+          approve:`_approveCommunityPendingSpot('${s.id}','${c.id}')`,reject:`_rejectCommunityPendingSpot('${s.id}','${c.id}')`
+        });
+      });
+    }catch(e){console.warn('[Supabase] unified review — community spots:',e);}
+    try{
+      const {data,error}=await db.from('hikes').select('*').eq('community_id',c.id).eq('visibility','community').eq('status','pending');
+      if(!error)(data||[]).forEach(h=>{
+        items.push({
+          tierLabel:c.name||'Community',name:h.name,
+          meta:(h.distance||0)+' mi · '+(h.difficulty||'Moderate')+' hike',
+          submittedAt:h.created_at,
+          approve:`_approveCommunityPendingHike('${h.id}','${c.id}')`,reject:`_rejectCommunityPendingHike('${h.id}','${c.id}')`
+        });
+      });
+    }catch(e){console.warn('[Supabase] unified review — community hikes:',e);}
+  }
+  items.sort((a,b)=>new Date(b.submittedAt||0)-new Date(a.submittedAt||0));
+  if(!container)return; // profile may have navigated away while awaiting
+  if(!items.length){
+    container.innerHTML='<div style="padding:4px 0">Nothing pending across Global or your communities</div>';
+    return;
+  }
+  container.innerHTML=items.map(it=>`
+    <div style="background:var(--bg2);border-radius:12px;padding:12px;margin-bottom:8px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">
+        <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;padding:2px 8px;border-radius:8px;background:rgba(184,232,122,.15);color:var(--accent);white-space:nowrap">${sanitize(it.tierLabel)}</span>
+        <span style="font-size:13px;font-weight:700;color:var(--txt0)">${sanitize(it.name)}</span>
+      </div>
+      <div style="font-size:11px;color:var(--txt3)">${it.meta}</div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button onclick="${it.approve};setTimeout(_buildUnifiedPendingReview,400)" style="flex:1;padding:8px;background:rgba(184,232,122,.15);border:1.5px solid var(--accent);border-radius:8px;color:var(--accent);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Approve</button>
+        <button onclick="${it.reject};setTimeout(_buildUnifiedPendingReview,400)" style="flex:1;padding:8px;background:rgba(196,82,74,.1);border:1.5px solid rgba(196,82,74,.4);border-radius:8px;color:var(--red);font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Reject</button>
+      </div>
+    </div>`).join('');
 }
 
 function _showPendingSpots(){
@@ -8311,6 +8510,7 @@ async function _sbLoadPendingSpots(){
       s._pendingId=r.id;
       s._submitterUid=String(r.submitted_by||'');
       s._submittedBy=(getUserProfile(r.submitted_by)||{}).username||'Explorer';
+      s._submittedAt=r.submitted_at;
       s.photos=r.photo_urls||[];
       return s;
     });
@@ -8601,42 +8801,9 @@ function _avatarHtml(username,size=32,photoUrl=null){
   return `<div class="post-avatar" style="width:${size}px;height:${size}px;font-size:${Math.floor(size*0.35)}px;background:${colors[ci]}">${initials}</div>`;
 }
 
-// ── Seed demo data ─────────────────────────────────────────────
-function _seedCommunityData(){
-  if(typeof DEMO_COMMUNITIES==='undefined')return;
-  const existing=getCommunities();
-  if(existing.length>0)return; // already seeded or user has real data
-  const comms=DEMO_COMMUNITIES.map(dc=>({
-    id:dc.id,
-    name:dc.name,
-    description:dc.description,
-    memberCount:dc.memberCount,
-    privacy:dc.privacy,
-    adminId:dc.adminId,
-    coverGradient:dc.coverGradient,
-    members:[dc.adminId],
-    createdAt:new Date(Date.now()-86400000*30).toISOString()
-  }));
-  setCommunities(comms);
-  // Seed posts for each demo community into localStorage posts
-  const allPosts=getPosts();
-  const existingIds=new Set(allPosts.map(p=>p.id));
-  const newPosts=DEMO_COMMUNITIES.flatMap(dc=>
-    (dc.posts||[]).filter(p=>!existingIds.has(p.id)).map(p=>({
-      ...p,
-      type:p.type||'post',
-      privacy:'public',
-      createdAt:p.createdAt||new Date().toISOString()
-    }))
-  );
-  if(newPosts.length)setPosts([...allPosts,...newPosts]);
-}
-
 // ── Community screen setup ─────────────────────────────────────
-let _seeded=false;
 function buildCommunityScreen(){
   try {
-    if(!_seeded){_seedCommunityData();_seeded=true;}
     _updateNotifBadge();
     _buildCommunityList();
   } catch(e) {
@@ -8658,7 +8825,10 @@ function _buildCommunityList(){
       return (b.memberCount||0)-(a.memberCount||0);
     });
     if(!sorted.length){
-      listEl.innerHTML='<div style="text-align:center;padding:48px 20px;color:var(--txt3);font-size:13px">No communities yet.<br>Create one or search to find groups.</div>';
+      listEl.innerHTML=`<div style="text-align:center;padding:56px 20px">
+        <div style="font-size:14px;color:var(--txt3);margin-bottom:18px">No communities yet — be the first to create one</div>
+        <button onclick="openCreateCommunity()" style="padding:12px 28px;background:var(--accent);border:none;border-radius:12px;color:#0f1a0a;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit">Create Community</button>
+      </div>`;
       return;
     }
     listEl.innerHTML=sorted.map(c=>{
@@ -11139,9 +11309,7 @@ function addNotification(msg){
   _updateNotifBadge();
 }
 
-// ── Seed community data on app launch ────────────────────────
 setTimeout(()=>{
-  if(typeof _seedCommunityData==='function') _seedCommunityData();
   _updateNotifBadge();
 },500);
 
@@ -14085,7 +14253,10 @@ function sendFeedPostAsDm(toUserId){
         return (b.memberCount||0)-(a.memberCount||0);
       });
       if(!sorted.length){
-        listEl.innerHTML='<div style="text-align:center;padding:48px 20px;color:var(--txt3);font-size:13px">No communities yet.<br>Create one or search to find groups.</div>';
+        listEl.innerHTML=`<div style="text-align:center;padding:56px 20px">
+          <div style="font-size:14px;color:var(--txt3);margin-bottom:18px">No communities yet — be the first to create one</div>
+          <button onclick="openCreateCommunity()" style="padding:12px 28px;background:var(--accent);border:none;border-radius:12px;color:#0f1a0a;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit">Create Community</button>
+        </div>`;
         return;
       }
       listEl.innerHTML=sorted.map(c=>{
