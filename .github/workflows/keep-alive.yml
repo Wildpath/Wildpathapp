@@ -10,4 +10,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Ping Supabase project
-        run: curl -sS -o /dev/null -w "Supabase ping status: %{http_code}\n" https://nkrphmjzyzeplzcgndxg.supabase.co
+        run: |
+          curl -sS -o /dev/null -w "Supabase ping status: %{http_code}\n" https://nkrphmjzyzeplzcgndxg.supabase.co
