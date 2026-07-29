@@ -1910,17 +1910,21 @@
     </div>
   </div>
 
-  <!-- ── SAVED POSTS PAGE ─────────────────────────── -->
+  <!-- ── SAVED PAGE — saved spots (saved_spots) + saved posts ─────── -->
   <div id="savedPostsPage" style="position:fixed;inset:0;z-index:400;background:var(--bg0);display:none;flex-direction:column;overflow:hidden">
     <div style="display:flex;align-items:center;padding:52px 16px 12px;border-bottom:1px solid var(--border);flex-shrink:0">
       <div onclick="document.getElementById('savedPostsPage').style.display='none'" style="cursor:pointer;padding:4px 12px 4px 0;font-size:22px;color:var(--txt0);line-height:1">←</div>
-      <div style="flex:1;font-size:17px;font-weight:700;color:var(--txt0)">Saved Posts</div>
+      <div style="flex:1;font-size:17px;font-weight:700;color:var(--txt0)">Saved</div>
       <div style="display:flex;gap:6px">
         <div id="savedTabGrid" onclick="setSavedView('grid',this)" style="padding:6px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;background:var(--accent);color:#0f1a0a">Grid</div>
         <div id="savedTabMap" onclick="setSavedView('map',this)" style="padding:6px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;background:var(--bg2);color:var(--txt2)">Map</div>
       </div>
     </div>
-    <div id="savedPostsGrid" style="flex:1;overflow-y:auto;display:grid;grid-template-columns:repeat(3,1fr);gap:2px;padding:2px"></div>
+    <div style="flex:1;overflow-y:auto">
+      <div id="savedSpotsSection"></div>
+      <div style="padding:14px 16px 4px;font-size:12px;font-weight:700;color:var(--txt3);letter-spacing:.4px;text-transform:uppercase">Saved Posts</div>
+      <div id="savedPostsGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:2px;padding:2px"></div>
+    </div>
     <div id="savedPostsMap" style="flex:1;display:none;position:relative"><div id="savedPostsMapEl" style="position:absolute;inset:0"></div></div>
   </div>
 
@@ -1989,7 +1993,7 @@
 </div><!-- #app -->
 
 
-<script src="data.js?v=30"></script>
-<script src="app.js?v=30"></script>
+<script src="data.js?v=31"></script>
+<script src="app.js?v=31"></script>
 </body>
 </html>

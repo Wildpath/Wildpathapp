@@ -2779,10 +2779,10 @@ function buildProfile(){
       if(txt)txt.style.display='none';
     }
   }
-  // Update tile counts
+  // Update tile counts (combined saved spots + saved posts — see the second
+  // write further down in this function, which used to silently overwrite this
+  // one since both targeted the same #profileSavedCount element)
   const savedList=getSavedSpotIds();
-  const savedCountEl=document.getElementById('profileSavedCount');
-  if(savedCountEl)savedCountEl.textContent=savedList.length+' spot'+(savedList.length===1?'':'s');
   const pinnedList=JSON.parse(localStorage.getItem('wp_want_to_go')||'[]');
   const pinnedCountEl=document.getElementById('profilePinnedCount');
   if(pinnedCountEl)pinnedCountEl.textContent=pinnedList.length?pinnedList.length+' pinned':'Want to go';
@@ -2858,10 +2858,11 @@ function buildProfile(){
         </div>`).join('');
     }
   }
-  // Update saved posts count
+  // Combined saved count — spots (saved_spots) + posts, single source of truth
   const savedPostIds=getSavedPostIds();
-  const _savedPostCountEl=document.getElementById('profileSavedCount');
-  if(_savedPostCountEl)_savedPostCountEl.textContent=savedPostIds.length+' post'+(savedPostIds.length===1?'':'s');
+  const _savedTotalCountEl=document.getElementById('profileSavedCount');
+  const _savedTotal=savedList.length+savedPostIds.length;
+  if(_savedTotalCountEl)_savedTotalCountEl.textContent=_savedTotal+' saved'+(_savedTotal===1?'':'');
 
   // Start on Posts tab
   switchProfileTab('posts');
@@ -3721,6 +3722,7 @@ function openDetail(spotIdOrObj){
   if(!spot)return;
   _detailSpotId=spot.id;
   currentPin=spot.id;
+  _updateDetailSaveBtnState();
 
   // ── New design elements (stars, chips, mini map, reviews, bookmark) ──
   // Called first so elements are ready; mini map needs container visible
@@ -9104,18 +9106,61 @@ function openPlaceSaveSheet(refType,refId,name,lat,lng){
   document.body.appendChild(sheet);
 }
 
+// THE single save-a-spot function — every save entry point in the app (main map
+// spot detail, Your Map, Friends Map, and post "Save Spot") funnels through here
+// for real spots, and it writes to saved_spots — the exact table Profile's Saved
+// section reads back from. Previously the spot-detail Save button wrote only to
+// saved_places while Profile read from saved_spots, so saves never appeared.
+async function saveSpot(spotId,folderName){
+  if(isGuest()){showLoginScreen();return false;}
+  if(!spotId)return false;
+  folderName=folderName||'General';
+  try{
+    const {error}=await db.from('saved_spots').upsert({user_id:_myUid(),spot_id:spotId,folder_name:folderName});
+    if(error)throw error;
+    const saved=getSavedSpotIds();
+    if(!saved.includes(spotId)){saved.push(spotId);setSavedSpotIds(saved);}
+    const store=_getSavedStore();
+    if(!store.folders.find(f=>f.name===folderName))store.folders.push({name:folderName,postIds:[]});
+    _setSavedStore(store);
+    refreshSpotMarkers();
+    if(typeof _updateDetailSaveBtnState==='function')_updateDetailSaveBtnState();
+    showToast(`Saved to "${folderName}"`);
+    return true;
+  }catch(e){
+    console.warn('[Supabase] saveSpot failed:',e);
+    showToast('Could not save — check connection');
+    return false;
+  }
+}
+async function unsaveSpot(spotId){
+  if(!spotId)return;
+  try{
+    const {error}=await db.from('saved_spots').delete().eq('user_id',_myUid()).eq('spot_id',spotId);
+    if(error)throw error;
+  }catch(e){console.warn('[Supabase] unsaveSpot failed:',e);}
+  setSavedSpotIds(getSavedSpotIds().filter(id=>String(id)!==String(spotId)));
+  refreshSpotMarkers();
+  if(typeof _updateDetailSaveBtnState==='function')_updateDetailSaveBtnState();
+  showToast('Removed from saved');
+}
+
 async function _savePlaceToFolder(refType,refId,name,lat,lng,folderName){
+  // Real spots (global/community) have a genuine row in `spots` and satisfy
+  // saved_spots' foreign key — route those through the one canonical saveSpot().
+  if(refType==='spot'&&refId){
+    await saveSpot(refId,folderName);
+    return;
+  }
+  // Personal spots and raw post locations have no spots.id to reference, so they
+  // can't satisfy saved_spots' FK — these still go through the generalized
+  // saved_places table (see SETUP-SUPABASE.md Section 3).
   try{
     const {data,error}=await db.from('saved_places').insert({
       user_id:_myUid(),ref_type:refType,ref_id:refId||null,name,lat,lng,folder_name:folderName
     }).select().single();
     if(error)throw error;
     savedPlaces.unshift({id:data.id,refType,refId,name,lat,lng,folderName,savedAt:data.saved_at});
-    // Keep legacy saved-spot id set in sync so existing red-pin/spot-detail code paths still see it
-    if(refType==='spot'&&refId){
-      const saved=getSavedSpotIds();
-      if(!saved.includes(refId)){saved.push(refId);setSavedSpotIds(saved);}
-    }
     refreshSpotMarkers();
     showToast(`Saved to "${folderName}"`);
   }catch(e){
@@ -11970,43 +12015,20 @@ function openDetailSaveSheet(){
   const allS=[...spots,...userSpots,...personalSpots];
   const spot=allS.find(s=>String(s.id)===String(_detailSpotId));
   if(!spot)return;
+  // Already saved — tapping again unsaves rather than reopening the folder picker.
+  if(spot.tier!=='personal'&&getSavedSpotIds().includes(spot.id)){unsaveSpot(spot.id);return;}
   const refType=spot.tier==='personal'?'personal_spot':'spot';
   openPlaceSaveSheet(refType,spot.personalSpotId||spot.id,spot.name,spot.lat,spot.lng);
 }
-function toggleDetailBookmark(){
-  if(isGuest()){showLoginScreen();return;}
-  if(!_detailSpotId)return;
-  const saved=getSavedSpotIds();
-  const pinned=JSON.parse(localStorage.getItem('wp_want_to_go')||'[]');
-  const idx=saved.indexOf(_detailSpotId);
-  if(idx>=0){
-    saved.splice(idx,1);
-    const pi=pinned.indexOf(_detailSpotId);
-    if(pi>=0)pinned.splice(pi,1);
-    _sbTry(db.from('saved_spots').delete().eq('user_id',_myUid()).eq('spot_id',_detailSpotId),'unsave spot');
-    showToast('Removed from saved');
-  } else {
-    saved.push(_detailSpotId);
-    if(!pinned.includes(_detailSpotId))pinned.push(_detailSpotId);
-    _sbTry(db.from('saved_spots').upsert({user_id:_myUid(),spot_id:_detailSpotId,folder_name:'General'}),'save spot');
-    showToast('Saved!');
-  }
-  setSavedSpotIds(saved);
-  localStorage.setItem('wp_want_to_go',JSON.stringify(pinned));
-  const isSaved=saved.includes(_detailSpotId);
-  // Legacy icon
-  const bmIcon=document.getElementById('detailBookmarkIcon');
-  const bmBtn=document.getElementById('detailBookmarkBtn');
-  if(bmIcon){bmIcon.setAttribute('fill',isSaved?'#B8E87A':'none');bmIcon.setAttribute('stroke',isSaved?'#B8E87A':'var(--txt2)');}
-  if(bmBtn){bmBtn.style.background=isSaved?'rgba(184,232,122,.18)':'var(--bg2)';bmBtn.style.borderColor=isSaved?'rgba(184,232,122,.5)':'var(--border2)';}
-  // New Save button
+// Reflects the current spot's saved state on the detail sheet's Save button.
+function _updateDetailSaveBtnState(){
   const saveBtnIcon=document.getElementById('detailSaveBtnIcon');
   const saveBtnLabel=document.getElementById('detailSaveBtnLabel');
   const saveBtn=document.getElementById('detailSaveBtn');
+  const isSaved=_detailSpotId&&getSavedSpotIds().includes(_detailSpotId);
   if(saveBtnIcon){saveBtnIcon.setAttribute('fill',isSaved?'#B8E87A':'none');saveBtnIcon.setAttribute('stroke',isSaved?'#B8E87A':'var(--txt1)');}
   if(saveBtnLabel)saveBtnLabel.textContent=isSaved?'Saved':'Save';
   if(saveBtn){saveBtn.style.background=isSaved?'rgba(184,232,122,.12)':'var(--bg2)';saveBtn.style.borderColor=isSaved?'rgba(184,232,122,.4)':'var(--border2)';saveBtn.style.color=isSaved?'#B8E87A':'var(--txt0)';}
-  refreshSpotMarkers();
 }
 
 function openDetailAddComment(){
@@ -13493,7 +13515,36 @@ function openSavedPostsPage(){
   const page=document.getElementById('savedPostsPage');
   if(!page)return;
   page.style.display='flex';
+  _renderSavedSpotsSection();
   _renderSavedPostsGrid();
+}
+// The Saved page's spots list — resolves saved_spots ids (hydrated into
+// getSavedSpotIds() by _sbLoadSaved) against every known spot source, so a
+// spot saved anywhere in the app (main map, Your Map, Friends Map, a post)
+// shows up here immediately.
+function _renderSavedSpotsSection(){
+  const section=document.getElementById('savedSpotsSection');
+  if(!section)return;
+  const ids=new Set(getSavedSpotIds().map(String));
+  if(!ids.size){section.innerHTML='';return;}
+  const commSpots=getAllCommunitySpots();
+  const allS=[...spots,...userSpots,...personalSpots,...commSpots];
+  const savedSpots=allS.filter(s=>ids.has(String(s.id)));
+  section.innerHTML=`
+    <div style="padding:14px 16px 4px;font-size:12px;font-weight:700;color:var(--txt3);letter-spacing:.4px;text-transform:uppercase">Saved Spots (${savedSpots.length})</div>
+    ${savedSpots.map(s=>`
+      <div onclick="document.getElementById('savedPostsPage').style.display='none';openDetail('${s.id}')" style="display:flex;align-items:center;gap:12px;padding:10px 16px;cursor:pointer;-webkit-tap-highlight-color:transparent">
+        <div style="width:44px;height:44px;border-radius:10px;flex-shrink:0;background:${s.heroGradient||'linear-gradient(160deg,#0d1a0d,#1a3a2a)'};overflow:hidden">${s.photos&&s.photos[0]?`<img src="${s.photos[0]}" style="width:100%;height:100%;object-fit:cover">`:''}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:14px;font-weight:700;color:var(--txt0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sanitize(s.name)}</div>
+          <div style="font-size:12px;color:var(--txt3);margin-top:2px">${sanitize(s.typeLabel||s.type||'')}</div>
+        </div>
+        <div onclick="event.stopPropagation();unsaveSpot('${s.id}').then(()=>_renderSavedSpotsSection())" style="width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:var(--accent)">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor" stroke="none"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+        </div>
+      </div>`).join('')}
+    ${savedSpots.length<ids.size?`<div style="padding:4px 16px 8px;font-size:11px;color:var(--txt3)">${ids.size-savedSpots.length} saved spot${ids.size-savedSpots.length!==1?'s':''} could not be found (may be from a different tier)</div>`:''}
+  `;
 }
 function _renderSavedPostsGrid(){
   const folders=_getSavedFolders();
