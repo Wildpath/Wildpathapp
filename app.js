@@ -1041,12 +1041,7 @@ function _qpSaveNow(){
 function _qpCreateFull(){
   const lat=_quickPinLat,lng=_quickPinLng,tier=_quickPinTier;
   _cancelQuickPin();
-  addSpotTempLat=lat;addSpotTempLng=lng;
-  openAddSpot(tier);
-  setTimeout(()=>{
-    const disp=document.getElementById('aspLocDisplay');
-    if(disp){disp.textContent=`${lat.toFixed(5)}, ${lng.toFixed(5)}`;disp.style.display='block';}
-  },100);
+  openAddSpot(tier,lat,lng);
 }
 
 function _cancelQuickPin(){
@@ -3338,32 +3333,83 @@ function toggleFavorite(spotId){
 // ADD SPOT FORM
 // ═══════════════════════════════════════════════════
 let aspSelectedType=null, aspSelectedDiff='Easy', aspStarVal=5;
-let _aspPhotos=[]; // photo dataUrls for new spot submission
+// Each entry: {id, localUrl (instant preview), uploadedUrl, status:'uploading'|'done'|'error'}
+// Photos upload to Supabase Storage in the background the moment they're picked —
+// never at submit time — so the user always sees per-photo status before posting.
+let _aspPhotos=[];
+let _aspPhotoSeq=0;
 
 function handleAspPhotos(e){
-  const files=Array.from(e.target.files||[]);
-  if(!files.length)return;
-  Promise.all(files.map(f=>compressImage(f))).then(urls=>{
-    _aspPhotos=[..._aspPhotos,...urls];
-    _renderAspPhotoGrid();
-  }).catch(()=>showToast('Could not read photo'));
+  const files=Array.from(e.target.files||[]).slice(0,6-_aspPhotos.length);
+  if(!files.length){e.target.value='';return;}
+  files.forEach(f=>{
+    const id=++_aspPhotoSeq;
+    compressImage(f).then(localUrl=>{
+      _aspPhotos.push({id,localUrl,uploadedUrl:null,status:'uploading'});
+      _renderAspPhotoGrid();
+      _uploadAspPhoto(id,localUrl);
+    }).catch(()=>showToast('Could not read photo'));
+  });
   e.target.value='';
+}
+async function _uploadAspPhoto(id,localUrl){
+  try{
+    const url=await _sbUploadDataUrl('Spot Photos',localUrl,'jpg');
+    const p=_aspPhotos.find(x=>x.id===id);
+    if(p){p.uploadedUrl=url;p.status='done';_renderAspPhotoGrid();}
+  }catch(e){
+    console.warn('spot photo upload failed:',e);
+    const p=_aspPhotos.find(x=>x.id===id);
+    if(p){p.status='error';_renderAspPhotoGrid();}
+  }
+}
+function _retryAspPhoto(id){
+  const p=_aspPhotos.find(x=>x.id===id);
+  if(!p)return;
+  p.status='uploading';
+  _renderAspPhotoGrid();
+  _uploadAspPhoto(id,p.localUrl);
 }
 function _renderAspPhotoGrid(){
   const grid=document.getElementById('aspPhotoGrid');
   if(!grid)return;
-  grid.innerHTML=_aspPhotos.map((url,i)=>`
-    <div style="position:relative;aspect-ratio:1;border-radius:10px;overflow:hidden;background:var(--bg3)">
-      <img src="${url}" style="width:100%;height:100%;object-fit:cover">
-      <button onclick="_removeAspPhoto(${i})" style="position:absolute;top:4px;right:4px;width:22px;height:22px;border-radius:50%;background:rgba(0,0,0,.7);border:none;color:#fff;font-size:14px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:var(--font)">×</button>
-    </div>`).join('');
+  grid.innerHTML=_aspPhotos.map(p=>{
+    let badge='';
+    if(p.status==='uploading')badge=`<div style="position:absolute;bottom:4px;left:4px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center"><div style="width:10px;height:10px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin360 .7s linear infinite"></div></div>`;
+    else if(p.status==='done')badge=`<div style="position:absolute;bottom:4px;left:4px;width:18px;height:18px;border-radius:50%;background:#B8E87A;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="#0f1a0a" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg></div>`;
+    else if(p.status==='error')badge=`<div onclick="_retryAspPhoto(${p.id})" title="Upload failed — tap to retry" style="position:absolute;bottom:4px;left:4px;background:rgba(196,82,74,.9);border-radius:10px;padding:2px 7px;display:flex;align-items:center;gap:3px;cursor:pointer"><svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="#fff" stroke-width="3"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg><span style="font-size:9px;font-weight:700;color:#fff">Retry</span></div>`;
+    return `<div style="position:relative;aspect-ratio:1;border-radius:10px;overflow:hidden;background:var(--bg3)">
+      <img src="${p.localUrl}" style="width:100%;height:100%;object-fit:cover;${p.status==='error'?'opacity:.5':''}">
+      ${badge}
+      <button onclick="_removeAspPhoto(${p.id})" style="position:absolute;top:4px;right:4px;width:22px;height:22px;border-radius:50%;background:rgba(0,0,0,.7);border:none;color:#fff;font-size:14px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:var(--font)">×</button>
+    </div>`;
+  }).join('');
 }
-function _removeAspPhoto(i){_aspPhotos.splice(i,1);_renderAspPhotoGrid();}
+function _removeAspPhoto(id){_aspPhotos=_aspPhotos.filter(p=>p.id!==id);_renderAspPhotoGrid();}
 
-function openAddSpot(presetTier){
-  if(isGuest()){showLoginScreen(()=>openAddSpot(presetTier));return;}
+// presetLat/presetLng let a caller (e.g. the long-press quick-pin's "Create Full
+// Spot" button) hand off an already-placed location. Previously this function
+// unconditionally reset addSpotTempLat/Lng to null on every open, which wiped
+// out that handoff — the location shown in the form was cosmetic only, and
+// submitting silently fell back to a hardcoded default coordinate instead of
+// the pin the user actually placed.
+function openAddSpot(presetTier,presetLat,presetLng){
+  if(isGuest()){showLoginScreen(()=>openAddSpot(presetTier,presetLat,presetLng));return;}
+  // Full reset every time this form opens — nothing from a previous spot
+  // (or a previous, possibly-abandoned attempt) should ever bleed into a new one.
   aspSelectedType=null; aspSelectedDiff='Easy'; aspStarVal=5;
-  addSpotTempLat=null; addSpotTempLng=null;
+  _aspPhotos=[];
+  document.getElementById('aspPhotoGrid').innerHTML='';
+  const nameInput=document.getElementById('aspName');
+  if(nameInput)nameInput.value='';
+  const descInput=document.getElementById('aspDesc');
+  if(descInput)descInput.value='';
+  const addrInput=document.getElementById('aspAddressSearch');
+  if(addrInput)addrInput.value='';
+  document.getElementById('aspAddressDrop').innerHTML='';
+  _setAspMoreDetails(false);
+
+  addSpotTempLat=presetLat??null; addSpotTempLng=presetLng??null;
   // Reset visibility tier tiles to Personal (default) unless a preset was passed
   const tier=presetTier||'personal';
   document.querySelectorAll('#aspTierTiles .asp-tier-tile').forEach(t=>{
@@ -3390,8 +3436,24 @@ function openAddSpot(presetTier){
   });
   // Reset stars
   updateStarDisplay(aspStarVal);
-  document.getElementById('aspLocDisplay').style.display='none';
+  const locDisp=document.getElementById('aspLocDisplay');
+  if(presetLat!=null&&presetLng!=null){
+    locDisp.textContent=`${presetLat.toFixed(5)}, ${presetLng.toFixed(5)}`;
+    locDisp.style.display='block';
+  } else {
+    locDisp.style.display='none';
+  }
   document.getElementById('addSpotOverlay').classList.add('open');
+}
+function _setAspMoreDetails(open){
+  const body=document.getElementById('aspMoreDetailsBody');
+  const chevron=document.getElementById('aspMoreDetailsChevron');
+  if(body)body.style.display=open?'block':'none';
+  if(chevron)chevron.style.transform=open?'rotate(180deg)':'rotate(0deg)';
+}
+function toggleAspMoreDetails(){
+  const body=document.getElementById('aspMoreDetailsBody');
+  _setAspMoreDetails(body&&body.style.display==='none');
 }
 
 function closeAddSpot(){
@@ -3405,7 +3467,12 @@ function closeAddSpot(){
 }
 
 function startMapPinMode(){
-  closeAddSpot();
+  // Just hide the sheet — do NOT call closeAddSpot(), which wipes photos
+  // already added and the community context, losing everything the user
+  // entered just from tapping "Tap map to pin location" mid-creation. The map
+  // click handler below re-opens the same overlay (via classList) once a point
+  // is picked, so all form state stays intact.
+  document.getElementById('addSpotOverlay').classList.remove('open');
   addSpotMode=true;
   if(map)map.getCanvas().style.cursor='crosshair';
   showToast('Tap the map to place your spot');
@@ -3425,7 +3492,7 @@ function selectAspTier(tier,el){
     picker.style.display=tier==='community'?'block':'none';
     if(tier==='community')_populateAspCommunitySelect();
   }
-  const submitBtn=document.querySelector('.btn-submit-spot');
+  const submitBtn=document.getElementById('aspSubmitBtn');
   if(submitBtn)submitBtn.textContent=tier==='personal'?'Save Personal Spot':tier==='community'?'Submit to Community':'Submit for Review';
 }
 function _populateAspCommunitySelect(){
@@ -3460,79 +3527,79 @@ function updateStarDisplay(n){
   });
 }
 
-function submitNewSpot(){
+let _aspSubmitting=false;
+async function submitNewSpot(){
+  if(_aspSubmitting)return; // tapping Submit repeatedly must only ever fire once
   const name=(document.getElementById('aspName').value||'').trim();
   if(!name){showToast('Enter a spot name');return;}
   if(!aspSelectedType){showToast('Select a spot type');return;}
-  const hasLoc=addSpotTempLat||document.getElementById('aspLocSearch').value.trim();
-  if(!hasLoc){showToast('Add a location');return;}
-
-  const def=SPOT_TYPE_DEFS[aspSelectedType];
-  const id=1000+userSpots.length+Date.now()%10000;
-  const lat=addSpotTempLat||37.8;
-  const lng=addSpotTempLng||-122.4;
-  const desc=(document.getElementById('aspDesc').value||'').trim()||'Community-added spot';
-
-  const newSpot={
-    id,name,lat,lng,type:aspSelectedType,
-    typeLabel:def.label,typeColor:def.color,icon:def.icon,emoji:def.icon,
-    heroGradient:`linear-gradient(160deg,#0f1410,#1e251e,#0a100a)`,
-    rating:aspStarVal,reviews:1,distance:'? mi away',elevation:'?',
-    legal:'legal',legalText:'Legal',legalClass:'legal-legal',
-    trailLength:'Unknown',difficulty:aspSelectedDiff,
-    diffClass:`diff-${aspSelectedDiff.toLowerCase()}`,
-    bestSeason:'Year-round',parkingCost:'Unknown',entryFee:'Unknown',
-    roadCondition:'Unknown',cellSignal:'Unknown',
-    season:[1,1,1,1,1,1,1,1,1,1,1,1],permitRequired:false,
-    parkingCapacity:'Unknown',parkingFillTime:'Unknown',fourWD:false,
-    weather:[{day:'Mon',icon:'sun',high:72,low:50},{day:'Tue',icon:'sun',high:74,low:51},{day:'Wed',icon:'partly-cloudy',high:68,low:48},{day:'Thu',icon:'sun',high:71,low:50},{day:'Fri',icon:'partly-cloudy',high:65,low:47}],
-    crowd:30,campingText:'Unknown',
-    reviews_data:[{user:'You',stars:aspStarVal,date:new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}),text:desc}],
-    similar:[1,2,3],
-    approach:desc,gear:[],hazards:[],insiderTips:desc,
-    accessibility:'Unknown',kidScore:3,dogFriendly:true,shade:'Unknown',
-    crowdsByDay:[30,25,28,32,35,55,60],hiddenGem:true,
-    userSubmitted:true,submittedDate:Date.now(),
-    photos:[..._aspPhotos],
-    heroGradient:_aspPhotos.length?undefined:`linear-gradient(160deg,#0f1410,#1e251e,#0a100a)`
-  };
-  if(_aspPhotos.length)newSpot.heroGradient=`linear-gradient(160deg,#0f1410,#1e251e,#0a100a)`;
-
-  // Opened from a community map (legacy entry point): community-tier spots must
-  // go through that community's admin approval, same as the tier-picker path —
-  // never straight onto the live community map.
-  if(_addSpotCommunityId){
-    const savedCid=_addSpotCommunityId;
-    _addSpotCommunityId=null;
-    _submitCommunityPendingSpot(savedCid,name,aspSelectedType,lat,lng,desc,_aspPhotos);
-    _aspPhotos=[];
-    closeAddSpot();
-    setTimeout(()=>openCommunityMap(savedCid),300);
-    return;
+  if(addSpotTempLat==null){showToast('Add a location');return;}
+  if(_aspVisibilityTier==='community'&&!document.getElementById('aspCommunitySelect')?.value){
+    showToast('Select a community first');return;
   }
 
-  // Three-tier visibility: Personal (instant), Community (that community's admin review), Global (app admin review)
-  if(_aspVisibilityTier==='personal'){
-    _submitPersonalSpot(name,aspSelectedType,lat,lng,desc,_aspPhotos);
-  } else if(_aspVisibilityTier==='community'){
-    const cid=document.getElementById('aspCommunitySelect')?.value;
-    if(!cid){showToast('Select a community first');return;}
-    _submitCommunityPendingSpot(cid,name,aspSelectedType,lat,lng,desc,_aspPhotos);
-  } else {
-    submitSpotForReview(newSpot);
+  const submitBtn=document.getElementById('aspSubmitBtn');
+  const originalLabel=submitBtn?submitBtn.textContent:'';
+  _aspSubmitting=true;
+  if(submitBtn){submitBtn.disabled=true;submitBtn.style.opacity='.6';submitBtn.textContent='Saving…';}
+
+  try{
+    // Photos upload in the background the instant they're picked (see
+    // handleAspPhotos) — here we just wait for any still in flight, then use
+    // whichever finished. Never re-upload, never block on a slow/failed one.
+    while(_aspPhotos.some(p=>p.status==='uploading')){
+      await new Promise(r=>setTimeout(r,150));
+    }
+    const failed=_aspPhotos.filter(p=>p.status==='error').length;
+    const photoUrls=_aspPhotos.filter(p=>p.status==='done').map(p=>p.uploadedUrl);
+    if(failed)showToast(`${failed} photo${failed>1?'s':''} failed to upload and ${failed>1?'were':'was'} skipped`);
+
+    const def=SPOT_TYPE_DEFS[aspSelectedType];
+    const lat=addSpotTempLat, lng=addSpotTempLng;
+    const desc=(document.getElementById('aspDesc').value||'').trim()||'Community-added spot';
+
+    let ok;
+    if(_addSpotCommunityId){
+      // Opened from a community map (legacy entry point): community-tier spots
+      // must go through that community's admin approval, same as the
+      // tier-picker path — never straight onto the live community map.
+      const savedCid=_addSpotCommunityId;
+      ok=await _submitCommunityPendingSpot(savedCid,name,aspSelectedType,lat,lng,desc,photoUrls);
+      if(ok){_addSpotCommunityId=null;closeAddSpot();setTimeout(()=>openCommunityMap(savedCid),300);}
+    } else if(_aspVisibilityTier==='personal'){
+      ok=await _submitPersonalSpot(name,aspSelectedType,lat,lng,desc,photoUrls);
+    } else if(_aspVisibilityTier==='community'){
+      const cid=document.getElementById('aspCommunitySelect').value;
+      ok=await _submitCommunityPendingSpot(cid,name,aspSelectedType,lat,lng,desc,photoUrls);
+    } else {
+      const id=1000+userSpots.length+Date.now()%10000;
+      ok=await submitSpotForReview({
+        id,name,lat,lng,type:aspSelectedType,typeLabel:def.label,typeColor:def.color,
+        legal:'legal',difficulty:aspSelectedDiff,rating:aspStarVal,
+        description:desc,approach:desc,insiderTips:desc,photos:photoUrls,
+        heroGradient:`linear-gradient(160deg,#0f1410,#1e251e,#0a100a)`
+      });
+    }
+
+    if(ok){
+      closeAddSpot();
+      leafletMap.flyTo([lat,lng],14,{animate:true,duration:1.2});
+    }
+    // On failure the tier function already showed an error toast — leave the
+    // form open with everything intact so the user can just tap Submit again.
+  } finally {
+    _aspSubmitting=false;
+    if(submitBtn){submitBtn.disabled=false;submitBtn.style.opacity='';submitBtn.textContent=originalLabel;}
   }
-  _aspPhotos=[];
-  closeAddSpot();
-  leafletMap.flyTo([lat,lng],14,{animate:true,duration:1.2});
 }
 
-async function _submitPersonalSpot(name,type,lat,lng,notes,photoDataUrls){
+// photoUrls must already be uploaded (see the Add Spot form's background-upload
+// flow) — this never re-uploads, so a slow/failed upload can't silently block
+// or duplicate-upload a spot submission.
+async function _submitPersonalSpot(name,type,lat,lng,notes,photoUrls){
   if(isGuest()){showLoginScreen();return;}
+  photoUrls=(photoUrls||[]).slice(0,6);
   try{
-    const photoUrls=[];
-    for(const dataUrl of (photoDataUrls||[]).slice(0,6)){
-      try{photoUrls.push(await _sbUploadDataUrl('Spot Photos',dataUrl,'jpg'));}catch(e){console.warn('personal spot photo upload:',e);}
-    }
     const {data,error}=await db.from('personal_spots').insert({
       user_id:_myUid(),name,type,lat,lng,notes,photo_urls:photoUrls
     }).select().single();
@@ -3546,27 +3613,29 @@ async function _submitPersonalSpot(name,type,lat,lng,notes,photoDataUrls){
     });
     refreshSpotMarkers();
     showToast('Personal spot saved — only you can see it');
+    return true;
   }catch(e){
     console.warn('[Supabase] personal spot submit failed:',e);
     showToast('Could not save spot — check connection');
+    return false;
   }
 }
 
-async function _submitCommunityPendingSpot(communityId,name,type,lat,lng,description,photoDataUrls){
+// photoUrls must already be uploaded — see _submitPersonalSpot's note above.
+async function _submitCommunityPendingSpot(communityId,name,type,lat,lng,description,photoUrls){
   if(isGuest()){showLoginScreen();return;}
+  photoUrls=(photoUrls||[]).slice(0,6);
   try{
-    const photoUrls=[];
-    for(const dataUrl of (photoDataUrls||[]).slice(0,6)){
-      try{photoUrls.push(await _sbUploadDataUrl('Spot Photos',dataUrl,'jpg'));}catch(e){console.warn('community spot photo upload:',e);}
-    }
     const {error}=await db.from('community_pending_spots').insert({
       community_id:communityId,user_id:_myUid(),name,type,lat,lng,description,photo_urls:photoUrls,status:'pending'
     });
     if(error)throw error;
     showToast('Submitted — waiting for that community\'s approval');
+    return true;
   }catch(e){
     console.warn('[Supabase] community spot submit failed:',e);
     showToast('Could not submit spot — check connection');
+    return false;
   }
 }
 
@@ -8555,15 +8624,13 @@ function rejectSpot(spotId){
 }
 
 // Every submission goes to pending_spots — nothing goes live without admin approval
+// spot.photos must already be uploaded URLs (see the Add Spot form's
+// background-upload flow) — no re-uploading here.
 function submitSpotForReview(spot){
-  if(isGuest()){showLoginScreen();return;}
-  (async()=>{
+  if(isGuest()){showLoginScreen();return Promise.resolve(false);}
+  return (async()=>{
     try{
-      // Upload photos to spot-photos bucket first (never store base64)
-      const photoUrls=[];
-      for(const dataUrl of (spot.photos||[]).slice(0,6)){
-        try{photoUrls.push(await _sbUploadDataUrl('Spot Photos',dataUrl,'jpg'));}catch(e){console.warn('spot photo upload:',e);}
-      }
+      const photoUrls=(spot.photos||[]).slice(0,6);
       const {data,error}=await db.from('pending_spots').insert({
         name:spot.name,type:spot.type,lat:spot.lat,lng:spot.lng,
         legal_status:spot.legal||'caution',
@@ -8578,9 +8645,11 @@ function submitSpotForReview(spot){
       _pendingSpotsCache.push(s);
       refreshSpotMarkers(); // submitter sees it with Pending badge
       showToast(isAdmin()?'Spot queued — approve it in Admin Review':'Spot submitted for review!');
+      return true;
     }catch(e){
       console.warn('[Supabase] spot submit failed:',e);
       showToast('Could not submit spot — check connection');
+      return false;
     }
   })();
 }
@@ -13550,9 +13619,9 @@ function _renderSavedPostsGrid(){
   const folders=_getSavedFolders();
   const grid=document.getElementById('savedPostsGrid');
   if(!grid)return;
-  const cnt=document.getElementById('profileSavedCount');
-  const totalSaved=getSavedPostIds().length;
-  if(cnt)cnt.textContent=totalSaved+' post'+(totalSaved!==1?'s':'');
+  // profileSavedCount is the combined spots+posts count set once in buildProfile() —
+  // do not overwrite it here with a posts-only number (that was the exact bug
+  // this page used to reintroduce every time it opened).
   if(!folders.length){
     // Fallback: show flat grid if no folders
     const savedIds=getSavedPostIds();
