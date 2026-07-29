@@ -8793,10 +8793,9 @@ if(!window._spotMarkers)window._spotMarkers={};
 let _commFeedFilter='all', _commFeedSort='recent', _commSubTab='feed';
 let _currentCommunityId=null, _currentPostId=null, _currentProfileUserId=null;
 let _dmConvUserId=null;
-let _cpStep=1, _cpType=null, _cpMediaDataUrl=null, _cpMediaFiles=[];
+let _cpMediaDataUrl=null, _cpMediaFiles=[];
 let _cpTaggedSpotLat=null, _cpTaggedSpotLng=null, _cpSpotSearchTimer=null;
 let _cpTaggedSpotId=null, _cpTaggedSpotName='', _cpShareCommunities=[];
-let _cpShowOnSpot=true;
 let _ccStep=1, _ccCoverDataUrl=null, _ccPrivacy='public', _ccFocusTags=[];
 let _sdLat=37.5, _sdLng=-120.0, _sdPhotoDataUrl=null, _sdMap=null;
 let _commSortMode='hot'; // for community detail feed
@@ -10557,82 +10556,53 @@ function openNewMessageOverlay(){
 
 // ── Post Creation Wizard ───────────────────────────────────────
 let _cpSharedComms=[];
+let _cpPrivacy='public';
 function openCreatePost(targetCommunityId=null){
   if(isGuest()){showLoginScreen(()=>openCreatePost(targetCommunityId));return;}
-  _cpStep=1; _cpType=null; _cpMediaDataUrl=null; _cpMediaFiles=[];
+  _cpMediaDataUrl=null; _cpMediaFiles=[];
   _cpTaggedSpotId=null; _cpTaggedSpotName=''; _cpTaggedSpotLat=null; _cpTaggedSpotLng=null;
   _cpShareCommunities=[];
-  _cpShowOnSpot=true;
-  document.getElementById('cpShowOnSpotToggle')?.classList.add('on');
+  _cpPrivacy='public';
   if(targetCommunityId)_cpShareCommunities=[targetCommunityId];
   const page=document.getElementById('createPostPage');
   if(!page)return;
-  // Reset all steps
-  document.querySelectorAll('#createPostPage .wizard-step').forEach(s=>s.classList.remove('active'));
-  document.getElementById('cpStep1')?.classList.add('active');
-  document.querySelectorAll('#createPostPage .media-type-tile').forEach(t=>t.classList.remove('selected'));
   if(document.getElementById('cpCaption'))document.getElementById('cpCaption').value='';
   if(document.getElementById('cpCharCount'))document.getElementById('cpCharCount').textContent='0';
-  _updateCpProgress(1,5);
+  document.getElementById('cpMediaPreviewWrap').style.display='none';
+  document.getElementById('cpThumbRow').innerHTML='';
+  document.getElementById('cpSpotTagged').style.display='none';
+  document.getElementById('cpSpotSearch').value='';
+  setCpPrivacy('public',document.getElementById('cpPrivPublic'));
+  const moreBody=document.getElementById('cpMoreOptionsBody');
+  if(moreBody)moreBody.style.display='none';
+  const chevron=document.getElementById('cpMoreOptionsChevron');
+  if(chevron)chevron.style.transform='';
+  const btn=document.getElementById('cpPostNowBtn');
+  if(btn){btn.disabled=false;btn.innerHTML='<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> Post';btn.style.background='';}
   page.classList.add('open');
   _buildShareCommList();
 }
 function openCreatePostForCommunity(cid){openCreatePost(cid);}
 function closeCreatePost(){document.getElementById('createPostPage')?.classList.remove('open');}
-
-function selectPostType(type,el){
-  _cpType=type;
-  document.querySelectorAll('#createPostPage .media-type-tile').forEach(t=>t.classList.remove('selected'));
-  el.classList.add('selected');
+function toggleCpMoreOptions(){
+  const body=document.getElementById('cpMoreOptionsBody');
+  const chevron=document.getElementById('cpMoreOptionsChevron');
+  if(!body)return;
+  const open=body.style.display==='block';
+  body.style.display=open?'none':'block';
+  if(chevron)chevron.style.transform=open?'':'rotate(180deg)';
 }
-// _cpStep values: 1=type, 2=media, 3=details, 4=preview
-// HTML element map: 1→cpStep1, 2→cpStep2, 3→cpStep4, 4→cpStep5
-function _cpShowStep(logicalStep){
-  const idMap={1:'cpStep1',2:'cpStep2',3:'cpStep4',4:'cpStep5'};
-  document.querySelectorAll('#createPostPage .wizard-step').forEach(s=>s.classList.remove('active'));
-  document.getElementById(idMap[logicalStep])?.classList.add('active');
-  const total=_cpType==='text'?3:4;
-  const display=(_cpType==='text'&&logicalStep>=3)?logicalStep-1:logicalStep;
-  _updateCpProgress(display,total);
-  const title=document.getElementById('createPostTitle');
-  if(title)title.textContent=logicalStep<=2?'New Post':logicalStep===3?'Details':'Preview';
-  const stepLabel=document.getElementById('createPostStepLabel');
-  if(stepLabel)stepLabel.textContent=`Step ${display} of ${total}`;
-}
-function cpNext(){
-  if(_cpStep===1){
-    if(!_cpType){showToast('Choose a post type first');return;}
-    if(_cpType==='spotdrop'){
-      document.querySelectorAll('#createPostPage .wizard-step').forEach(s=>s.classList.remove('active'));
-      document.getElementById('cpStepSpotDrop')?.classList.add('active');
-      _updateCpProgress(2,4);
-      _initSpotDropMap();
-      return;
-    }
-    if(_cpType==='text'){_cpStep=3;}else{_cpStep=2;}
-  } else if(_cpStep===2){
-    if(!_cpMediaDataUrl){showToast('Select at least one photo or video');return;}
-    _cpStep=3;
-  } else if(_cpStep===3){
-    _cpStep=4;
-    _cpShowStep(4);
-    _buildCpPreview(); // preview only — nothing is saved here
-    return;
-  } else {
-    return;
-  }
-  _cpShowStep(_cpStep);
-}
-function cpBack(){
-  if(_cpStep===4){_cpStep=3;}
-  else if(_cpStep===3){_cpStep=(_cpType==='text')?1:2;}
-  else if(_cpStep===2){_cpStep=1;}
-  else{return;}
-  _cpShowStep(_cpStep);
-}
-function _updateCpProgress(step,total){
-  const bar=document.getElementById('createPostProgress');
-  if(bar)bar.style.width=`${(step/total)*100}%`;
+function setCpPrivacy(value,el){
+  _cpPrivacy=value;
+  ['cpPrivPublic','cpPrivPrivate'].forEach(id=>{
+    const tile=document.getElementById(id);
+    if(!tile)return;
+    const isSelected=tile===el;
+    tile.style.background=isSelected?'rgba(184,232,122,.12)':'var(--bg2)';
+    tile.style.borderColor=isSelected?'rgba(184,232,122,.55)':'var(--border2)';
+    const label=tile.querySelector('div:last-child');
+    if(label){label.style.color=isSelected?'#B8E87A':'var(--txt2)';label.style.fontWeight=isSelected?'700':'600';}
+  });
 }
 const VIDEO_MAX_BYTES=5*1024*1024; // 5 MB
 function _readFileAsDataUrl(file){
@@ -10676,9 +10646,14 @@ function removeCpMedia(i){
 }
 function _cpSetMediaLoading(on){
   const btn=document.getElementById('cpAddMediaBtn');
-  const next=document.querySelector('#cpStep2 .wizard-next-btn');
+  const postBtn=document.getElementById('cpPostNowBtn');
   if(btn){btn.style.opacity=on?'0.5':'1';btn.style.pointerEvents=on?'none':'auto';}
-  if(next){next.disabled=on;next.textContent=on?'Processing…':'Continue →';}
+  if(postBtn){
+    postBtn.disabled=on;
+    postBtn.innerHTML=on
+      ?'Processing photo…'
+      :'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> Post';
+  }
 }
 function handleCpMediaSelect(e){
   const files=Array.from(e.target.files||[]);
@@ -10703,15 +10678,6 @@ function handleCpMediaAppend(e){
     _cpSetMediaLoading(false);
   });
   e.target.value='';
-}
-function _buildCpPreview(){
-  const card=document.getElementById('cpPreviewCard');
-  if(!card)return;
-  const caption=(document.getElementById('cpCaption')?.value||'').trim();
-  const fakePost={id:'preview',userId:_myUid(),username:_myName(),type:_cpType||'text',
-    mediaUrl:_cpMediaDataUrl,caption,spotId:_cpTaggedSpotId,spotName:_cpTaggedSpotName,
-    likes:[],createdAt:new Date().toISOString(),communityIds:_cpShareCommunities};
-  card.innerHTML=buildPostCard(fakePost);
 }
 function updateCpCharCount(ta){const el=document.getElementById('cpCharCount');if(el)el.textContent=ta.value.length;}
 function searchCpSpot(q){
@@ -10793,17 +10759,16 @@ function toggleShareTo(key,el){
   if(idx>-1)_cpShareCommunities.splice(idx,1);
   else _cpShareCommunities.push(cid);
 }
-function toggleShowOnSpot(el){
-  _cpShowOnSpot=!_cpShowOnSpot;
-  el.classList.toggle('on',_cpShowOnSpot);
-}
+let _cpSubmitting=false;
 function submitPost(){
+  if(_cpSubmitting)return; // tapping Post repeatedly must only ever fire once
   if(isGuest()){showLoginScreen();return;}
-  const caption=(document.getElementById('cpCaption')?.value||'').trim();
   const btn=document.getElementById('cpPostNowBtn');
-  if(btn){btn.disabled=true;btn.innerHTML='Uploading…';}
+  _cpSubmitting=true;
+  if(btn){btn.disabled=true;btn.style.opacity='.6';btn.textContent='Posting…';btn.style.background='';}
   (async()=>{
     try{
+      const caption=(document.getElementById('cpCaption')?.value||'').trim();
       // Upload media to post-media bucket — never store base64
       let photo_url=null,video_url=null;
       const first=_cpMediaFiles[0];
@@ -10814,11 +10779,12 @@ function submitPost(){
       const allS=[...spots,...userSpots];
       const taggedSpot=_cpTaggedSpotId?allS.find(s=>String(s.id)===String(_cpTaggedSpotId)):null;
       const row={
-        user_id:_myUid(),caption,photo_url,video_url,privacy:'public',
+        user_id:_myUid(),caption,photo_url,video_url,privacy:_cpPrivacy||'public',
         spot_id:taggedSpot?taggedSpot.id:null,
         lat:_cpTaggedSpotLat??taggedSpot?.lat??null,
         lng:_cpTaggedSpotLng??taggedSpot?.lng??null,
-        show_on_spot:taggedSpot?_cpShowOnSpot:true
+        // Posts tagged to a spot always show on that spot's page — no separate toggle to ask about.
+        show_on_spot:true
       };
       const {data,error}=await db.from('posts').insert(row).select('*, profiles!posts_user_id_fkey(username, avatar_url)').single();
       if(error)throw error;
@@ -10829,18 +10795,27 @@ function submitPost(){
         _sbTry(db.from('community_posts').insert({community_id:cid,user_id:_myUid(),content:caption,photo_url:photo_url}),'community share');
         const cp=getCPosts(cid);cp.unshift(data.id);setCPosts(cid,cp);
       }
-      if(btn){btn.innerHTML='Posted!';btn.style.background='#4CAF50';}
+      _cpSubmitting=false;
+      if(btn){btn.style.opacity='1';btn.innerHTML='✓ Posted';btn.style.background='#4CAF50';}
+      showToast('Posted!');
+      // Re-render immediately wherever this post is now visible — no reload required.
+      buildFeed();
+      if(_currentUser&&String(_myUid())===String(data.user_id))buildProfile();
       setTimeout(()=>{
-        if(btn){btn.disabled=false;}
         closeCreatePost();
         showTab('community');
         switchCommTab('feed');
-        buildFeed();
-      },800);
+      },600);
     }catch(e){
       console.warn('[Supabase] post failed:',e);
-      if(btn){btn.disabled=false;btn.innerHTML='Post Now';btn.style.background='';}
-      showToast('Could not post — check connection');
+      _cpSubmitting=false;
+      if(btn){
+        btn.disabled=false;
+        btn.style.opacity='1';
+        btn.innerHTML='<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg> Try Again';
+        btn.style.background='var(--red)';
+      }
+      showToast('Could not post — check your connection and try again');
     }
   })();
 }
